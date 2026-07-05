@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os/exec"
 	"strings"
@@ -242,10 +243,7 @@ func (b DockerSandbox) CleanupMain(ctx context.Context, cfg config.Config) error
 }
 
 func (b DockerSandbox) StartMain(ctx context.Context, plan StartPlan) (StartResult, error) {
-	args := []string{"run", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
-	if plan.UseCloneMode {
-		args = []string{"run", "--clone", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
-	}
+	args := startMainArgs(plan)
 	result, err := b.runner().Run(ctx, b.binary(), args...)
 	start := StartResult{
 		SandboxName: plan.SandboxName,
@@ -258,6 +256,65 @@ func (b DockerSandbox) StartMain(ctx context.Context, plan StartPlan) (StartResu
 		return start, fmt.Errorf("start main sandbox: %s", commandText(result, err))
 	}
 	return start, nil
+}
+
+func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, stdout, stderr io.Writer) (StartResult, <-chan error, error) {
+	args := startMainArgs(plan)
+	cmd := exec.CommandContext(ctx, b.binary(), args...)
+	out := new(strings.Builder)
+	errOut := new(strings.Builder)
+	if stdout != nil {
+		cmd.Stdout = io.MultiWriter(stdout, out)
+	} else {
+		cmd.Stdout = out
+	}
+	if stderr != nil {
+		cmd.Stderr = io.MultiWriter(stderr, errOut)
+	} else {
+		cmd.Stderr = errOut
+	}
+
+	start := StartResult{
+		SandboxName: plan.SandboxName,
+		Agent:       plan.Agent,
+		Workspace:   plan.Workspace,
+		Timezone:    plan.Timezone,
+		Locale:      plan.Locale,
+	}
+	if err := cmd.Start(); err != nil {
+		return start, nil, fmt.Errorf("start main sandbox: %w", err)
+	}
+
+	wait := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			result := CommandResult{ExitCode: exitCode(err), Stdout: out.String(), Stderr: errOut.String()}
+			wait <- fmt.Errorf("start main sandbox: %s", commandText(result, err))
+			return
+		}
+		wait <- nil
+	}()
+
+	select {
+	case err := <-wait:
+		if err != nil {
+			return start, nil, err
+		}
+		done := make(chan error, 1)
+		done <- nil
+		return start, done, nil
+	case <-time.After(100 * time.Millisecond):
+		return start, wait, nil
+	}
+}
+
+func startMainArgs(plan StartPlan) []string {
+	args := []string{"run", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
+	if plan.UseCloneMode {
+		args = []string{"run", "--clone", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
+	}
+	return args
 }
 
 func (b DockerSandbox) finishProbe(ctx context.Context, cfg config.Config, result ProbeResult, err error) (ProbeResult, error) {

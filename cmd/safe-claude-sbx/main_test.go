@@ -40,6 +40,37 @@ func TestLaunchStartsMainSandboxAfterAllPreflightsPass(t *testing.T) {
 	}
 }
 
+func TestLaunchWatchdogStopsMainSandboxWhenRouteEventChangesDefaultRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validLaunchConfig(t, server.URL, "203.0.113.10", 10))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommandsWithRuntime(t, "utun9", "en0", false, true)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{EgressIP: "203.0.113.10", LogPath: logPath, BlockRun: true})
+
+	cmd := exec.Command("go", "run", ".", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("launch unexpectedly succeeded after route change:\n%s", output)
+	}
+	if !strings.Contains(string(output), "route-monitor runtime check failed") {
+		t.Fatalf("expected event source in watchdog output, got:\n%s", output)
+	}
+	if !strings.Contains(string(output), "default route changed from startup interface utun9 to en0") {
+		t.Fatalf("expected route change reason, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	if !containsLogLine(log, "stop claude-sbx") {
+		t.Fatalf("expected watchdog cleanup to stop main sandbox, got:\n%s", log)
+	}
+}
+
 func TestLaunchFailsClosedBeforeMainSandbox(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -649,6 +680,7 @@ type fakeSBXOptions struct {
 	FailCreate    bool
 	FailCurl      bool
 	FailRun       bool
+	BlockRun      bool
 }
 
 func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
@@ -675,6 +707,7 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	if opts.LogPath != "" {
 		logSnippet = fmt.Sprintf("printf '%%s\\n' \"$*\" >> %q", opts.LogPath)
 	}
+	stopFile := filepath.Join(dir, "main-stopped")
 
 	script := fmt.Sprintf(`#!/bin/sh
 set -eu
@@ -729,8 +762,22 @@ case "$1" in
       exit 1
     fi
     printf 'main sandbox started\n'
+    if [ %q = "true" ]; then
+      while [ ! -f %q ]; do
+        sleep 0.05
+      done
+    fi
     ;;
-  stop|rm)
+  stop)
+    if [ %q = "true" ] && [ "${2:-}" = "claude-sbx" ]; then
+      touch %q
+      printf 'sandbox stopped\n'
+      exit 0
+    fi
+    printf 'sandbox not found\n' >&2
+    exit 1
+    ;;
+  rm)
     printf 'sandbox not found\n' >&2
     exit 1
     ;;
@@ -739,7 +786,7 @@ case "$1" in
     exit 1
     ;;
 esac
-`, logSnippet, version, shellBool(opts.FailCreate), shellBool(opts.FailCurl), egressIP, envOutput, mountOutput, shellBool(opts.FailRun))
+`, logSnippet, version, shellBool(opts.FailCreate), shellBool(opts.FailCurl), egressIP, envOutput, mountOutput, shellBool(opts.FailRun), shellBool(opts.BlockRun), stopFile, shellBool(opts.BlockRun), stopFile)
 
 	path := filepath.Join(dir, "sbx")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
@@ -749,31 +796,58 @@ esac
 }
 
 func writeFakeSystemCommands(t *testing.T, routeInterface string, missingInterface bool) string {
+	return writeFakeSystemCommandsWithRuntime(t, routeInterface, routeInterface, missingInterface, false)
+}
+
+func writeFakeSystemCommandsWithRuntime(t *testing.T, startupInterface, runtimeInterface string, runtimeMissingInterface, emitMonitorEvent bool) string {
 	t.Helper()
 
 	dir := t.TempDir()
+	routeState := filepath.Join(dir, "route-checked")
+	ifconfigState := filepath.Join(dir, "ifconfig-checked")
 	writeExecutable(t, filepath.Join(dir, "route"), fmt.Sprintf(`#!/bin/sh
 set -eu
 if [ "$1" = "get" ]; then
+  iface=%q
+  if [ -f %q ]; then
+    iface=%q
+  else
+    touch %q
+  fi
   printf '   route to: %%s\n' "$2"
-  printf 'interface: %s\n'
+  printf 'interface: %%s\n' "$iface"
   exit 0
+fi
+if [ "$1" = "-n" ] && [ "${2:-}" = "monitor" ]; then
+  if [ %q = "true" ]; then
+    sleep 0.2
+    printf 'RTM_CHANGE route changed\n'
+  fi
+  while true; do
+    sleep 1
+  done
 fi
 printf 'unknown route command\n' >&2
 exit 1
-`, routeInterface))
-	ifconfigExit := "0"
-	if missingInterface {
-		ifconfigExit = "1"
+`, startupInterface, routeState, runtimeInterface, routeState, shellBool(emitMonitorEvent)))
+	missingRuntime := "0"
+	if runtimeMissingInterface {
+		missingRuntime = "1"
 	}
 	writeExecutable(t, filepath.Join(dir, "ifconfig"), fmt.Sprintf(`#!/bin/sh
 set -eu
-if [ %q = "1" ]; then
+missing=0
+if [ -f %q ]; then
+  missing=%q
+else
+  touch %q
+fi
+if [ "$missing" = "1" ]; then
   printf 'interface missing\n' >&2
   exit 1
 fi
 printf '%%s: flags=8051<UP,POINTOPOINT,RUNNING>\n' "$1"
-`, ifconfigExit))
+`, ifconfigState, missingRuntime, ifconfigState))
 	return dir
 }
 
