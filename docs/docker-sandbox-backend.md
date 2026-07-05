@@ -3,9 +3,8 @@
 The first backend is Docker Sandbox / `sbx`.
 
 This page records the command contract observed on the target macOS host for
-`sbx v0.34.0` on 2026-07-05. Docker authentication and the initial global
-network policy setup have been completed. Runtime probe validation is still
-blocked by repeated shell image pull failures from Docker's registry/CDN.
+`sbx v0.34.0` on 2026-07-05. Docker authentication, global network policy setup,
+and shell probe creation have been validated on the target machine.
 
 ## Availability
 
@@ -188,17 +187,23 @@ Runtime validation attempted:
 sbx create --name safe-claude-sbx-probe-check shell .
 ```
 
-The command passed authentication and policy checks, then failed during the
-initial shell image pull. Two attempts failed with registry/CDN read errors:
+The first two attempts passed authentication and policy checks, then failed
+during the initial shell image pull with registry/CDN read errors:
 
 ```text
 failed to pull image: ... Get "https://production.cloudfront.docker.com/...": EOF
 failed to pull image: short read: expected 94976614 bytes but got 4905140: unexpected EOF
 ```
 
-No sandbox was left behind after the failed pull. Runtime validation still needs
-to confirm whether a `shell` probe has `env` and `curl` available by default
-after the image pull succeeds.
+No sandbox was left behind after the failed pull. After switching Clash nodes,
+the same command succeeded and created a running probe sandbox:
+
+```text
+SANDBOX                       AGENT   STATUS    PORTS   WORKSPACE
+safe-claude-sbx-probe-check   shell   running           /Users/liuqingyuan/work/safe-claude-sbx
+```
+
+The `shell` probe includes `env`, `sh`, and `curl`.
 
 ### Execute Validation Commands
 
@@ -216,9 +221,36 @@ Confirmed help contract:
   command.
 - `--workdir`, `--user`, `--interactive`, `--tty`, and `--detach` are available.
 
-Use `sbx exec <probe-name> env` to verify that forbidden proxy variables are not
-present. Use `sbx exec <probe-name> curl -fsS <sandbox-check-url>` to verify the
-sandbox egress IP.
+Use `sbx exec <probe-name> env` to classify proxy variables. Docker-managed
+proxy variables are expected; host or unknown proxy targets are not. Use
+`sbx exec <probe-name> curl -fsS <sandbox-check-url>` to verify the sandbox
+egress IP.
+
+Observed runtime behavior:
+
+- `sbx exec <probe-name> env` succeeds with exit code `0`.
+- Docker Sandbox injects proxy variables by default inside the sandbox:
+  `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `NO_PROXY`, and
+  `no_proxy`.
+- These values point at Docker Sandbox's internal proxy
+  `gateway.docker.internal:3128`; they are not the host Clash proxy port
+  `127.0.0.1:7897` configured by the user's shell.
+- `sbx exec <probe-name> sh -lc 'command -v curl'` returned `/usr/bin/curl`.
+- `curl -fsS https://icanhazip.com` succeeded inside the probe and returned the
+  same IP as the host: `123.116.44.34`.
+- `curl -fsS https://api.ipify.org` failed both on host and inside the probe on
+  the current Clash node with TLS EOF errors, so `api.ipify.org` is not a
+  reliable default check URL for this environment.
+
+Docker documentation describes this as the normal networking path: requests
+from inside the sandbox go through a sandbox proxy on `gateway.docker.internal`.
+The proxy then applies Docker Sandbox policy and forwards allowed traffic
+through the host network. The MVP therefore should not require the sandbox to be
+proxy-env-free. It should allow Docker-managed proxy values such as
+`gateway.docker.internal:3128`, reject host/Clash proxy values such as
+`127.0.0.1:7897`, and reject unknown proxy targets. The launcher itself should
+not add Clash proxy ports; network consistency should be based on TUN route and
+egress validation.
 
 ### Timezone, Locale, And Environment
 
@@ -232,6 +264,21 @@ sbx exec --env TZ=<timezone> --env LANG=<locale> --env LC_ALL=<locale> <sandbox-
 The backend adapter should not assume main-agent timezone or locale injection is
 supported by `sbx run` until runtime validation finds a supported mechanism,
 such as a template, kit, profile, secret, or agent argument.
+
+Observed `sbx exec` environment injection:
+
+```bash
+sbx exec -e TZ=America/Los_Angeles -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 <probe-name> env
+```
+
+Inside that exec command, `TZ` and `LANG` reflected the injected values.
+`LC_ALL=en_US.UTF-8` was coerced to `LC_ALL=C.UTF-8` by the probe environment.
+This confirms per-command exec environment injection, not main-agent launch
+environment injection.
+
+Host-side `sbx` and `sandboxd` logs still use the host timezone. A timestamp
+such as `time=2026-07-05T21:32:31.321+08:00` should be treated as host/daemon
+log time, not proof that the sandbox main agent timezone is configured.
 
 ### Stop And Cleanup
 
@@ -273,6 +320,15 @@ Observed commands:
 The launcher should treat this specific authenticated not-found cleanup result
 as non-fatal during idempotent cleanup, while still surfacing unexpected cleanup
 errors.
+
+Observed real probe cleanup:
+
+- `sbx stop safe-claude-sbx-probe-check` returned exit code `0` and printed
+  `Sandbox 'safe-claude-sbx-probe-check' stopped`.
+- `sbx exec <stopped-probe> ...` restarted the stopped sandbox automatically,
+  matching the help contract.
+- `sbx rm --force safe-claude-sbx-probe-check` returned exit code `0` and
+  removed the probe.
 
 ## Adapter Boundary
 

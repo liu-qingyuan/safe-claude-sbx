@@ -41,7 +41,7 @@ CLI 执行 preflight 检查，只有在 Clash Verge TUN 路由有效、宿主机
   - `network.egress_ip`：出口 IP 检测设置，包括期望出口 IP、宿主机 IP 检查 URL、sandbox IP 检查 URL、超时和比较策略。
   - `sandbox`：Docker Sandbox / `sbx` backend、sandbox 名称、probe sandbox 命名和 backend 行为策略。
   - `workspace`：workspace mount 根目录、允许挂载的路径和禁止挂载的敏感路径。
-  - `environment`：timezone、locale 以及禁止注入 sandbox 的代理环境变量。
+  - `environment`：timezone、locale 以及 sandbox proxy environment policy。
   - `watchdog`：route 事件监听、重新验证动作、失败后的 stop/cleanup 策略。
 - preflight 必须 fail closed。任何 network、backend、egress、environment 或 mount policy 对象验证失败都不得启动主 sandbox。
 - Clash Verge TUN 检测负责验证 macOS 默认路由是否通过 `utunX`，并确认启动时使用的 TUN 接口处于可用状态。默认路由检查使用 `route get <route_check_target>`。
@@ -50,7 +50,8 @@ CLI 执行 preflight 检查，只有在 Clash Verge TUN 路由有效、宿主机
 - 运行期 route watcher 是事件驱动组件，使用 `route -n monitor` 监听路由变化。事件触发后重新验证 Clash Verge TUN 状态和 sandbox egress。第一版默认不使用 5 到 10 秒低频兜底轮询。
 - watchdog 应把“事件来源”和“验证失败原因”分开记录。例如 route event 触发了检查，但最终失败原因可能是 TUN interface missing、default route changed、host egress mismatch 或 sandbox egress mismatch。
 - backend policy、platform/network policy、configuration model 和 mount policy 分离。Docker Sandbox / `sbx` 是 adapter，不承载核心安全策略。
-- sandbox 内不得注入 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 及小写变体。
+- launcher 不得主动向 sandbox 注入 Clash 或本机代理端口。Docker Sandbox / `sbx` 官方网络模型会在 sandbox 内通过 proxy 环境变量把流量送到 Docker-managed proxy，例如 `gateway.docker.internal:3128`。MVP 应允许这种 Docker-managed proxy env，但必须拒绝 host/Clash 代理值（如 `127.0.0.1:7897`）或未知 proxy 目标。网络一致性仍由 TUN 路由和 host/sandbox egress IP 验证承担。
+- timezone 和 locale 不能只通过 host/daemon 日志判断。`sbx` 日志中的 `+08:00` 是 host/daemon 时区；MVP 必须通过 sandbox 内部命令或主 agent 启动 contract 验证 timezone/locale 是否真正生效。
 - workspace mount 默认是当前项目目录，并拒绝 Home、SSH、Claude 配置、Clash 配置、Keychain 等敏感路径。
 - cleanup 必须幂等。默认停止主 sandbox，删除 probe sandbox，但不删除主 sandbox，避免误删用户状态。
 - TUN 检测应优先判断本机可观察事实，而不是只相信 Clash Verge UI 开关。MVP 检测顺序应是：Clash Verge 是否声明开启 TUN、mihomo 最终配置是否包含 `tun.enable: true`、macOS 是否存在可用 `utunX` 接口、默认路由是否走启动时记录的 `utunX`、宿主机和 sandbox 出口 IP 是否符合配置。

@@ -25,8 +25,7 @@ Confirmed:
 - `sbx run claude --name <name> <workspace> -- <agent-args>` creates or
   reattaches a main sandbox and passes agent arguments after `--`.
 - `sbx create --name <probe-name> shell <workspace>` plus `sbx exec` is the
-  preferred probe shape until authenticated runtime testing proves a smaller
-  one-shot command.
+  confirmed probe shape.
 - `sbx stop <name>` stops without removing state.
 - `sbx rm --force <name>` removes a sandbox without an interactive confirmation.
 - `sbx login` completed through Docker browser device-code authentication.
@@ -41,11 +40,12 @@ Blocked:
 
 - `sbx daemon start` is a foreground daemon process; `sbx ls` can start the
   daemon when needed, but no one-shot startup command has been confirmed.
-- Creating the `shell` probe is currently blocked by repeated initial image
-  pull failures from Docker's registry/CDN: `EOF` and `unexpected EOF`.
-- Probe network access, `env`/`curl` availability, and main-agent
-  timezone/locale injection still require runtime validation after image pull
-  succeeds.
+- Docker Sandbox injects proxy env vars into the sandbox by default, pointing
+  at `gateway.docker.internal:3128`; #8 must allow Docker-managed proxy values
+  while rejecting host/Clash or unknown proxy targets.
+- Main-agent timezone/locale injection still requires runtime validation. Host
+  or daemon logs using `+08:00` are not proof that sandbox agent timezone is
+  configured.
 
 Details and diagrams are recorded in `docs/docker-sandbox-backend.md`.
 
@@ -60,7 +60,7 @@ How should the preflight create or reuse a temporary sandbox to run `env` and `c
 
 ### Answer
 
-Partially confirmed. After Docker login and `sbx policy init allow-all`, the
+Confirmed after Docker login and `sbx policy init allow-all`. The
 implementation should create a named `shell` probe sandbox and execute
 validation commands inside it:
 
@@ -71,11 +71,16 @@ sbx exec <probe-name> curl -fsS <sandbox-check-url>
 sbx rm --force <probe-name>
 ```
 
-This contract still depends on a successful initial `shell` image pull. Two
-runtime attempts failed during image download with Docker registry/CDN `EOF` /
-`unexpected EOF` errors. After the pull succeeds, validate that the `shell`
-probe image includes `env` and `curl`, and that network policy allows the
-egress check URL.
+The first image pull failed twice with Docker registry/CDN `EOF` /
+`unexpected EOF` errors, then succeeded after switching Clash nodes. The `shell`
+probe includes `env`, `sh`, and `/usr/bin/curl`.
+
+Observed egress behavior:
+
+- `https://icanhazip.com` returned the same IP on host and inside the probe:
+  `123.116.44.34`.
+- `https://api.ipify.org` failed on both host and probe with TLS EOF on the
+  current node, so it should not be the only default check URL.
 
 ## #3: Decide first implementation language and packaging
 
