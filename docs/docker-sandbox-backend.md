@@ -229,6 +229,15 @@ egress IP.
 Observed runtime behavior:
 
 - `sbx exec <probe-name> env` succeeds with exit code `0`.
+- Docker's credentials documentation describes the sandbox credential proxy and
+  SSH agent forwarding model:
+  <https://docs.docker.com/ai/sandboxes/security/credentials/>.
+- Docker Sandbox may expose built-in service credential names such as
+  `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` as Docker-managed placeholders such
+  as `proxy-managed`. The real credential value stays outside the sandbox.
+- When the host has an SSH agent, Docker Sandbox may forward it into the sandbox
+  as `SSH_AUTH_SOCK`. Private keys stay on the host, but sandbox processes can
+  request signatures from the forwarded agent.
 - Docker Sandbox injects proxy variables by default inside the sandbox:
   `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `NO_PROXY`, and
   `no_proxy`.
@@ -295,10 +304,11 @@ Current launcher behavior:
 
 - The backend adapter runs `sbx` subprocesses with a small host environment
   allowlist: `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `TMPDIR`, and `USER`.
-- The probe still inspects the sandbox environment after creation. If Docker
-  Sandbox exposes `OPENAI_API_KEY`, `SSH_AUTH_SOCK`, host proxy targets, Claude
-  credentials, or other credential-like names inside the sandbox, the launcher
-  fails closed and removes the probe when configured.
+- The probe still inspects the sandbox environment after creation. Docker-managed
+  credential placeholders such as `proxy-managed` are allowed, raw credential
+  values fail closed, host or unknown proxy targets fail closed, and
+  `SSH_AUTH_SOCK` is allowed only when
+  `environment.allow_ssh_agent_forwarding` is explicitly `true`.
 - If a future Docker Sandbox version documents a create/run clean-env,
   allowlist, profile, template, or kit contract, the backend adapter should use
   that official mechanism and keep the inspection step as verification.

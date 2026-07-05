@@ -442,29 +442,34 @@ Expected sandbox stop/cleanup behavior:
 - Failure occurs before any backend command.
 - No probe or main sandbox is created.
 
-## 15. Sensitive host environment exposed in probe
+## 15. Credential placeholders and SSH agent forwarding in probe
 
 Prerequisites:
 
-- Use a shell that has a test value for a sensitive variable name, for example
-  `OPENAI_API_KEY`, or observe a real `SSH_AUTH_SOCK`. Do not print or paste the
-  value.
+- Use a shell or Docker Sandbox environment where the probe can observe
+  Docker-managed credential placeholders, for example `OPENAI_API_KEY` or
+  `ANTHROPIC_API_KEY` with value class `proxy-managed`.
+- If the host has an SSH agent, observe whether Docker Sandbox forwards
+  `SSH_AUTH_SOCK`. Do not print or paste any credential or socket value.
 - Clash Verge TUN and host egress otherwise pass policy.
 
 Steps:
 
-1. Run `safe-claude-sbx doctor --config config.yaml`.
-2. If `doctor` fails on sandbox inspection, note only the variable name in the
-   error.
-3. Run `sbx ls` after the command exits.
+1. Run `safe-claude-sbx doctor --config config.yaml` with
+   `environment.allow_ssh_agent_forwarding: false`.
+2. If `SSH_AUTH_SOCK` is observed, confirm `doctor` fails and note only the
+   variable name in the error.
+3. Set `environment.allow_ssh_agent_forwarding: true` only if this workflow
+   accepts sandbox processes requesting SSH agent signatures, then rerun
+   `doctor`.
+4. Run `sbx ls` after the command exits.
 
 Expected CLI output:
 
-- If Docker Sandbox exposes the sensitive name inside the probe, `doctor` fails
-  with `environment.inspection.env.<NAME>`.
-- The error does not include the secret value.
-- If the probe observation is clean, `doctor` may pass; this means the current
-  Docker Sandbox environment did not expose that variable.
+- Docker-managed credential placeholders pass inspection.
+- Raw credential values fail with `environment.inspection.env.<NAME>` and do not
+  include the value.
+- `SSH_AUTH_SOCK` fails by default and passes only when explicitly allowed.
 
 Expected sandbox stop/cleanup behavior:
 

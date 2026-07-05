@@ -202,9 +202,10 @@ func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResul
 			Mount:          cfg.Workspace.Mount,
 			ForbiddenPaths: cfg.Workspace.ForbiddenPaths,
 		},
-		Timezone:         cfg.Environment.Timezone,
-		Locale:           cfg.Environment.Locale,
-		ForbiddenEnvVars: cfg.Environment.ForbiddenEnvVars,
+		Timezone:                cfg.Environment.Timezone,
+		Locale:                  cfg.Environment.Locale,
+		AllowSSHAgentForwarding: cfg.Environment.AllowSSHAgentForwarding,
+		ForbiddenEnvVars:        cfg.Environment.ForbiddenEnvVars,
 	}, policy.InspectionObservation{
 		Environment:      inspection.Environment,
 		WorkingDirectory: inspection.WorkingDirectory,

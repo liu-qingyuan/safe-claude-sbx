@@ -82,6 +82,31 @@ func TestValidateInspectionAllowsDockerManagedProxyAndRuntimeEnv(t *testing.T) {
 	}
 }
 
+func TestValidateInspectionAllowsDockerManagedCredentialPlaceholders(t *testing.T) {
+	err := ValidateInspection(InspectionPolicy{
+		Workspace: WorkspacePolicy{
+			Mount:          ".",
+			ForbiddenPaths: []string{"~", "~/.ssh"},
+			HomeDir:        "/Users/alice",
+			WorkingDir:     "/Users/alice/work/safe-claude-sbx",
+		},
+		Timezone: "America/Los_Angeles",
+		Locale:   "en_US.UTF-8",
+	}, InspectionObservation{
+		Environment: map[string]string{
+			"OPENAI_API_KEY":    "proxy-managed",
+			"ANTHROPIC_API_KEY": "proxy-managed",
+		},
+		WorkingDirectory: "/workspace",
+		Mounts:           "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)",
+		Date:             "Sun Jul  5 12:00:00 PDT 2026",
+		Locale:           "LANG=en_US.UTF-8",
+	})
+	if err != nil {
+		t.Fatalf("expected Docker-managed credential placeholders to be accepted: %v", err)
+	}
+}
+
 func TestValidateInspectionFailsClosedForForbiddenEnvWithoutLeakingValue(t *testing.T) {
 	secret := "/Users/alice/.ssh/agent.sock"
 	err := ValidateInspection(InspectionPolicy{
@@ -110,6 +135,45 @@ func TestValidateInspectionFailsClosedForForbiddenEnvWithoutLeakingValue(t *test
 	}
 	if !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
 		t.Fatalf("expected env var name in error, got %v", err)
+	}
+}
+
+func TestValidateInspectionAllowsSSHAgentForwardingOnlyWhenConfigured(t *testing.T) {
+	socket := "/run/host-services/ssh-auth.sock"
+	observation := InspectionObservation{
+		Environment: map[string]string{
+			"SSH_AUTH_SOCK": socket,
+		},
+		WorkingDirectory: "/workspace",
+		Mounts:           "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)",
+		Date:             "Sun Jul  5 12:00:00 PDT 2026",
+		Locale:           "LANG=en_US.UTF-8",
+	}
+	policy := InspectionPolicy{
+		Workspace: WorkspacePolicy{
+			Mount:          ".",
+			ForbiddenPaths: []string{"~", "~/.ssh"},
+			HomeDir:        "/Users/alice",
+			WorkingDir:     "/Users/alice/work/safe-claude-sbx",
+		},
+		Timezone: "America/Los_Angeles",
+		Locale:   "en_US.UTF-8",
+	}
+
+	err := ValidateInspection(policy, observation)
+	if err == nil {
+		t.Fatalf("expected SSH agent forwarding to fail closed by default")
+	}
+	if strings.Contains(err.Error(), socket) {
+		t.Fatalf("policy error leaked SSH_AUTH_SOCK value: %v", err)
+	}
+	if !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
+		t.Fatalf("expected SSH_AUTH_SOCK in error, got %v", err)
+	}
+
+	policy.AllowSSHAgentForwarding = true
+	if err := ValidateInspection(policy, observation); err != nil {
+		t.Fatalf("expected configured SSH agent forwarding to be accepted: %v", err)
 	}
 }
 

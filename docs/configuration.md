@@ -39,11 +39,15 @@ safe-claude-sbx doctor --config config.yaml
 - `environment`
   - `timezone`: Sandbox timezone.
   - `locale`: Sandbox `LANG` and `LC_ALL`.
+  - `allow_ssh_agent_forwarding`: Whether Docker Sandbox's forwarded
+    `SSH_AUTH_SOCK` is allowed. The default is `false`; enabling it means
+    sandbox processes can ask the host SSH agent to sign operations, while
+    private keys remain on the host.
   - `forbidden_env_vars`: Host environment variables that must not appear
-    inside the sandbox, such as `OPENAI_API_KEY`, Claude API keys, and
-    `SSH_AUTH_SOCK`. Docker-managed proxy values on
-    `gateway.docker.internal:3128` are allowed; host or unknown proxy targets
-    fail closed.
+    inside the sandbox as raw values, such as `OPENAI_API_KEY` and Claude API
+    keys. Docker-managed credential placeholders such as `proxy-managed` are
+    allowed. Docker-managed proxy values on `gateway.docker.internal:3128` are
+    allowed; host or unknown proxy targets fail closed.
 - `watchdog`
   - `enabled`: Whether runtime supervision is enabled.
   - `log_level`: Launcher log level.
@@ -66,10 +70,11 @@ distinguish `host-egress-mismatch`, `endpoint-failure`, and
 
 After the Docker Sandbox probe runs, `doctor` validates the sandbox observation
 before printing `sandbox inspection ok`. It rejects visible sensitive mounts,
-host secrets such as `SSH_AUTH_SOCK`, token or credential-like env vars such as
-`OPENAI_API_KEY`, host proxy values such as `127.0.0.1:7897`, and unknown proxy
-targets. These errors name the policy object and env variable but do not print
-captured secret values.
+raw token or credential-like env values such as `OPENAI_API_KEY`, unexpected
+`SSH_AUTH_SOCK` forwarding, host proxy values such as `127.0.0.1:7897`, and
+unknown proxy targets. Docker-managed credential placeholders are allowed.
+These errors name the policy object and env variable but do not print captured
+secret values.
 
 Legacy flat fields such as `expected_egress_ip`, `sandbox_name`,
 `workspace_mount`, `timezone`, and `cleanup.stop_on_exit` are not accepted by the

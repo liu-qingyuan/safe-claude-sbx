@@ -272,6 +272,33 @@ func TestDoctorAcceptsValidStructuredConfig(t *testing.T) {
 	}
 }
 
+func TestDoctorAcceptsDockerManagedCredentialPlaceholders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10))
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EnvOutput: "PATH=/usr/bin\nOPENAI_API_KEY=proxy-managed\nANTHROPIC_API_KEY=proxy-managed\nHTTP_PROXY=http://gateway.docker.internal:3128\nNO_PROXY=localhost,127.0.0.1,gateway.docker.internal\n",
+	})
+
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("doctor failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "sandbox inspection ok") {
+		t.Fatalf("expected sandbox inspection success, got:\n%s", output)
+	}
+	if strings.Contains(string(output), "proxy-managed") {
+		t.Fatalf("doctor leaked raw sandbox env:\n%s", output)
+	}
+}
+
 func TestDoctorFailsClosedForSandboxBackendProblems(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -398,6 +425,55 @@ func TestDoctorFailsClosedForUnsafeSandboxInspection(t *testing.T) {
 				t.Fatalf("doctor leaked sensitive value:\n%s", output)
 			}
 		})
+	}
+}
+
+func TestDoctorAllowsSSHAgentForwardingOnlyWhenConfigured(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	socket := "/run/host-services/ssh-auth.sock"
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EnvOutput: "PATH=/usr/bin\nSSH_AUTH_SOCK=" + socket + "\nHTTP_PROXY=http://gateway.docker.internal:3128\nNO_PROXY=localhost,127.0.0.1,gateway.docker.internal\n",
+	})
+
+	defaultConfig := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10))
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", defaultConfig)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("doctor unexpectedly accepted SSH agent forwarding by default:\n%s", output)
+	}
+	if !strings.Contains(string(output), "environment.inspection.env.SSH_AUTH_SOCK") {
+		t.Fatalf("expected SSH_AUTH_SOCK diagnostic, got:\n%s", output)
+	}
+	if strings.Contains(string(output), socket) {
+		t.Fatalf("doctor leaked SSH_AUTH_SOCK value:\n%s", output)
+	}
+
+	allowedConfig := writeTestConfig(t, strings.Replace(
+		validConfig(server.URL, "203.0.113.10", 10),
+		`locale: "en_US.UTF-8"`,
+		"locale: \"en_US.UTF-8\"\n  allow_ssh_agent_forwarding: true",
+		1,
+	))
+	cmd = exec.Command("go", "run", ".", "doctor", "--config", allowedConfig)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("doctor rejected configured SSH agent forwarding: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "sandbox inspection ok") {
+		t.Fatalf("expected sandbox inspection success, got:\n%s", output)
+	}
+	if strings.Contains(string(output), socket) {
+		t.Fatalf("doctor leaked SSH_AUTH_SOCK value:\n%s", output)
 	}
 }
 

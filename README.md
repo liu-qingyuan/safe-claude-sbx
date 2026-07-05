@@ -8,8 +8,10 @@ The project is intended for compliant local development workflows. It does not b
 
 - Refuse to start Claude Code when the macOS default route is not going through a TUN interface.
 - Verify that both the host and Docker Sandbox egress IP match the configured expected IP.
-- Allow only Docker-managed sandbox proxy values and reject host/unknown proxy
-  targets or sensitive host environment variables.
+- Allow Docker-managed sandbox proxy values and credential placeholders, while
+  rejecting host/unknown proxy targets and raw sensitive environment values.
+- Require explicit configuration before accepting Docker Sandbox SSH agent
+  forwarding.
 - Restrict the sandbox workspace mount to the current project directory.
 - Stop the sandbox when route events indicate the TUN interface disappeared, the default route changed, or sandbox egress changed.
 

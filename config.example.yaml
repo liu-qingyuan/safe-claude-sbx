@@ -30,6 +30,7 @@ workspace:
 environment:
   timezone: "America/Los_Angeles"
   locale: "en_US.UTF-8"
+  allow_ssh_agent_forwarding: false
   forbidden_env_vars:
     - OPENAI_API_KEY
     - ANTHROPIC_API_KEY

@@ -18,10 +18,11 @@ type WorkspacePolicy struct {
 }
 
 type InspectionPolicy struct {
-	Workspace        WorkspacePolicy
-	Timezone         string
-	Locale           string
-	ForbiddenEnvVars []string
+	Workspace               WorkspacePolicy
+	Timezone                string
+	Locale                  string
+	AllowSSHAgentForwarding bool
+	ForbiddenEnvVars        []string
 }
 
 type InspectionObservation struct {
@@ -103,12 +104,34 @@ func validateEnvironment(policy InspectionPolicy, env map[string]string) error {
 			}
 			continue
 		}
+		if isSSHAuthSockEnv(name) {
+			if err := validateSSHAgentEnv(policy, name, value); err != nil {
+				return err
+			}
+			continue
+		}
 		if isForbiddenEnvName(name, policy.ForbiddenEnvVars) {
+			if isDockerManagedCredentialPlaceholder(name, value) {
+				continue
+			}
+			if isCredentialEnvName(name) {
+				return fmt.Errorf("environment.inspection.env.%s: raw credential value visible", name)
+			}
 			return fmt.Errorf("environment.inspection.env.%s: forbidden host environment variable visible", name)
 		}
 		if valueMentionsSensitivePath(value, policy.Workspace) {
 			return fmt.Errorf("environment.inspection.env.%s: sensitive host path visible", name)
 		}
+	}
+	return nil
+}
+
+func validateSSHAgentEnv(policy InspectionPolicy, name, value string) error {
+	if !policy.AllowSSHAgentForwarding {
+		return fmt.Errorf("environment.inspection.env.%s: ssh agent forwarding is not allowed", name)
+	}
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("environment.inspection.env.%s: ssh agent socket path missing", name)
 	}
 	return nil
 }
@@ -169,6 +192,25 @@ func isForbiddenEnvName(name string, configured []string) bool {
 		}
 	}
 	return false
+}
+
+func isCredentialEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	credentialFragments := []string{"TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "API_KEY"}
+	for _, fragment := range credentialFragments {
+		if strings.Contains(upper, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func isDockerManagedCredentialPlaceholder(name, value string) bool {
+	return isCredentialEnvName(name) && strings.TrimSpace(value) == "proxy-managed"
+}
+
+func isSSHAuthSockEnv(name string) bool {
+	return strings.EqualFold(name, "SSH_AUTH_SOCK")
 }
 
 func isProxyEnv(name string) bool {

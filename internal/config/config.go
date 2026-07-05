@@ -53,9 +53,10 @@ type Workspace struct {
 }
 
 type Environment struct {
-	Timezone         string   `yaml:"timezone"`
-	Locale           string   `yaml:"locale"`
-	ForbiddenEnvVars []string `yaml:"forbidden_env_vars"`
+	Timezone                string   `yaml:"timezone"`
+	Locale                  string   `yaml:"locale"`
+	AllowSSHAgentForwarding bool     `yaml:"allow_ssh_agent_forwarding"`
+	ForbiddenEnvVars        []string `yaml:"forbidden_env_vars"`
 }
 
 type Watchdog struct {
