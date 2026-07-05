@@ -29,18 +29,23 @@ Confirmed:
   one-shot command.
 - `sbx stop <name>` stops without removing state.
 - `sbx rm --force <name>` removes a sandbox without an interactive confirmation.
+- `sbx login` completed through Docker browser device-code authentication.
+- The target host's global Docker Sandbox policy was initialized with
+  `sbx policy init allow-all`.
+- After authentication, `sbx ls` succeeds with exit code `0` on an empty machine.
+- After authentication, `sbx stop <missing-name>` and
+  `sbx rm --force <missing-name>` return exit code `1` with a not-found error;
+  the launcher should treat this specific cleanup case as non-fatal.
 
 Blocked:
 
-- `sbx login` opens a Docker browser device-code authentication flow and waits
-  for a human to complete it.
-- Before login, `sbx ls`, `sbx stop <name>`, and `sbx rm --force <name>` fail
-  with exit code `1` and `Not authenticated to Docker`.
-- `sbx daemon start` is a foreground daemon process; no one-shot startup
-  contract has been confirmed.
-- Runtime behavior for nonexistent cleanup targets, default policy prompts,
-  probe network access, and main-agent timezone/locale injection still requires
-  authenticated manual validation.
+- `sbx daemon start` is a foreground daemon process; `sbx ls` can start the
+  daemon when needed, but no one-shot startup command has been confirmed.
+- Creating the `shell` probe is currently blocked by repeated initial image
+  pull failures from Docker's registry/CDN: `EOF` and `unexpected EOF`.
+- Probe network access, `env`/`curl` availability, and main-agent
+  timezone/locale injection still require runtime validation after image pull
+  succeeds.
 
 Details and diagrams are recorded in `docs/docker-sandbox-backend.md`.
 
@@ -55,8 +60,9 @@ How should the preflight create or reuse a temporary sandbox to run `env` and `c
 
 ### Answer
 
-Partially confirmed. The implementation should create a named `shell` probe
-sandbox and execute validation commands inside it:
+Partially confirmed. After Docker login and `sbx policy init allow-all`, the
+implementation should create a named `shell` probe sandbox and execute
+validation commands inside it:
 
 ```bash
 sbx create --name <probe-name> shell <workspace>
@@ -65,10 +71,11 @@ sbx exec <probe-name> curl -fsS <sandbox-check-url>
 sbx rm --force <probe-name>
 ```
 
-This contract depends on authenticated runtime validation to confirm that the
-`shell` probe image includes `env` and `curl`, that network policy allows the
-egress check URL, and that removing a missing or already-removed probe can be
-treated as non-fatal.
+This contract still depends on a successful initial `shell` image pull. Two
+runtime attempts failed during image download with Docker registry/CDN `EOF` /
+`unexpected EOF` errors. After the pull succeeds, validate that the `shell`
+probe image includes `env` and `curl`, and that network policy allows the
+egress check URL.
 
 ## #3: Decide first implementation language and packaging
 

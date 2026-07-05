@@ -3,8 +3,9 @@
 The first backend is Docker Sandbox / `sbx`.
 
 This page records the command contract observed on the target macOS host for
-`sbx v0.34.0` on 2026-07-05. Runtime sandbox creation is still blocked until a
-human completes Docker authentication in the browser.
+`sbx v0.34.0` on 2026-07-05. Docker authentication and the initial global
+network policy setup have been completed. Runtime probe validation is still
+blocked by repeated shell image pull failures from Docker's registry/CDN.
 
 ## Availability
 
@@ -29,6 +30,8 @@ Observed result:
 - `sbx version` returned `sbx version: v0.34.0 2eae0c4fc3894475da3318615f69783b0e7be747`.
 - `sbx diagnose` found the CLI and storage directories, but reported the daemon
   as not reachable until `sbx daemon start` is running.
+- `sbx ls` starts `sandboxd` when needed and returned exit code `0` after
+  authentication, with `No sandboxes found` on an empty machine.
 
 `sbx daemon start` runs as a foreground process and printed:
 
@@ -40,7 +43,7 @@ The command did not exit within 45 seconds. A launcher should not assume daemon
 startup is a short one-shot command unless a later manual validation proves a
 background mode or service manager contract.
 
-## Authentication Blocker
+## Authentication And Policy
 
 `sbx login` supports browser-based login and non-interactive username/password
 input:
@@ -58,9 +61,33 @@ Open this URL to sign in: https://login.docker.com/activate?user_code=<code>
 Waiting for authentication...
 ```
 
-The command timed out after 45 seconds waiting for browser/account
-authentication. Runtime behavior that depends on authenticated Docker Sandbox
-state must be manually validated after login.
+The command waits for browser/account authentication. After the user completed
+the Docker device-code login, `sbx login` exited successfully:
+
+```text
+Signed in as ggboy1464.
+```
+
+After login, creating a sandbox required initializing the global network policy:
+
+```text
+ERROR: global network policy has not been initialized
+
+Initialize it with:
+  sbx policy init <allow-all|balanced|deny-all>
+```
+
+The target host was initialized with:
+
+```bash
+sbx policy init allow-all
+```
+
+Observed policy rules after initialization:
+
+- `default-allow-all`: network allow `**`
+- `default-fs-read-allow-all`: filesystem read allow `**`
+- `default-fs-write-allow-all`: filesystem write allow `**`
 
 Before authentication, these commands fail with exit code `1`:
 
@@ -76,6 +103,8 @@ Observed pre-auth commands with this behavior:
 - `sbx stop safe-claude-sbx-nonexistent`
 - `sbx rm --force safe-claude-sbx-nonexistent`
 
+After authentication, `sbx ls` succeeds with exit code `0` on an empty machine.
+
 ## Command Contract
 
 ### List Sandboxes
@@ -86,6 +115,15 @@ sbx ls
 
 Use this as the authentication and backend reachability check. Before login it
 returns exit code `1` with `Not authenticated to Docker`.
+
+After login it returned:
+
+```text
+No sandboxes found.
+Launch one: sbx run claude
+```
+
+with exit code `0`.
 
 ### Create Main Sandbox
 
@@ -144,9 +182,23 @@ sbx rm --force <probe-name>
 
 The `shell` agent is listed as an available agent for `create` and `run`.
 
-Runtime validation still needs to confirm whether a `shell` probe has `env` and
-`curl` available by default, and whether any Docker Sandbox policy prompt or
-profile selection blocks network access.
+Runtime validation attempted:
+
+```bash
+sbx create --name safe-claude-sbx-probe-check shell .
+```
+
+The command passed authentication and policy checks, then failed during the
+initial shell image pull. Two attempts failed with registry/CDN read errors:
+
+```text
+failed to pull image: ... Get "https://production.cloudfront.docker.com/...": EOF
+failed to pull image: short read: expected 94976614 bytes but got 4905140: unexpected EOF
+```
+
+No sandbox was left behind after the failed pull. Runtime validation still needs
+to confirm whether a `shell` probe has `env` and `curl` available by default
+after the image pull succeeds.
 
 ### Execute Validation Commands
 
@@ -178,8 +230,8 @@ sbx exec --env TZ=<timezone> --env LANG=<locale> --env LC_ALL=<locale> <sandbox-
 ```
 
 The backend adapter should not assume main-agent timezone or locale injection is
-supported by `sbx run` until authenticated runtime validation finds a supported
-mechanism, such as a template, kit, profile, secret, or agent argument.
+supported by `sbx run` until runtime validation finds a supported mechanism,
+such as a template, kit, profile, secret, or agent argument.
 
 ### Stop And Cleanup
 
@@ -205,8 +257,22 @@ sbx rm --force <sandbox-name>
 - `sbx rm --all --force` removes every sandbox and must not be used by the MVP.
 
 Pre-auth `stop` and `rm` fail at authentication before checking whether the
-named sandbox exists. Idempotent cleanup behavior for nonexistent authenticated
-targets still needs manual validation.
+named sandbox exists.
+
+After authentication, nonexistent cleanup targets returned exit code `1`:
+
+```text
+Error: sandbox 'safe-claude-sbx-nonexistent' not found (run 'sbx ls' to see your sandboxes)
+```
+
+Observed commands:
+
+- `sbx stop safe-claude-sbx-nonexistent`
+- `sbx rm --force safe-claude-sbx-nonexistent`
+
+The launcher should treat this specific authenticated not-found cleanup result
+as non-fatal during idempotent cleanup, while still surfacing unexpected cleanup
+errors.
 
 ## Adapter Boundary
 
