@@ -122,6 +122,54 @@ func TestDockerSandboxProbeReturnsStructuredInspectionAndIdempotentCleanup(t *te
 	}
 }
 
+func TestDockerSandboxProbeFailsClosedForUnsafeInspection(t *testing.T) {
+	tests := []struct {
+		name      string
+		env       string
+		mounts    string
+		wantError string
+	}{
+		{
+			name:      "host proxy",
+			env:       "PATH=/usr/bin\nHTTP_PROXY=http://127.0.0.1:7897\n",
+			mounts:    "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)\n",
+			wantError: "environment.inspection.env.HTTP_PROXY",
+		},
+		{
+			name:      "sensitive env",
+			env:       "PATH=/usr/bin\nSSH_AUTH_SOCK=/Users/alice/.ssh/agent.sock\n",
+			mounts:    "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)\n",
+			wantError: "environment.inspection.env.SSH_AUTH_SOCK",
+		},
+		{
+			name:      "sensitive mount",
+			env:       "PATH=/usr/bin\nHTTP_PROXY=http://gateway.docker.internal:3128\n",
+			mounts:    "/dev/disk1 on /workspace type virtiofs\n/dev/disk2 on /host-ssh type virtiofs (rw,source=/Users/alice/.ssh)\n",
+			wantError: "workspace.inspection.mounts",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := probeRunner(tt.env, tt.mounts)
+			cfg := probeConfig()
+			cfg.Workspace.ForbiddenPaths = append(cfg.Workspace.ForbiddenPaths, "/Users/alice/.ssh")
+
+			_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).Probe(context.Background(), cfg)
+
+			if err == nil {
+				t.Fatalf("probe unexpectedly succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected %q in error, got %v", tt.wantError, err)
+			}
+			if strings.Contains(err.Error(), "127.0.0.1:7897") || strings.Contains(err.Error(), "/Users/alice/.ssh/agent.sock") {
+				t.Fatalf("probe error leaked sensitive value: %v", err)
+			}
+		})
+	}
+}
+
 func probeConfig() config.Config {
 	return config.Config{
 		Network: config.Network{
@@ -137,14 +185,37 @@ func probeConfig() config.Config {
 			Agent:     "claude",
 		},
 		Workspace: config.Workspace{
-			Mount: ".",
+			Mount:          ".",
+			ForbiddenPaths: []string{"~", "~/.ssh", "~/.claude", "~/.config/clash", "~/Library/Keychains"},
 		},
 		Environment: config.Environment{
-			Timezone: "UTC",
-			Locale:   "en_US.UTF-8",
+			Timezone:         "UTC",
+			Locale:           "en_US.UTF-8",
+			ForbiddenEnvVars: []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"},
 		},
 		Cleanup: config.Cleanup{
 			RemoveProbeSandbox: true,
+		},
+	}
+}
+
+func probeRunner(env, mounts string) stubRunner {
+	return stubRunner{
+		path: "/tmp/sbx",
+		results: map[string]CommandResult{
+			"sbx create --name probe shell .":                                        {Stdout: "created\n"},
+			"sbx exec -e TZ=UTC -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe env": {Stdout: env},
+			"sbx exec probe pwd":                                                     {Stdout: "/workspace\n"},
+			"sbx exec probe mount":                                                   {Stdout: mounts},
+			"sbx exec -e TZ=UTC probe date":                                          {Stdout: "Sun Jul 5 00:00:00 UTC 2026\n"},
+			"sbx exec -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe locale":        {Stdout: "LANG=en_US.UTF-8\n"},
+			"sbx exec probe curl -fsS https://example.test/ip":                       {Stdout: "203.0.113.10\n"},
+			"sbx stop probe":                                                         {Stderr: "sandbox not found\n"},
+			"sbx rm --force probe":                                                   {Stderr: "sandbox not found\n"},
+		},
+		errors: map[string]error{
+			"sbx stop probe":       errors.New("exit status 1"),
+			"sbx rm --force probe": errors.New("exit status 1"),
 		},
 	}
 }

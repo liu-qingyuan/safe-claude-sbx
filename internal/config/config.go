@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/liu-qingyuan/safe-claude-sbx/internal/policy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -187,10 +188,11 @@ func (c Config) Validate() error {
 	if len(c.Workspace.ForbiddenPaths) == 0 {
 		return fmt.Errorf("missing required field workspace.forbidden_paths")
 	}
-	for _, forbidden := range c.Workspace.ForbiddenPaths {
-		if c.Workspace.Mount == forbidden {
-			return fmt.Errorf("invalid field workspace.mount: %q is forbidden", c.Workspace.Mount)
-		}
+	if err := policy.ValidateWorkspaceMount(policy.WorkspacePolicy{
+		Mount:          c.Workspace.Mount,
+		ForbiddenPaths: c.Workspace.ForbiddenPaths,
+	}); err != nil {
+		return err
 	}
 	if len(c.Environment.ForbiddenEnvVars) == 0 {
 		return fmt.Errorf("missing required field environment.forbidden_env_vars")

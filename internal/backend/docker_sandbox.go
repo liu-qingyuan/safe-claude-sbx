@@ -11,6 +11,7 @@ import (
 
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/config"
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/network"
+	"github.com/liu-qingyuan/safe-claude-sbx/internal/policy"
 )
 
 type AvailabilityKind string
@@ -148,17 +149,37 @@ func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResul
 		return b.finishProbe(ctx, cfg, ProbeResult{Egress: egress}, err)
 	}
 
-	return b.finishProbe(ctx, cfg, ProbeResult{
-		Egress: egress,
-		Inspection: InspectionObservation{
-			Environment:      parseEnv(env),
-			WorkingDirectory: strings.TrimSpace(pwd),
-			Mounts:           strings.TrimSpace(mounts),
-			Date:             strings.TrimSpace(date),
-			Locale:           strings.TrimSpace(locale),
-			EgressIP:         egress.ObservedIP,
+	inspection := InspectionObservation{
+		Environment:      parseEnv(env),
+		WorkingDirectory: strings.TrimSpace(pwd),
+		Mounts:           strings.TrimSpace(mounts),
+		Date:             strings.TrimSpace(date),
+		Locale:           strings.TrimSpace(locale),
+		EgressIP:         egress.ObservedIP,
+	}
+	result := ProbeResult{
+		Egress:     egress,
+		Inspection: inspection,
+	}
+	if err := policy.ValidateInspection(policy.InspectionPolicy{
+		Workspace: policy.WorkspacePolicy{
+			Mount:          cfg.Workspace.Mount,
+			ForbiddenPaths: cfg.Workspace.ForbiddenPaths,
 		},
-	}, nil)
+		Timezone:         cfg.Environment.Timezone,
+		Locale:           cfg.Environment.Locale,
+		ForbiddenEnvVars: cfg.Environment.ForbiddenEnvVars,
+	}, policy.InspectionObservation{
+		Environment:      inspection.Environment,
+		WorkingDirectory: inspection.WorkingDirectory,
+		Mounts:           inspection.Mounts,
+		Date:             inspection.Date,
+		Locale:           inspection.Locale,
+	}); err != nil {
+		return b.finishProbe(ctx, cfg, result, fmt.Errorf("sandbox inspection invalid: %w", err))
+	}
+
+	return b.finishProbe(ctx, cfg, result, nil)
 }
 
 func (b DockerSandbox) CleanupProbe(ctx context.Context, cfg config.Config) error {

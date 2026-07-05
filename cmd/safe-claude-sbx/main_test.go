@@ -105,6 +105,71 @@ func TestDoctorFailsClosedForSandboxBackendProblems(t *testing.T) {
 	}
 }
 
+func TestDoctorFailsClosedForUnsafeSandboxInspection(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("read home dir: %v", err)
+	}
+	tests := []struct {
+		name      string
+		fake      fakeSBXOptions
+		wantError string
+		notLeak   string
+	}{
+		{
+			name: "host proxy",
+			fake: fakeSBXOptions{
+				EnvOutput: "PATH=/usr/bin\nHTTP_PROXY=http://127.0.0.1:7897\n",
+			},
+			wantError: "environment.inspection.env.HTTP_PROXY",
+			notLeak:   "127.0.0.1:7897",
+		},
+		{
+			name: "sensitive env",
+			fake: fakeSBXOptions{
+				EnvOutput: "PATH=/usr/bin\nSSH_AUTH_SOCK=/Users/alice/.ssh/agent.sock\n",
+			},
+			wantError: "environment.inspection.env.SSH_AUTH_SOCK",
+			notLeak:   "/Users/alice/.ssh/agent.sock",
+		},
+		{
+			name: "sensitive mount",
+			fake: fakeSBXOptions{
+				MountOutput: fmt.Sprintf("/dev/disk1 on /workspace type virtiofs\n/dev/disk2 on /host-ssh type virtiofs (rw,source=%s/.ssh)\n", home),
+			},
+			wantError: "workspace.inspection.mounts",
+			notLeak:   home + "/.ssh",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintln(w, "203.0.113.10")
+			}))
+			t.Cleanup(server.Close)
+
+			configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10))
+			fakeSBX := writeFakeSBX(t, tt.fake)
+
+			cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+			cmd.Dir = "."
+			cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("doctor unexpectedly succeeded:\n%s", output)
+			}
+			if !strings.Contains(string(output), tt.wantError) {
+				t.Fatalf("expected %q in output, got:\n%s", tt.wantError, output)
+			}
+			if strings.Contains(string(output), tt.notLeak) {
+				t.Fatalf("doctor leaked sensitive value:\n%s", output)
+			}
+		})
+	}
+}
+
 func TestDoctorFailsClosedForHostEgressProblems(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -388,6 +453,8 @@ func writeTestConfig(t *testing.T, body string) string {
 type fakeSBXOptions struct {
 	EgressIP      string
 	VersionOutput string
+	EnvOutput     string
+	MountOutput   string
 	FailCreate    bool
 	FailCurl      bool
 }
@@ -403,6 +470,14 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	egressIP := opts.EgressIP
 	if egressIP == "" {
 		egressIP = "203.0.113.10"
+	}
+	envOutput := opts.EnvOutput
+	if envOutput == "" {
+		envOutput = "PATH=/usr/bin\nTZ=America/Los_Angeles\nLANG=en_US.UTF-8\nLC_ALL=C.UTF-8\nHTTP_PROXY=http://gateway.docker.internal:3128\nHTTPS_PROXY=http://gateway.docker.internal:3128\nNO_PROXY=localhost,127.0.0.1,gateway.docker.internal\n"
+	}
+	mountOutput := opts.MountOutput
+	if mountOutput == "" {
+		mountOutput = "/dev/disk1 on /workspace type virtiofs\n"
 	}
 
 	script := fmt.Sprintf(`#!/bin/sh
@@ -431,13 +506,13 @@ case "$1" in
         printf '%%s\n' %q
         ;;
       *" env")
-        printf 'PATH=/usr/bin\nSECRET_SHOULD_NOT_LEAK=redacted-by-caller\n'
+        printf '%%b' %q
         ;;
       *" pwd")
         printf '/workspace\n'
         ;;
       *" mount")
-        printf '/dev/disk1 on /workspace type virtiofs\n'
+        printf '%%b' %q
         ;;
       *" date")
         printf 'Sun Jul  5 12:00:00 UTC 2026\n'
@@ -460,7 +535,7 @@ case "$1" in
     exit 1
     ;;
 esac
-`, version, shellBool(opts.FailCreate), shellBool(opts.FailCurl), egressIP)
+`, version, shellBool(opts.FailCreate), shellBool(opts.FailCurl), egressIP, envOutput, mountOutput)
 
 	path := filepath.Join(dir, "sbx")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {

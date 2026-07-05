@@ -12,10 +12,23 @@ The configured `network.egress_ip.expected_ip` does not match the IP returned by
 
 The host and sandbox may not be using the same network path, or Docker Sandbox egress may differ from the host route.
 
-## Forbidden proxy variable detected
+## Proxy environment rejected
 
-The sandbox environment contains a proxy variable such as `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, or `NO_PROXY`. The launcher should reject startup.
+Docker Sandbox may inject proxy variables that point to
+`gateway.docker.internal:3128`; those Docker-managed values are allowed. The
+launcher rejects host proxy values such as `127.0.0.1:7897`, `localhost`, or
+unknown proxy targets. The error names the proxy variable but does not print the
+captured value.
+
+## Forbidden environment detected
+
+The sandbox environment contains a host-sensitive variable such as
+`SSH_AUTH_SOCK`, a token, a password, a credential, a Claude config path, a
+Clash config path, or a Keychain-related variable. The launcher rejects startup
+and redacts the captured value.
 
 ## Sensitive mount rejected
 
-The configured workspace path resolves to Home, SSH, Claude config, Clash config, Keychain, or another forbidden path.
+The configured workspace path resolves to Home, SSH, Claude config, Clash
+config, Keychain, or another forbidden path. The sandbox inspection also fails
+closed if the mount observation shows one of those sensitive host paths.

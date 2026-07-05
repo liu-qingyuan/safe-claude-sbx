@@ -31,10 +31,16 @@ safe-claude-sbx doctor --config config.yaml
   - `mount`: Host project directory mounted into the sandbox.
   - `use_clone_mode`: Whether a copied workspace mode is requested.
   - `forbidden_paths`: Host paths that must never be used as workspace mounts.
+    The policy expands `~`, rejects sensitive paths such as SSH, Claude config,
+    Clash config, and Keychain paths recursively, and fails before backend
+    commands run.
 - `environment`
   - `timezone`: Sandbox timezone.
   - `locale`: Sandbox `LANG` and `LC_ALL`.
-  - `forbidden_env_vars`: Environment variables that must not appear inside the sandbox.
+  - `forbidden_env_vars`: Host environment variables that must not appear
+    inside the sandbox. Docker-managed proxy values on
+    `gateway.docker.internal:3128` are allowed; host or unknown proxy targets
+    fail closed.
 - `watchdog`
   - `enabled`: Whether runtime supervision is enabled.
   - `log_level`: Launcher log level.
@@ -47,11 +53,19 @@ safe-claude-sbx doctor --config config.yaml
 ## Validation
 
 `doctor --config` fails closed when required objects or fields are missing, when
+`workspace.mount` resolves to a forbidden mount, when
 `network.egress_ip.expected_ip` is not an IP address, or when the host egress
 check cannot prove that the observed public IP matches the configured expected
-IP. Error messages include object paths such as `network.clash_verge` or
-`network.egress_ip.expected_ip`, and host egress failures distinguish
-`host-egress-mismatch`, `endpoint-failure`, and `response-parse-failure`.
+IP. Error messages include object paths such as `network.clash_verge`,
+`workspace.mount`, or `network.egress_ip.expected_ip`, and host egress failures
+distinguish `host-egress-mismatch`, `endpoint-failure`, and
+`response-parse-failure`.
+
+After the Docker Sandbox probe runs, `doctor` validates the sandbox observation
+before printing `sandbox inspection ok`. It rejects visible sensitive mounts,
+host secrets such as `SSH_AUTH_SOCK`, token or credential-like env vars, host
+proxy values such as `127.0.0.1:7897`, and unknown proxy targets. These errors
+name the policy object and env variable but do not print captured secret values.
 
 Legacy flat fields such as `expected_egress_ip`, `sandbox_name`,
 `workspace_mount`, `timezone`, and `cleanup.stop_on_exit` are not accepted by the
