@@ -6,5 +6,6 @@ build/
 coverage/
 tmp/
 .scratch/
+.ralph/
 .agents/
 skills-lock.json
