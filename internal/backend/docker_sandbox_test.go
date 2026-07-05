@@ -122,6 +122,31 @@ func TestDockerSandboxProbeReturnsStructuredInspectionAndIdempotentCleanup(t *te
 	}
 }
 
+func TestDockerSandboxStartMainPassesMainSandboxContract(t *testing.T) {
+	runner := stubRunner{
+		path: "/tmp/sbx",
+		results: map[string]CommandResult{
+			"sbx run claude --name main-sbx /work/project": {Stdout: "started\n"},
+		},
+	}
+	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
+	cfg.Workspace.Mount = "/work/project"
+	plan := NewStartPlan(cfg)
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).StartMain(context.Background(), plan)
+
+	if err != nil {
+		t.Fatalf("start main failed: %v", err)
+	}
+	if result.SandboxName != "main-sbx" || result.Agent != "claude" || result.Workspace != "/work/project" || result.Timezone != "UTC" || result.Locale != "en_US.UTF-8" {
+		t.Fatalf("unexpected start result: %#v", result)
+	}
+	if plan.Environment["TZ"] != "UTC" || plan.Environment["LANG"] != "en_US.UTF-8" || plan.Environment["LC_ALL"] != "en_US.UTF-8" {
+		t.Fatalf("expected allowed startup environment, got %#v", plan.Environment)
+	}
+}
+
 func TestDockerSandboxProbeFailsClosedForUnsafeInspection(t *testing.T) {
 	tests := []struct {
 		name      string

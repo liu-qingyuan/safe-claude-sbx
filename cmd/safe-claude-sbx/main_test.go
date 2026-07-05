@@ -12,6 +12,151 @@ import (
 	"time"
 )
 
+func TestLaunchStartsMainSandboxAfterAllPreflightsPass(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validLaunchConfig(t, server.URL, "203.0.113.10", 10))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{EgressIP: "203.0.113.10", LogPath: logPath})
+
+	cmd := exec.Command("go", "run", ".", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("launch failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "sandbox started: claude-sbx") {
+		t.Fatalf("expected launch success output, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	if !strings.Contains(log, "run claude --name claude-sbx .") {
+		t.Fatalf("expected main sandbox run command, got:\n%s", log)
+	}
+}
+
+func TestLaunchFailsClosedBeforeMainSandbox(t *testing.T) {
+	tests := []struct {
+		name          string
+		routeIface    string
+		hostEgress    string
+		fakeSBX       fakeSBXOptions
+		configMutator func(string) string
+		wantError     string
+		wantCleanup   bool
+		wantStopMain  bool
+	}{
+		{
+			name:       "TUN route missing",
+			routeIface: "en0",
+			hostEgress: "203.0.113.10",
+			fakeSBX:    fakeSBXOptions{EgressIP: "203.0.113.10"},
+			wantError:  "system-route",
+		},
+		{
+			name:       "host egress mismatch",
+			routeIface: "utun9",
+			hostEgress: "198.51.100.77",
+			fakeSBX:    fakeSBXOptions{EgressIP: "203.0.113.10"},
+			wantError:  "host-egress-mismatch",
+		},
+		{
+			name:       "backend incompatible",
+			routeIface: "utun9",
+			hostEgress: "203.0.113.10",
+			fakeSBX: fakeSBXOptions{
+				EgressIP:      "203.0.113.10",
+				VersionOutput: "unexpected tool",
+			},
+			wantError: "version-incompatible",
+		},
+		{
+			name:        "sandbox egress mismatch",
+			routeIface:  "utun9",
+			hostEgress:  "203.0.113.10",
+			fakeSBX:     fakeSBXOptions{EgressIP: "198.51.100.77"},
+			wantError:   "sandbox-egress-mismatch",
+			wantCleanup: true,
+		},
+		{
+			name:       "environment inspection failure",
+			routeIface: "utun9",
+			hostEgress: "203.0.113.10",
+			fakeSBX: fakeSBXOptions{
+				EgressIP:  "203.0.113.10",
+				EnvOutput: "PATH=/usr/bin\nSSH_AUTH_SOCK=/Users/alice/.ssh/agent.sock\n",
+			},
+			wantError:   "environment.inspection.env.SSH_AUTH_SOCK",
+			wantCleanup: true,
+		},
+		{
+			name:       "forbidden workspace mount",
+			routeIface: "utun9",
+			hostEgress: "203.0.113.10",
+			fakeSBX:    fakeSBXOptions{EgressIP: "203.0.113.10"},
+			configMutator: func(body string) string {
+				return strings.Replace(body, `mount: "."`, `mount: "~"`, 1)
+			},
+			wantError: "workspace.mount",
+		},
+		{
+			name:         "main sandbox start failure",
+			routeIface:   "utun9",
+			hostEgress:   "203.0.113.10",
+			fakeSBX:      fakeSBXOptions{EgressIP: "203.0.113.10", FailRun: true},
+			wantError:    "start main sandbox",
+			wantCleanup:  true,
+			wantStopMain: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintln(w, tt.hostEgress)
+			}))
+			t.Cleanup(server.Close)
+
+			configBody := validLaunchConfig(t, server.URL, "203.0.113.10", 10)
+			if tt.configMutator != nil {
+				configBody = tt.configMutator(configBody)
+			}
+			configPath := writeTestConfig(t, configBody)
+			logPath := filepath.Join(t.TempDir(), "sbx.log")
+			tt.fakeSBX.LogPath = logPath
+			fakeBin := writeFakeSystemCommands(t, tt.routeIface, false)
+			fakeSBX := writeFakeSBX(t, tt.fakeSBX)
+
+			cmd := exec.Command("go", "run", ".", "--config", configPath)
+			cmd.Dir = "."
+			cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("launch unexpectedly succeeded:\n%s", output)
+			}
+			if !strings.Contains(string(output), tt.wantError) {
+				t.Fatalf("expected %q in output, got:\n%s", tt.wantError, output)
+			}
+			log := readOptionalFile(t, logPath)
+			if !tt.wantStopMain && (strings.Contains(log, "\nrun ") || strings.HasPrefix(log, "run ")) {
+				t.Fatalf("main sandbox started despite preflight failure:\n%s", log)
+			}
+			if tt.wantCleanup && !strings.Contains(log, "rm --force claude-sbx-probe") {
+				t.Fatalf("expected probe cleanup after startup failure, got:\n%s", log)
+			}
+			if tt.wantStopMain && !containsLogLine(log, "stop claude-sbx") {
+				t.Fatalf("expected main sandbox cleanup after start failure, got:\n%s", log)
+			}
+		})
+	}
+}
+
 func TestDoctorAcceptsValidStructuredConfig(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "203.0.113.10")
@@ -280,6 +425,51 @@ cleanup:
 `, expectedIP, hostCheckURL, timeoutSeconds)
 }
 
+func validLaunchConfig(t *testing.T, hostCheckURL, expectedIP string, timeoutSeconds int) string {
+	t.Helper()
+
+	appHome := writeClashVergeHome(t, true, true, "utun9")
+	return fmt.Sprintf(`
+network:
+  clash_verge:
+    app_home: %q
+    route_check_target: "1.1.1.1"
+    tun_interface_prefix: "utun"
+  egress_ip:
+    expected_ip: %q
+    host_check_url: %q
+    sandbox_check_url: "https://api.ipify.org"
+    timeout_seconds: %d
+sandbox:
+  backend: "docker-sandbox"
+  main_name: "claude-sbx"
+  probe_name: "claude-sbx-probe"
+  agent: "claude"
+workspace:
+  mount: "."
+  use_clone_mode: false
+  forbidden_paths:
+    - "~"
+    - "~/.ssh"
+environment:
+  timezone: "America/Los_Angeles"
+  locale: "en_US.UTF-8"
+  forbidden_env_vars:
+    - HTTP_PROXY
+    - HTTPS_PROXY
+    - ALL_PROXY
+    - NO_PROXY
+watchdog:
+  enabled: true
+  log_level: "info"
+  log_file: ""
+cleanup:
+  stop_main_sandbox: true
+  remove_probe_sandbox: true
+  remove_main_sandbox: false
+`, appHome, expectedIP, hostCheckURL, timeoutSeconds)
+}
+
 func TestDoctorRejectsMissingRequiredObjectPath(t *testing.T) {
 	configPath := writeTestConfig(t, `
 network:
@@ -455,8 +645,10 @@ type fakeSBXOptions struct {
 	VersionOutput string
 	EnvOutput     string
 	MountOutput   string
+	LogPath       string
 	FailCreate    bool
 	FailCurl      bool
+	FailRun       bool
 }
 
 func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
@@ -479,9 +671,14 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	if mountOutput == "" {
 		mountOutput = "/dev/disk1 on /workspace type virtiofs\n"
 	}
+	logSnippet := ":"
+	if opts.LogPath != "" {
+		logSnippet = fmt.Sprintf("printf '%%s\\n' \"$*\" >> %q", opts.LogPath)
+	}
 
 	script := fmt.Sprintf(`#!/bin/sh
 set -eu
+%s
 case "$1" in
   version)
     printf '%%s\n' %q
@@ -526,6 +723,13 @@ case "$1" in
         ;;
     esac
     ;;
+  run)
+    if [ %q = "true" ]; then
+      printf 'run failed\n' >&2
+      exit 1
+    fi
+    printf 'main sandbox started\n'
+    ;;
   stop|rm)
     printf 'sandbox not found\n' >&2
     exit 1
@@ -535,13 +739,102 @@ case "$1" in
     exit 1
     ;;
 esac
-`, version, shellBool(opts.FailCreate), shellBool(opts.FailCurl), egressIP, envOutput, mountOutput)
+`, logSnippet, version, shellBool(opts.FailCreate), shellBool(opts.FailCurl), egressIP, envOutput, mountOutput, shellBool(opts.FailRun))
 
 	path := filepath.Join(dir, "sbx")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake sbx: %v", err)
 	}
 	return dir
+}
+
+func writeFakeSystemCommands(t *testing.T, routeInterface string, missingInterface bool) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	writeExecutable(t, filepath.Join(dir, "route"), fmt.Sprintf(`#!/bin/sh
+set -eu
+if [ "$1" = "get" ]; then
+  printf '   route to: %%s\n' "$2"
+  printf 'interface: %s\n'
+  exit 0
+fi
+printf 'unknown route command\n' >&2
+exit 1
+`, routeInterface))
+	ifconfigExit := "0"
+	if missingInterface {
+		ifconfigExit = "1"
+	}
+	writeExecutable(t, filepath.Join(dir, "ifconfig"), fmt.Sprintf(`#!/bin/sh
+set -eu
+if [ %q = "1" ]; then
+  printf 'interface missing\n' >&2
+  exit 1
+fi
+printf '%%s: flags=8051<UP,POINTOPOINT,RUNNING>\n' "$1"
+`, ifconfigExit))
+	return dir
+}
+
+func writeClashVergeHome(t *testing.T, vergeTUN, runtimeTUN bool, device string) string {
+	t.Helper()
+
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, "verge.yaml"), "enable_tun_mode: "+shellBool(vergeTUN)+"\n")
+	writeFile(t, filepath.Join(home, "clash-verge.yaml"), strings.TrimSpace(`
+tun:
+  enable: `+shellBool(runtimeTUN)+`
+  device: "`+device+`"
+  auto-route: true
+  auto-detect-interface: true
+  strict-route: true
+`)+"\n")
+	return home
+}
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func writeExecutable(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func readOptionalFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func containsLogLine(log, line string) bool {
+	for _, got := range strings.Split(log, "\n") {
+		if got == line {
+			return true
+		}
+	}
+	return false
 }
 
 func shellBool(value bool) string {

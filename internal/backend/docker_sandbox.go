@@ -45,6 +45,40 @@ type ProbeResult struct {
 	CleanupDone bool
 }
 
+type StartResult struct {
+	SandboxName string
+	Agent       string
+	Workspace   string
+	Timezone    string
+	Locale      string
+}
+
+type StartPlan struct {
+	SandboxName  string
+	Agent        string
+	Workspace    string
+	UseCloneMode bool
+	Timezone     string
+	Locale       string
+	Environment  map[string]string
+}
+
+func NewStartPlan(cfg config.Config) StartPlan {
+	return StartPlan{
+		SandboxName:  cfg.Sandbox.MainName,
+		Agent:        cfg.Sandbox.Agent,
+		Workspace:    cfg.Workspace.Mount,
+		UseCloneMode: cfg.Workspace.UseCloneMode,
+		Timezone:     cfg.Environment.Timezone,
+		Locale:       cfg.Environment.Locale,
+		Environment: map[string]string{
+			"TZ":     cfg.Environment.Timezone,
+			"LANG":   cfg.Environment.Locale,
+			"LC_ALL": cfg.Environment.Locale,
+		},
+	}
+}
+
 type CommandResult struct {
 	ExitCode int
 	Stdout   string
@@ -187,6 +221,43 @@ func (b DockerSandbox) CleanupProbe(ctx context.Context, cfg config.Config) erro
 		return fmt.Errorf("cleanup probe sandbox %q failed", cfg.Sandbox.ProbeName)
 	}
 	return nil
+}
+
+func (b DockerSandbox) CleanupMain(ctx context.Context, cfg config.Config) error {
+	runner := b.runner()
+	binary := b.binary()
+	mainName := cfg.Sandbox.MainName
+
+	if cfg.Cleanup.StopMainSandbox {
+		if result, err := runner.Run(ctx, binary, "stop", mainName); err != nil && !isNotFoundCleanup(result) {
+			return fmt.Errorf("stop main sandbox %q failed: %s", mainName, commandText(result, err))
+		}
+	}
+	if cfg.Cleanup.RemoveMainSandbox {
+		if result, err := runner.Run(ctx, binary, "rm", "--force", mainName); err != nil && !isNotFoundCleanup(result) {
+			return fmt.Errorf("remove main sandbox %q failed: %s", mainName, commandText(result, err))
+		}
+	}
+	return nil
+}
+
+func (b DockerSandbox) StartMain(ctx context.Context, plan StartPlan) (StartResult, error) {
+	args := []string{"run", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
+	if plan.UseCloneMode {
+		args = []string{"run", "--clone", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
+	}
+	result, err := b.runner().Run(ctx, b.binary(), args...)
+	start := StartResult{
+		SandboxName: plan.SandboxName,
+		Agent:       plan.Agent,
+		Workspace:   plan.Workspace,
+		Timezone:    plan.Timezone,
+		Locale:      plan.Locale,
+	}
+	if err != nil {
+		return start, fmt.Errorf("start main sandbox: %s", commandText(result, err))
+	}
+	return start, nil
 }
 
 func (b DockerSandbox) finishProbe(ctx context.Context, cfg config.Config, result ProbeResult, err error) (ProbeResult, error) {
