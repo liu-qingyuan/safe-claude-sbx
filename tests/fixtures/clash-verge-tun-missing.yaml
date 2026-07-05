@@ -1,0 +1,24 @@
+# Redacted Clash Verge Rev local-state fixture for parser/doctor tests.
+# This represents a missing or unreadable Clash Verge app home/runtime config.
+state: tun-config-missing
+app_home: "~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev"
+files:
+  verge.yaml: null
+  clash-verge.yaml: null
+observations:
+  ifconfig_interfaces:
+    - name: "utun4"
+      status: "active"
+  route_get:
+    target: "1.1.1.1"
+    interface: "utun4"
+  host_egress_ip: "203.0.113.10"
+  sandbox_egress_ip: "203.0.113.10"
+expected_detection:
+  clash_verge_tun_declared: "unknown"
+  runtime_tun_enabled: "unknown"
+  live_tun_interface: "utun4"
+  default_route_interface: "utun4"
+  ready_for_sandbox_preflight: false
+  failure_layer: "configuration-declaration"
+  fallback_strategy: "fail closed unless user explicitly disables Clash Verge config-source requirement"

@@ -1,0 +1,29 @@
+# Redacted Clash Verge Rev local-state fixture for parser/doctor tests.
+# All paths, IPs, and interface names are synthetic.
+state: tun-enabled
+app_home: "~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev"
+files:
+  verge.yaml:
+    enable_tun_mode: true
+  clash-verge.yaml:
+    tun:
+      enable: true
+      device: "utun9"
+      auto-route: true
+      auto-detect-interface: true
+      strict-route: true
+observations:
+  ifconfig_interfaces:
+    - name: "utun9"
+      status: "active"
+  route_get:
+    target: "1.1.1.1"
+    interface: "utun9"
+  host_egress_ip: "203.0.113.10"
+  sandbox_egress_ip: "203.0.113.10"
+expected_detection:
+  clash_verge_tun_declared: true
+  runtime_tun_enabled: true
+  live_tun_interface: "utun9"
+  default_route_interface: "utun9"
+  ready_for_sandbox_preflight: true

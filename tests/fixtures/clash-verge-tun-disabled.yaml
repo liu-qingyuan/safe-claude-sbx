@@ -1,0 +1,28 @@
+# Redacted Clash Verge Rev local-state fixture for parser/doctor tests.
+# This state should fail before any sandbox is started.
+state: tun-disabled
+app_home: "~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev"
+files:
+  verge.yaml:
+    enable_tun_mode: false
+  clash-verge.yaml:
+    tun:
+      enable: false
+      device: "utun9"
+      auto-route: true
+      auto-detect-interface: true
+      strict-route: true
+observations:
+  ifconfig_interfaces: []
+  route_get:
+    target: "1.1.1.1"
+    interface: "en0"
+  host_egress_ip: "198.51.100.20"
+  sandbox_egress_ip: null
+expected_detection:
+  clash_verge_tun_declared: false
+  runtime_tun_enabled: false
+  live_tun_interface: null
+  default_route_interface: "en0"
+  ready_for_sandbox_preflight: false
+  failure_layer: "configuration-declaration"
