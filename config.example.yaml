@@ -1,5 +1,6 @@
 network:
   clash_verge:
+    app_home: ""
     route_check_target: "1.1.1.1"
     tun_interface_prefix: "utun"
   egress_ip:

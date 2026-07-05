@@ -25,6 +25,7 @@ type Network struct {
 }
 
 type ClashVerge struct {
+	AppHome            string `yaml:"app_home"`
 	RouteCheckTarget   string `yaml:"route_check_target"`
 	TUNInterfacePrefix string `yaml:"tun_interface_prefix"`
 }
@@ -94,6 +95,7 @@ func inspectTopLevelConfig(data []byte) error {
 
 	legacyPaths := map[string]string{
 		"expected_egress_ip":           "network.egress_ip.expected_ip",
+		"clash_verge_app_home":         "network.clash_verge.app_home",
 		"route_check_target":           "network.clash_verge.route_check_target",
 		"ip_check_url":                 "network.egress_ip.host_check_url and network.egress_ip.sandbox_check_url",
 		"ip_check_timeout_seconds":     "network.egress_ip.timeout_seconds",

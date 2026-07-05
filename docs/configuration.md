@@ -13,6 +13,7 @@ safe-claude-sbx doctor --config config.yaml
 ## Object Model
 
 - `network.clash_verge`
+  - `app_home`: Optional Clash Verge Rev app-home override. Empty string uses the normal macOS app-home path.
   - `route_check_target`: IP used by `route get` to inspect the outbound route.
   - `tun_interface_prefix`: Expected macOS TUN interface prefix, normally `utun`.
 - `network.egress_ip`

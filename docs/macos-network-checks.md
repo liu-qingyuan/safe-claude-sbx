@@ -39,7 +39,7 @@ Relevant files under the app home:
 - `clash-verge.yaml`: generated runtime config written by Clash Verge Rev for the running mihomo core. This is the useful file for `tun.enable`, `tun.device`, `tun.auto-route`, `tun.auto-detect-interface`, and `tun.strict-route` when it exists.
 - `profiles.yaml` and `profiles/`: profile metadata and profile YAML files that can contribute to the final runtime config.
 
-The safe-claude-sbx detector must not treat `verge.yaml` as sufficient proof that traffic is routed through TUN. In Clash Verge Rev, `enable_tun_mode` is consumed while generating the runtime config, and `use_tun` writes the final `tun.enable` value into the generated mapping. The TUN toggle is therefore a declaration, not a system fact.
+The safe-claude-sbx detector must not treat `verge.yaml` as sufficient proof that traffic is routed through TUN. In Clash Verge Rev, `enable_tun_mode` is consumed while generating the runtime config, and `use_tun` writes the final `tun.enable` value into the generated mapping. The TUN toggle is therefore a declaration, not a system fact. The implementation accepts `network.clash_verge.app_home` as an explicit override and otherwise reads the normal macOS app-home path.
 
 The detector should treat `clash-verge.yaml` as an optional second-level declaration. When present, inspect:
 
