@@ -63,6 +63,8 @@ func TestLaunchDoesNotPassHostSensitiveEnvironmentToMainSandboxCommand(t *testin
 		"SSH_AUTH_SOCK=/tmp/ssh-agent.sock",
 		"SSH_AUTH_SOCK_GATEWAY=gateway.docker.internal",
 		"HTTP_PROXY=http://127.0.0.1:7897",
+		"HERDR_SOCKET_PATH=/tmp/herdr.sock",
+		"HERDR_PANE_ID=w1:p1",
 	)
 
 	output, err := cmd.CombinedOutput()
@@ -70,7 +72,7 @@ func TestLaunchDoesNotPassHostSensitiveEnvironmentToMainSandboxCommand(t *testin
 		t.Fatalf("launch failed: %v\n%s", err, output)
 	}
 	log := readFile(t, logPath)
-	for _, forbidden := range []string{"OPENAI_API_KEY=", "SSH_AUTH_SOCK=", "SSH_AUTH_SOCK_GATEWAY=", "HTTP_PROXY="} {
+	for _, forbidden := range []string{"OPENAI_API_KEY=", "SSH_AUTH_SOCK=", "SSH_AUTH_SOCK_GATEWAY=", "HTTP_PROXY=", "HERDR_SOCKET_PATH=", "HERDR_PANE_ID="} {
 		if strings.Contains(log, forbidden) {
 			t.Fatalf("main sandbox command inherited forbidden host env %q:\n%s", forbidden, log)
 		}
@@ -849,7 +851,7 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	}
 	logRunEnvironmentSnippet := ":"
 	if opts.LogPath != "" && opts.LogRunEnvironment {
-		logRunEnvironmentSnippet = fmt.Sprintf("env | grep -E '^(OPENAI_API_KEY|SSH_AUTH_SOCK|SSH_AUTH_SOCK_GATEWAY|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy)=' >> %q || true", opts.LogPath)
+		logRunEnvironmentSnippet = fmt.Sprintf("env | grep -E '^(OPENAI_API_KEY|SSH_AUTH_SOCK|SSH_AUTH_SOCK_GATEWAY|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|HERDR_ENV|HERDR_PANE_ID|HERDR_SOCKET_PATH|HERDR_TAB_ID|HERDR_WORKSPACE_ID)=' >> %q || true", opts.LogPath)
 	}
 	stopFile := filepath.Join(dir, "main-stopped")
 

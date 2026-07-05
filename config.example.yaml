@@ -46,6 +46,11 @@ environment:
     - https_proxy
     - all_proxy
     - no_proxy
+    - HERDR_ENV
+    - HERDR_PANE_ID
+    - HERDR_SOCKET_PATH
+    - HERDR_TAB_ID
+    - HERDR_WORKSPACE_ID
 
 watchdog:
   enabled: true

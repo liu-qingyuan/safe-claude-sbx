@@ -352,6 +352,11 @@ func defaultForbiddenEnvNames() []string {
 		"CLAUDE_CONFIG_PATH",
 		"CLASH_HOME",
 		"CLASH_CONFIG",
+		"HERDR_ENV",
+		"HERDR_PANE_ID",
+		"HERDR_SOCKET_PATH",
+		"HERDR_TAB_ID",
+		"HERDR_WORKSPACE_ID",
 	}
 }
 
