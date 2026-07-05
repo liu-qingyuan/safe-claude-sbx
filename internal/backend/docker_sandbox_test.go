@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -145,6 +148,45 @@ func TestDockerSandboxStartMainPassesMainSandboxContract(t *testing.T) {
 	}
 	if plan.Environment["TZ"] != "UTC" || plan.Environment["LANG"] != "en_US.UTF-8" || plan.Environment["LC_ALL"] != "en_US.UTF-8" {
 		t.Fatalf("expected allowed startup environment, got %#v", plan.Environment)
+	}
+}
+
+func TestDockerSandboxStartMainAttachedConnectsStdin(t *testing.T) {
+	dir := t.TempDir()
+	stdinPath := filepath.Join(dir, "stdin.txt")
+	fakeSBX := filepath.Join(dir, "sbx")
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+if [ "$1" != "run" ]; then
+  printf 'unexpected command: %%s\n' "$*" >&2
+  exit 1
+fi
+IFS= read -r line
+printf '%%s' "$line" > %q
+printf 'main sandbox started\n'
+`, stdinPath)
+	if err := os.WriteFile(fakeSBX, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake sbx: %v", err)
+	}
+
+	cfg := probeConfig()
+	plan := NewStartPlan(cfg)
+	_, wait, err := (DockerSandbox{Binary: fakeSBX}).StartMainAttached(context.Background(), plan, strings.NewReader("terminal-input\n"), io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("start attached failed: %v", err)
+	}
+	if wait == nil {
+		t.Fatal("expected wait channel")
+	}
+	if err := <-wait; err != nil {
+		t.Fatalf("attached command failed: %v", err)
+	}
+	got, err := os.ReadFile(stdinPath)
+	if err != nil {
+		t.Fatalf("read captured stdin: %v", err)
+	}
+	if string(got) != "terminal-input" {
+		t.Fatalf("expected stdin to be connected to sbx run, got %q", got)
 	}
 }
 

@@ -16,15 +16,15 @@ import (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 3 && args[0] == "doctor" && args[1] == "--config" {
 		return runDoctor(args[2], stdout, stderr)
 	}
 	if len(args) == 2 && args[0] == "--config" {
-		return runLaunch(args[1], stdout, stderr)
+		return runLaunch(args[1], stdin, stdout, stderr)
 	}
 
 	fmt.Fprintln(stderr, "usage: safe-claude-sbx [doctor] --config <file>")
@@ -71,7 +71,7 @@ func runDoctor(configPath string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runLaunch(configPath string, stdout, stderr io.Writer) int {
+func runLaunch(configPath string, stdin io.Reader, stdout, stderr io.Writer) int {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
@@ -119,7 +119,7 @@ func runLaunch(configPath string, stdout, stderr io.Writer) int {
 	mainCtx, stopMainCommand := context.WithCancel(context.Background())
 	defer stopMainCommand()
 
-	start, backendExit, err := sandbox.StartMainAttached(mainCtx, backend.NewStartPlan(cfg), stdout, stderr)
+	start, backendExit, err := sandbox.StartMainAttached(mainCtx, backend.NewStartPlan(cfg), stdin, stdout, stderr)
 	if err != nil {
 		if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
 			fmt.Fprintf(stderr, "sandbox start invalid: %v; cleanup main sandbox failed: %v\n", err, cleanupErr)

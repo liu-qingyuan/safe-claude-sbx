@@ -260,20 +260,36 @@ func (b DockerSandbox) StartMain(ctx context.Context, plan StartPlan) (StartResu
 	return start, nil
 }
 
-func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, stdout, stderr io.Writer) (StartResult, <-chan error, error) {
+func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, stdin io.Reader, stdout, stderr io.Writer) (StartResult, <-chan error, error) {
 	args := startMainArgs(plan)
 	cmd := exec.CommandContext(ctx, b.binary(), args...)
 	out := new(strings.Builder)
 	errOut := new(strings.Builder)
-	if stdout != nil {
-		cmd.Stdout = io.MultiWriter(stdout, out)
-	} else {
-		cmd.Stdout = out
+	if stdin != nil {
+		cmd.Stdin = stdin
 	}
-	if stderr != nil {
-		cmd.Stderr = io.MultiWriter(stderr, errOut)
-	} else {
-		cmd.Stderr = errOut
+	if stdinFile, stdinOK := stdin.(*os.File); stdinOK {
+		if stdoutFile, stdoutOK := stdout.(*os.File); stdoutOK {
+			if stderrFile, stderrOK := stderr.(*os.File); stderrOK {
+				cmd.Stdin = stdinFile
+				cmd.Stdout = stdoutFile
+				cmd.Stderr = stderrFile
+			}
+		}
+	}
+	if cmd.Stdout == nil {
+		if stdout != nil {
+			cmd.Stdout = io.MultiWriter(stdout, out)
+		} else {
+			cmd.Stdout = out
+		}
+	}
+	if cmd.Stderr == nil {
+		if stderr != nil {
+			cmd.Stderr = io.MultiWriter(stderr, errOut)
+		} else {
+			cmd.Stderr = errOut
+		}
 	}
 	cmd.Env = sbxProcessEnv()
 
