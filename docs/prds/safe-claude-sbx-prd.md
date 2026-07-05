@@ -35,6 +35,7 @@ CLI 执行 preflight 检查，只有在 Clash Verge TUN 路由有效、宿主机
 
 - 第一阶段只支持 macOS 和 Docker Sandbox / `sbx` backend。
 - CLI 是唯一用户入口，提供正常运行命令和 `doctor` 检查命令。
+- 实现和研究 issue 应把缺失的本机开发工具视为可安装前置条件，而不是立即阻塞。若目标 macOS 环境缺少 `sbx`，agent 应先按 Docker 官方 macOS 流程尝试安装并登录，再确认 backend contract；只有账号登录、浏览器 OAuth、网络策略选择或系统权限交互无法自动完成时，才请求用户补充信息。
 - 配置使用 YAML，但不是扁平字段集合。MVP 配置应按职责建模，至少包含：
   - `network.clash_verge`：Clash Verge / TUN 相关设置，包括是否要求 TUN、路由检查目标、允许的 TUN 接口模式和启动时接口锁定策略。
   - `network.egress_ip`：出口 IP 检测设置，包括期望出口 IP、宿主机 IP 检查 URL、sandbox IP 检查 URL、超时和比较策略。
@@ -71,6 +72,8 @@ CLI 执行 preflight 检查，只有在 Clash Verge TUN 路由有效、宿主机
 ## 进一步说明
 
 第一阶段实现前，需要确认当前本机安装的 `sbx` CLI 的实际命令和 flag。Docker 官方文档显示 Docker Sandbox 支持 `sbx run claude`、`sbx ls`、`sbx stop` 和 `sbx rm` 等基础操作，但最终实现应以目标开发机上的 `sbx --help` 和 `sbx run --help` 为准。
+
+如果目标开发机没有 `sbx`，确认 contract 的 agent 应先尝试安装：`brew trust docker/tap`、`brew install docker/tap/sbx`。安装后运行 `sbx login`。若登录打开浏览器、要求 Docker 账号、要求选择默认 network policy 或需要系统权限且无法由 agent 完成，应把具体阻塞点写入 issue comment 并标记 `needs-info`；不能仅因为 `sbx` 缺失就停止。
 
 Clash Verge Rev 的 TUN 开关不是单一系统事实。源码中前端会更新 `enable_tun_mode`，增强配置流程会把它映射到最终 mihomo 配置的 `tun.enable`，mihomo 的 TUN 配置还包含 `device`、`auto-route`、`auto-detect-interface`、`strict-route` 等字段。MVP 不应只读取一个开关值来判断可用性，而应把“配置上已开启”和“系统路由实际可用”分开检测。
 
