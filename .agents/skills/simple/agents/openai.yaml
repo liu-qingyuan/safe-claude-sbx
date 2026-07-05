@@ -1,4 +1,0 @@
-interface:
-  display_name: "Simple"
-  short_description: "Simplify code, docs, diagrams, and prompts"
-  default_prompt: "Use $simple to simplify this artifact while preserving its intent and required behavior."

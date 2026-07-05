@@ -1,4 +1,0 @@
-interface:
-  display_name: "Ralph Plan LQY"
-  short_description: "Plan an Open Ralph GitHub issue backlog loop."
-  default_prompt: "Use $ralph-plan-lqy to create a concise Open Ralph issue-backlog command, prompt path, blocker gate, and monitoring notes."
