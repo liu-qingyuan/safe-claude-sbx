@@ -13,7 +13,36 @@ Which `sbx` commands and flags should the launcher depend on for creating, namin
 
 ### Answer
 
-Unresolved. Initial assumptions are based on Docker's public docs for `sbx run claude`, `sbx ls`, `sbx stop`, and `sbx rm`. Before implementation, verify the installed `sbx` version's actual help output on the target macOS host.
+Partially confirmed on the target macOS host with `sbx v0.34.0`.
+
+Confirmed:
+
+- `sbx` can be installed with `brew trust docker/tap` and
+  `brew install docker/tap/sbx`.
+- `command -v sbx` resolves to `/opt/homebrew/bin/sbx`.
+- `sbx create --name <name> claude <workspace>` is the clearest creation
+  command for the main Claude sandbox.
+- `sbx run claude --name <name> <workspace> -- <agent-args>` creates or
+  reattaches a main sandbox and passes agent arguments after `--`.
+- `sbx create --name <probe-name> shell <workspace>` plus `sbx exec` is the
+  preferred probe shape until authenticated runtime testing proves a smaller
+  one-shot command.
+- `sbx stop <name>` stops without removing state.
+- `sbx rm --force <name>` removes a sandbox without an interactive confirmation.
+
+Blocked:
+
+- `sbx login` opens a Docker browser device-code authentication flow and waits
+  for a human to complete it.
+- Before login, `sbx ls`, `sbx stop <name>`, and `sbx rm --force <name>` fail
+  with exit code `1` and `Not authenticated to Docker`.
+- `sbx daemon start` is a foreground daemon process; no one-shot startup
+  contract has been confirmed.
+- Runtime behavior for nonexistent cleanup targets, default policy prompts,
+  probe network access, and main-agent timezone/locale injection still requires
+  authenticated manual validation.
+
+Details and diagrams are recorded in `docs/docker-sandbox-backend.md`.
 
 ## #2: Define probe sandbox execution shape
 
@@ -26,7 +55,20 @@ How should the preflight create or reuse a temporary sandbox to run `env` and `c
 
 ### Answer
 
-Unresolved. The implementation should prefer the smallest available `sbx` command surface that can run a one-shot command in an isolated sandbox and then remove it.
+Partially confirmed. The implementation should create a named `shell` probe
+sandbox and execute validation commands inside it:
+
+```bash
+sbx create --name <probe-name> shell <workspace>
+sbx exec <probe-name> env
+sbx exec <probe-name> curl -fsS <sandbox-check-url>
+sbx rm --force <probe-name>
+```
+
+This contract depends on authenticated runtime validation to confirm that the
+`shell` probe image includes `env` and `curl`, that network policy allows the
+egress check URL, and that removing a missing or already-removed probe can be
+treated as non-fatal.
 
 ## #3: Decide first implementation language and packaging
 
@@ -65,4 +107,15 @@ What is the minimal backend interface needed for Docker Sandbox now while leavin
 
 ### Answer
 
-Unresolved. Initial shape: check availability, probe, run, stop, remove, and exec. Avoid committing to equivalent security guarantees for non-`sbx` backends until separately researched.
+Initial shape confirmed for the Docker Sandbox adapter:
+
+- Check availability and diagnostics.
+- Ensure authentication, or return a browser/account blocker.
+- Create a named probe sandbox.
+- Execute `env` and `curl` inside the probe.
+- Create or run a named main sandbox.
+- Stop the main sandbox.
+- Remove the probe sandbox.
+
+Avoid committing to equivalent security guarantees for non-`sbx` backends until
+separately researched.

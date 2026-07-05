@@ -2,13 +2,333 @@
 
 The first backend is Docker Sandbox / `sbx`.
 
-Planned behavior:
+This page records the command contract observed on the target macOS host for
+`sbx v0.34.0` on 2026-07-05. Runtime sandbox creation is still blocked until a
+human completes Docker authentication in the browser.
 
-- Check that `sbx` exists and can run.
-- Check that the user is authenticated or otherwise able to list and run sandboxes.
-- Use a temporary probe sandbox to validate sandbox egress IP and forbidden environment variables.
-- Start Claude Code through the `claude` agent backend.
-- Stop the named sandbox on watchdog failure or Ctrl+C.
-- Remove the probe sandbox after preflight.
+## Availability
 
-The exact command contract must be verified against the installed `sbx` version before implementation.
+The launcher should treat `sbx` as available only when all required preflight
+commands can run successfully.
+
+Observed installation flow:
+
+```bash
+brew trust docker/tap
+brew install docker/tap/sbx
+command -v sbx
+sbx version
+sbx diagnose
+```
+
+Observed result:
+
+- `brew trust docker/tap` succeeded.
+- `brew install docker/tap/sbx` installed the `sbx` cask successfully.
+- `command -v sbx` returned `/opt/homebrew/bin/sbx`.
+- `sbx version` returned `sbx version: v0.34.0 2eae0c4fc3894475da3318615f69783b0e7be747`.
+- `sbx diagnose` found the CLI and storage directories, but reported the daemon
+  as not reachable until `sbx daemon start` is running.
+
+`sbx daemon start` runs as a foreground process and printed:
+
+```text
+Starting daemon at /Users/liuqingyuan/Library/Application Support/com.docker.sandboxes/sandboxes/sandboxd/sandboxd.sock (Ctrl+C to stop)...
+```
+
+The command did not exit within 45 seconds. A launcher should not assume daemon
+startup is a short one-shot command unless a later manual validation proves a
+background mode or service manager contract.
+
+## Authentication Blocker
+
+`sbx login` supports browser-based login and non-interactive username/password
+input:
+
+```bash
+sbx login
+sbx login --username <docker-user> --password-stdin
+```
+
+Observed `sbx login` behavior without credentials:
+
+```text
+Your one-time device confirmation code is: <code>
+Open this URL to sign in: https://login.docker.com/activate?user_code=<code>
+Waiting for authentication...
+```
+
+The command timed out after 45 seconds waiting for browser/account
+authentication. Runtime behavior that depends on authenticated Docker Sandbox
+state must be manually validated after login.
+
+Before authentication, these commands fail with exit code `1`:
+
+```text
+ERROR: Not authenticated to Docker
+
+Sign in with: sbx login
+```
+
+Observed pre-auth commands with this behavior:
+
+- `sbx ls`
+- `sbx stop safe-claude-sbx-nonexistent`
+- `sbx rm --force safe-claude-sbx-nonexistent`
+
+## Command Contract
+
+### List Sandboxes
+
+```bash
+sbx ls
+```
+
+Use this as the authentication and backend reachability check. Before login it
+returns exit code `1` with `Not authenticated to Docker`.
+
+### Create Main Sandbox
+
+Prefer `sbx create` when the launcher needs to create the sandbox before
+attaching an agent:
+
+```bash
+sbx create --name <main-name> claude <workspace>
+```
+
+Confirmed help contract:
+
+- `sbx create [flags] AGENT PATH [PATH...]`
+- `--name string` sets the sandbox name.
+- The default name is `<agent>-<workdir>`.
+- Names allow letters, numbers, hyphens, periods, plus signs, and minus signs.
+- Additional workspace paths are accepted.
+- Append `:ro` to additional workspace paths for read-only mounts.
+- `--clone` requests a private in-container clone rather than a bind mount.
+- `--profile` assigns a governance profile.
+- `--cpus`, `--memory`, `--template`, and `--kit` are available resource/image
+  controls.
+
+### Run Or Attach Main Sandbox
+
+Use `sbx run` to attach Claude Code to a created or existing sandbox:
+
+```bash
+sbx run claude --name <main-name> <workspace> -- <agent-args>
+sbx run --name <main-name>
+```
+
+Confirmed help contract:
+
+- `sbx run [flags] [AGENT] [PATH...] [-- AGENT_ARGS...]`
+- `--name string` names the sandbox or reattaches to an existing one.
+- When reattaching by name, the agent positional argument is optional.
+- Agent arguments are passed after `--`.
+- Additional workspace paths are accepted, with `:ro` for read-only mounts.
+- `--clone`, `--profile`, `--cpus`, `--memory`, `--template`, and `--kit` are
+  supported.
+- Help text mentions `--detached (-d)`, but the observed flag list did not show
+  it. Do not depend on detached `run` until verified after login.
+
+### Probe Sandbox
+
+The MVP should use a separate probe sandbox name derived from configuration,
+for example:
+
+```bash
+sbx create --name <probe-name> shell <workspace>
+sbx exec <probe-name> env
+sbx exec <probe-name> curl -fsS <sandbox-check-url>
+sbx rm --force <probe-name>
+```
+
+The `shell` agent is listed as an available agent for `create` and `run`.
+
+Runtime validation still needs to confirm whether a `shell` probe has `env` and
+`curl` available by default, and whether any Docker Sandbox policy prompt or
+profile selection blocks network access.
+
+### Execute Validation Commands
+
+```bash
+sbx exec <sandbox-name> env
+sbx exec <sandbox-name> curl -fsS <url>
+```
+
+Confirmed help contract:
+
+- `sbx exec [flags] SANDBOX COMMAND [ARG...]`
+- If the sandbox is stopped, `sbx exec` starts it first.
+- Flags match `docker exec` behavior.
+- `--env` and `--env-file` can set environment variables for the executed
+  command.
+- `--workdir`, `--user`, `--interactive`, `--tty`, and `--detach` are available.
+
+Use `sbx exec <probe-name> env` to verify that forbidden proxy variables are not
+present. Use `sbx exec <probe-name> curl -fsS <sandbox-check-url>` to verify the
+sandbox egress IP.
+
+### Timezone, Locale, And Environment
+
+`sbx create` and `sbx run` help output did not expose a general environment flag.
+The observed environment controls are on `sbx exec`:
+
+```bash
+sbx exec --env TZ=<timezone> --env LANG=<locale> --env LC_ALL=<locale> <sandbox-name> env
+```
+
+The backend adapter should not assume main-agent timezone or locale injection is
+supported by `sbx run` until authenticated runtime validation finds a supported
+mechanism, such as a template, kit, profile, secret, or agent argument.
+
+### Stop And Cleanup
+
+Default cleanup policy:
+
+- Stop the main sandbox.
+- Remove the probe sandbox.
+- Do not remove the main sandbox.
+- Treat missing or already-stopped cleanup targets as non-fatal after their
+  authenticated exit behavior is confirmed.
+
+Confirmed help contract:
+
+```bash
+sbx stop <sandbox-name>
+sbx rm --force <sandbox-name>
+```
+
+- `sbx stop SANDBOX [SANDBOX...]` stops one or more running sandboxes without
+  removing state.
+- Stopped sandboxes can be restarted with `sbx run`.
+- `sbx rm [SANDBOX...] --force` removes sandboxes and skips confirmation.
+- `sbx rm --all --force` removes every sandbox and must not be used by the MVP.
+
+Pre-auth `stop` and `rm` fail at authentication before checking whether the
+named sandbox exists. Idempotent cleanup behavior for nonexistent authenticated
+targets still needs manual validation.
+
+## Adapter Boundary
+
+```mermaid
+graph TB
+    launcher["safe-claude-sbx launcher"]
+    config["Structured config"]
+    policy["Policy checks"]
+    backend["Docker Sandbox backend adapter"]
+    sbx["sbx CLI v0.34.0"]
+    daemon["sandboxd daemon"]
+    dockerAuth["Docker authentication"]
+    sandbox["Named sandbox"]
+    probe["Probe sandbox"]
+
+    config --> launcher
+    launcher --> policy
+    policy --> backend
+    backend --> sbx
+    sbx --> daemon
+    sbx --> dockerAuth
+    daemon --> sandbox
+    daemon --> probe
+    probe --> policy
+    sandbox --> launcher
+
+    classDef appClass fill:#e7f5ff,stroke:#1971c2,color:#0b3d66
+    classDef policyClass fill:#ffe3e3,stroke:#c92a2a,color:#5c1a1a
+    classDef backendClass fill:#e5dbff,stroke:#5f3dc4,color:#2b145e
+    classDef runtimeClass fill:#c5f6fa,stroke:#0c8599,color:#073b43
+    class launcher,config appClass
+    class policy policyClass
+    class backend,sbx backendClass
+    class daemon,dockerAuth,sandbox,probe runtimeClass
+```
+
+## Lifecycle Sequence
+
+```mermaid
+sequenceDiagram
+    participant L as Launcher
+    participant B as Backend adapter
+    participant S as sbx CLI
+    participant D as sandboxd
+    participant A as Docker auth
+    participant P as Probe sandbox
+    participant M as Main sandbox
+
+    L->>B: Check availability
+    B->>S: command -v sbx and sbx version
+    B->>S: sbx diagnose
+    S-->>B: CLI ok, daemon may be stopped
+    B->>S: sbx login
+    S->>A: Browser device-code login
+    A-->>S: Human completes login
+    S-->>B: Authenticated session
+    B->>S: sbx create --name probe shell workspace
+    S->>D: Create probe
+    D-->>P: Probe ready
+    B->>S: sbx exec probe env
+    B->>S: sbx exec probe curl check-url
+    S-->>B: Env and egress observations
+    B->>S: sbx rm --force probe
+    B->>S: sbx create --name main claude workspace
+    S->>D: Create main
+    D-->>M: Main ready
+    B->>S: sbx run claude --name main
+    M-->>L: Agent session
+    L->>B: Cleanup on exit or watchdog failure
+    B->>S: sbx stop main
+    B->>S: sbx rm --force probe
+```
+
+## Minimum Backend Interface
+
+```mermaid
+classDiagram
+    class SandboxBackend {
+        +CheckAvailability() BackendStatus
+        +EnsureAuthenticated() AuthStatus
+        +CreateProbe(config) SandboxRef
+        +Exec(sandbox, command, args) CommandResult
+        +CreateMain(config) SandboxRef
+        +RunMain(config) ProcessHandle
+        +Stop(sandbox) CleanupResult
+        +Remove(sandbox) CleanupResult
+    }
+
+    class BackendStatus {
+        +sbxPath string
+        +version string
+        +daemonReachable bool
+        +diagnostic string
+    }
+
+    class AuthStatus {
+        +authenticated bool
+        +requiresBrowser bool
+        +message string
+    }
+
+    class SandboxRef {
+        +name string
+        +agent string
+        +workspace string
+        +isProbe bool
+    }
+
+    class CommandResult {
+        +exitCode int
+        +stdout string
+        +stderr string
+    }
+
+    class CleanupResult {
+        +fatal bool
+        +message string
+    }
+
+    SandboxBackend --> BackendStatus
+    SandboxBackend --> AuthStatus
+    SandboxBackend --> SandboxRef
+    SandboxBackend --> CommandResult
+    SandboxBackend --> CleanupResult
+```
