@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/liu-qingyuan/safe-claude-sbx/internal/backend"
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/config"
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/network"
 )
@@ -32,5 +33,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "host egress ok: observed IP %s\n", result.ObservedIP)
+
+	if cfg.Sandbox.Backend != "docker-sandbox" {
+		fmt.Fprintf(stderr, "sandbox backend invalid: unsupported backend %q\n", cfg.Sandbox.Backend)
+		return 1
+	}
+	ctx, cancel := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+	defer cancel()
+
+	sandbox := backend.NewDockerSandbox()
+	availability, err := sandbox.CheckAvailability(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "sandbox backend invalid: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "sandbox backend ok: %s\n", availability.Version)
+
+	probe, err := sandbox.Probe(ctx, cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "sandbox probe invalid: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "sandbox egress ok: observed IP %s\n", probe.Egress.ObservedIP)
+	fmt.Fprintln(stdout, "sandbox inspection ok")
 	return 0
 }

@@ -19,9 +19,11 @@ func TestDoctorAcceptsValidStructuredConfig(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10))
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{EgressIP: "203.0.113.10"})
 
 	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
 	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -32,6 +34,74 @@ func TestDoctorAcceptsValidStructuredConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "host egress ok: observed IP 203.0.113.10") {
 		t.Fatalf("expected host egress observed IP, got:\n%s", output)
+	}
+	if !strings.Contains(string(output), "sandbox backend ok: sbx version: v0.34.0") {
+		t.Fatalf("expected backend availability output, got:\n%s", output)
+	}
+	if !strings.Contains(string(output), "sandbox egress ok: observed IP 203.0.113.10") {
+		t.Fatalf("expected sandbox egress output, got:\n%s", output)
+	}
+	if !strings.Contains(string(output), "sandbox inspection ok") {
+		t.Fatalf("expected sandbox inspection output, got:\n%s", output)
+	}
+	if strings.Contains(string(output), "SECRET_SHOULD_NOT_LEAK") {
+		t.Fatalf("doctor leaked raw sandbox env:\n%s", output)
+	}
+}
+
+func TestDoctorFailsClosedForSandboxBackendProblems(t *testing.T) {
+	tests := []struct {
+		name      string
+		fake      fakeSBXOptions
+		wantError string
+	}{
+		{
+			name:      "sandbox egress mismatch",
+			fake:      fakeSBXOptions{EgressIP: "198.51.100.77"},
+			wantError: "sandbox-egress-mismatch",
+		},
+		{
+			name:      "probe command failure",
+			fake:      fakeSBXOptions{EgressIP: "203.0.113.10", FailCurl: true},
+			wantError: "probe command failed",
+		},
+		{
+			name:      "version command incompatible",
+			fake:      fakeSBXOptions{EgressIP: "203.0.113.10", VersionOutput: "unexpected tool"},
+			wantError: "version-incompatible",
+		},
+		{
+			name:      "probe create failure",
+			fake:      fakeSBXOptions{EgressIP: "203.0.113.10", FailCreate: true},
+			wantError: "create probe sandbox",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintln(w, "203.0.113.10")
+			}))
+			t.Cleanup(server.Close)
+
+			configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10))
+			fakeSBX := writeFakeSBX(t, tt.fake)
+
+			cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+			cmd.Dir = "."
+			cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("doctor unexpectedly succeeded:\n%s", output)
+			}
+			if !strings.Contains(string(output), tt.wantError) {
+				t.Fatalf("expected %q in output, got:\n%s", tt.wantError, output)
+			}
+			if strings.Contains(string(output), "SECRET_SHOULD_NOT_LEAK") {
+				t.Fatalf("doctor leaked raw sandbox env:\n%s", output)
+			}
+		})
 	}
 }
 
@@ -313,4 +383,95 @@ func writeTestConfig(t *testing.T, body string) string {
 		t.Fatalf("write config: %v", err)
 	}
 	return path
+}
+
+type fakeSBXOptions struct {
+	EgressIP      string
+	VersionOutput string
+	FailCreate    bool
+	FailCurl      bool
+}
+
+func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	version := opts.VersionOutput
+	if version == "" {
+		version = "sbx version: v0.34.0 fake"
+	}
+	egressIP := opts.EgressIP
+	if egressIP == "" {
+		egressIP = "203.0.113.10"
+	}
+
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+case "$1" in
+  version)
+    printf '%%s\n' %q
+    ;;
+  ls)
+    printf 'No sandboxes found.\n'
+    ;;
+  create)
+    if [ %q = "true" ]; then
+      printf 'create failed\n' >&2
+      exit 1
+    fi
+    printf 'probe created\n'
+    ;;
+  exec)
+    case "$*" in
+      *" curl "*)
+        if [ %q = "true" ]; then
+          printf 'curl failed\n' >&2
+          exit 1
+        fi
+        printf '%%s\n' %q
+        ;;
+      *" env")
+        printf 'PATH=/usr/bin\nSECRET_SHOULD_NOT_LEAK=redacted-by-caller\n'
+        ;;
+      *" pwd")
+        printf '/workspace\n'
+        ;;
+      *" mount")
+        printf '/dev/disk1 on /workspace type virtiofs\n'
+        ;;
+      *" date")
+        printf 'Sun Jul  5 12:00:00 UTC 2026\n'
+        ;;
+      *" locale")
+        printf 'LANG=en_US.UTF-8\nLC_ALL=C.UTF-8\n'
+        ;;
+      *)
+        printf 'unknown exec: %%s\n' "$*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  stop|rm)
+    printf 'sandbox not found\n' >&2
+    exit 1
+    ;;
+  *)
+    printf 'unknown command: %%s\n' "$*" >&2
+    exit 1
+    ;;
+esac
+`, version, shellBool(opts.FailCreate), shellBool(opts.FailCurl), egressIP)
+
+	path := filepath.Join(dir, "sbx")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake sbx: %v", err)
+	}
+	return dir
+}
+
+func shellBool(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
