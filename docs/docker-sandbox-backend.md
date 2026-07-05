@@ -276,6 +276,33 @@ Inside that exec command, `TZ` and `LANG` reflected the injected values.
 This confirms per-command exec environment injection, not main-agent launch
 environment injection.
 
+### Clean Environment Research
+
+On 2026-07-05, `sbx create --help`, `sbx run --help`, and `sbx exec --help`
+were rechecked locally against `/opt/homebrew/bin/sbx`.
+
+Observed clean-env controls:
+
+- `sbx exec` supports `--env` and `--env-file` for one command inside an
+  existing sandbox.
+- `sbx create` and `sbx run` expose `--profile`, `--template`, and
+  experimental `--kit`, but their help output does not document a flag to
+  disable default environment inheritance or provide an environment allowlist.
+- No create/run help output documented a clean-env profile, template, or kit
+  contract that this launcher can safely depend on.
+
+Current launcher behavior:
+
+- The backend adapter runs `sbx` subprocesses with a small host environment
+  allowlist: `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `TMPDIR`, and `USER`.
+- The probe still inspects the sandbox environment after creation. If Docker
+  Sandbox exposes `OPENAI_API_KEY`, `SSH_AUTH_SOCK`, host proxy targets, Claude
+  credentials, or other credential-like names inside the sandbox, the launcher
+  fails closed and removes the probe when configured.
+- If a future Docker Sandbox version documents a create/run clean-env,
+  allowlist, profile, template, or kit contract, the backend adapter should use
+  that official mechanism and keep the inspection step as verification.
+
 Host-side `sbx` and `sandboxd` logs still use the host timezone. A timestamp
 such as `time=2026-07-05T21:32:31.321+08:00` should be treated as host/daemon
 log time, not proof that the sandbox main agent timezone is configured.

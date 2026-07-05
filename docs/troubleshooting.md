@@ -240,8 +240,9 @@ Expected behavior:
 Typical output:
 
 ```text
-sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.HTTP_PROXY: host proxy target visible
-sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.HTTPS_PROXY: unknown proxy target visible
+sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.HTTP_PROXY: proxy target is not Docker-managed
+sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.HTTPS_PROXY: proxy target is not Docker-managed
+sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.NO_PROXY: unknown proxy bypass policy
 ```
 
 Meaning:
@@ -269,19 +270,29 @@ Expected behavior:
 Typical output:
 
 ```text
+sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.OPENAI_API_KEY: forbidden host environment variable visible
 sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.SSH_AUTH_SOCK: forbidden host environment variable visible
 ```
 
 Meaning:
 
-- The sandbox environment contains a host-sensitive variable such as an SSH
-  agent socket, token, password, credential, Claude config path, Clash config
-  path, or Keychain-related variable.
+- The sandbox environment contains a host-sensitive variable such as an OpenAI
+  API key, SSH agent socket, token, password, credential, Claude config path,
+  Clash config path, or Keychain-related variable.
+- The launcher output intentionally names only the variable, not its value.
+- The launcher also starts `sbx` subprocesses with a small host environment
+  allowlist so `OPENAI_API_KEY`, `SSH_AUTH_SOCK`, and host proxy variables are
+  not passed to the main sandbox command.
 
 Checks:
 
-- Remove the variable from the environment used to start the launcher, or add a
-  safer backend profile/template that prevents it from appearing in the sandbox.
+- Run `safe-claude-sbx doctor --config config.yaml`.
+- Remove the variable from shell startup files, terminal profiles, or wrapper
+  scripts used to start the launcher.
+- If Docker Sandbox itself still exposes those names even when the launcher
+  runs with a clean subprocess environment, keep the launcher fail-closed and
+  follow Docker Sandbox release notes for an official clean-env, allowlist,
+  profile, template, or kit mechanism.
 - Do not paste the variable value into issues.
 
 Expected behavior:

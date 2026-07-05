@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -273,6 +274,7 @@ func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, st
 	} else {
 		cmd.Stderr = errOut
 	}
+	cmd.Env = sbxProcessEnv()
 
 	start := StartResult{
 		SandboxName: plan.SandboxName,
@@ -321,7 +323,10 @@ func (b DockerSandbox) finishProbe(ctx context.Context, cfg config.Config, resul
 	if !cfg.Cleanup.RemoveProbeSandbox {
 		return result, err
 	}
-	result.CleanupDone = b.cleanupProbe(ctx, cfg)
+	cleanupCtx, cancel := CleanupTimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+	defer cancel()
+
+	result.CleanupDone = b.cleanupProbe(cleanupCtx, cfg)
 	if result.CleanupDone {
 		return result, err
 	}
@@ -365,7 +370,13 @@ func (b DockerSandbox) execProbe(ctx context.Context, probeName string, args ...
 	result, err := b.runner().Run(ctx, b.binary(), command...)
 	if err != nil {
 		if commandName(args) == "env" {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return "", fmt.Errorf("probe command failed: env: %w", err)
+			}
 			return "", fmt.Errorf("probe command failed: env: %s", commandErrorText(result, err))
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("probe command failed: %w", err)
 		}
 		return "", fmt.Errorf("probe command failed: %s", commandText(result, err))
 	}
@@ -398,6 +409,7 @@ func (ExecRunner) Run(ctx context.Context, name string, args ...string) (Command
 	stderr := new(strings.Builder)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	cmd.Env = sbxProcessEnv()
 
 	err := cmd.Run()
 	result := CommandResult{
@@ -510,7 +522,37 @@ func exitCode(err error) int {
 
 func TimeoutContext(seconds int) (context.Context, context.CancelFunc) {
 	if seconds <= 0 {
-		seconds = 10
+		seconds = 30
 	}
 	return context.WithTimeout(context.Background(), time.Duration(seconds)*time.Second)
+}
+
+func CleanupTimeoutContext(seconds int) (context.Context, context.CancelFunc) {
+	if seconds <= 0 {
+		seconds = 30
+	}
+	return context.WithTimeout(context.Background(), time.Duration(seconds)*time.Second)
+}
+
+func sbxProcessEnv() []string {
+	allowed := map[string]bool{
+		"HOME":    true,
+		"LOGNAME": true,
+		"PATH":    true,
+		"SHELL":   true,
+		"TERM":    true,
+		"TMPDIR":  true,
+		"USER":    true,
+	}
+	env := make([]string, 0, len(allowed))
+	seen := make(map[string]bool, len(allowed))
+	for _, entry := range os.Environ() {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok || !allowed[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		env = append(env, entry)
+	}
+	return env
 }

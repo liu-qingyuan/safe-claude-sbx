@@ -21,7 +21,9 @@ safe-claude-sbx doctor --config config.yaml
   - `expected_ip`: Public IP that both host and sandbox must observe.
   - `host_check_url`: Endpoint the host uses to read its public IP.
   - `sandbox_check_url`: Endpoint the sandbox uses to read its public IP.
-  - `timeout_seconds`: Timeout for egress IP checks.
+  - `timeout_seconds`: Timeout for backend commands, sandbox probe commands,
+    cleanup attempts, and egress IP checks. Use at least `30` for real Docker
+    Sandbox probes because first-run image and daemon startup can be slow.
 - `sandbox`
   - `backend`: Runtime backend. MVP value: `docker-sandbox`.
   - `main_name`: Main Docker Sandbox name.
@@ -38,7 +40,8 @@ safe-claude-sbx doctor --config config.yaml
   - `timezone`: Sandbox timezone.
   - `locale`: Sandbox `LANG` and `LC_ALL`.
   - `forbidden_env_vars`: Host environment variables that must not appear
-    inside the sandbox. Docker-managed proxy values on
+    inside the sandbox, such as `OPENAI_API_KEY`, Claude API keys, and
+    `SSH_AUTH_SOCK`. Docker-managed proxy values on
     `gateway.docker.internal:3128` are allowed; host or unknown proxy targets
     fail closed.
 - `watchdog`
@@ -63,9 +66,10 @@ distinguish `host-egress-mismatch`, `endpoint-failure`, and
 
 After the Docker Sandbox probe runs, `doctor` validates the sandbox observation
 before printing `sandbox inspection ok`. It rejects visible sensitive mounts,
-host secrets such as `SSH_AUTH_SOCK`, token or credential-like env vars, host
-proxy values such as `127.0.0.1:7897`, and unknown proxy targets. These errors
-name the policy object and env variable but do not print captured secret values.
+host secrets such as `SSH_AUTH_SOCK`, token or credential-like env vars such as
+`OPENAI_API_KEY`, host proxy values such as `127.0.0.1:7897`, and unknown proxy
+targets. These errors name the policy object and env variable but do not print
+captured secret values.
 
 Legacy flat fields such as `expected_egress_ip`, `sandbox_name`,
 `workspace_mount`, `timezone`, and `cleanup.stop_on_exit` are not accepted by the

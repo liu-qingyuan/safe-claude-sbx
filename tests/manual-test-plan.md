@@ -441,3 +441,33 @@ Expected sandbox stop/cleanup behavior:
 
 - Failure occurs before any backend command.
 - No probe or main sandbox is created.
+
+## 15. Sensitive host environment exposed in probe
+
+Prerequisites:
+
+- Use a shell that has a test value for a sensitive variable name, for example
+  `OPENAI_API_KEY`, or observe a real `SSH_AUTH_SOCK`. Do not print or paste the
+  value.
+- Clash Verge TUN and host egress otherwise pass policy.
+
+Steps:
+
+1. Run `safe-claude-sbx doctor --config config.yaml`.
+2. If `doctor` fails on sandbox inspection, note only the variable name in the
+   error.
+3. Run `sbx ls` after the command exits.
+
+Expected CLI output:
+
+- If Docker Sandbox exposes the sensitive name inside the probe, `doctor` fails
+  with `environment.inspection.env.<NAME>`.
+- The error does not include the secret value.
+- If the probe observation is clean, `doctor` may pass; this means the current
+  Docker Sandbox environment did not expose that variable.
+
+Expected sandbox stop/cleanup behavior:
+
+- On inspection failure, the probe sandbox is removed when
+  `cleanup.remove_probe_sandbox` is `true`.
+- The launcher must not start the main sandbox after the failed probe.

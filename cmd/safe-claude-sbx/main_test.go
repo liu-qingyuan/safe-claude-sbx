@@ -40,6 +40,42 @@ func TestLaunchStartsMainSandboxAfterAllPreflightsPass(t *testing.T) {
 	}
 }
 
+func TestLaunchDoesNotPassHostSensitiveEnvironmentToMainSandboxCommand(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validLaunchConfig(t, server.URL, "203.0.113.10", 10))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:          "203.0.113.10",
+		LogPath:           logPath,
+		LogRunEnvironment: true,
+	})
+
+	cmd := exec.Command("go", "run", ".", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"OPENAI_API_KEY=SECRET_SHOULD_NOT_LEAK",
+		"SSH_AUTH_SOCK=/tmp/ssh-agent.sock",
+		"HTTP_PROXY=http://127.0.0.1:7897",
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("launch failed: %v\n%s", err, output)
+	}
+	log := readFile(t, logPath)
+	for _, forbidden := range []string{"OPENAI_API_KEY=", "SSH_AUTH_SOCK=", "HTTP_PROXY="} {
+		if strings.Contains(log, forbidden) {
+			t.Fatalf("main sandbox command inherited forbidden host env %q:\n%s", forbidden, log)
+		}
+	}
+}
+
 func TestLaunchWatchdogStopsMainSandboxWhenRouteEventChangesDefaultRoute(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "203.0.113.10")
@@ -123,6 +159,17 @@ func TestLaunchFailsClosedBeforeMainSandbox(t *testing.T) {
 				EnvOutput: "PATH=/usr/bin\nSSH_AUTH_SOCK=/Users/alice/.ssh/agent.sock\n",
 			},
 			wantError:   "environment.inspection.env.SSH_AUTH_SOCK",
+			wantCleanup: true,
+		},
+		{
+			name:       "host proxy visible in sandbox",
+			routeIface: "utun9",
+			hostEgress: "203.0.113.10",
+			fakeSBX: fakeSBXOptions{
+				EgressIP:  "203.0.113.10",
+				EnvOutput: "PATH=/usr/bin\nHTTP_PROXY=http://127.0.0.1:7897\n",
+			},
+			wantError:   "environment.inspection.env.HTTP_PROXY",
 			wantCleanup: true,
 		},
 		{
@@ -307,6 +354,14 @@ func TestDoctorFailsClosedForUnsafeSandboxInspection(t *testing.T) {
 			},
 			wantError: "environment.inspection.env.SSH_AUTH_SOCK",
 			notLeak:   "/Users/alice/.ssh/agent.sock",
+		},
+		{
+			name: "OpenAI API key",
+			fake: fakeSBXOptions{
+				EnvOutput: "PATH=/usr/bin\nOPENAI_API_KEY=SECRET_SHOULD_NOT_LEAK\n",
+			},
+			wantError: "environment.inspection.env.OPENAI_API_KEY",
+			notLeak:   "SECRET_SHOULD_NOT_LEAK",
 		},
 		{
 			name: "sensitive mount",
@@ -672,15 +727,16 @@ func writeTestConfig(t *testing.T, body string) string {
 }
 
 type fakeSBXOptions struct {
-	EgressIP      string
-	VersionOutput string
-	EnvOutput     string
-	MountOutput   string
-	LogPath       string
-	FailCreate    bool
-	FailCurl      bool
-	FailRun       bool
-	BlockRun      bool
+	EgressIP          string
+	VersionOutput     string
+	EnvOutput         string
+	MountOutput       string
+	LogPath           string
+	LogRunEnvironment bool
+	FailCreate        bool
+	FailCurl          bool
+	FailRun           bool
+	BlockRun          bool
 }
 
 func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
@@ -706,6 +762,10 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	logSnippet := ":"
 	if opts.LogPath != "" {
 		logSnippet = fmt.Sprintf("printf '%%s\\n' \"$*\" >> %q", opts.LogPath)
+	}
+	logRunEnvironmentSnippet := ":"
+	if opts.LogPath != "" && opts.LogRunEnvironment {
+		logRunEnvironmentSnippet = fmt.Sprintf("env | grep -E '^(OPENAI_API_KEY|SSH_AUTH_SOCK|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy)=' >> %q || true", opts.LogPath)
 	}
 	stopFile := filepath.Join(dir, "main-stopped")
 
@@ -757,6 +817,7 @@ case "$1" in
     esac
     ;;
   run)
+    %s
     if [ %q = "true" ]; then
       printf 'run failed\n' >&2
       exit 1
@@ -786,7 +847,7 @@ case "$1" in
     exit 1
     ;;
 esac
-`, logSnippet, version, shellBool(opts.FailCreate), shellBool(opts.FailCurl), egressIP, envOutput, mountOutput, shellBool(opts.FailRun), shellBool(opts.BlockRun), stopFile, shellBool(opts.BlockRun), stopFile)
+`, logSnippet, version, shellBool(opts.FailCreate), shellBool(opts.FailCurl), egressIP, envOutput, mountOutput, logRunEnvironmentSnippet, shellBool(opts.FailRun), shellBool(opts.BlockRun), stopFile, shellBool(opts.BlockRun), stopFile)
 
 	path := filepath.Join(dir, "sbx")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {

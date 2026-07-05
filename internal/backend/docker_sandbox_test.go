@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -195,6 +196,36 @@ func TestDockerSandboxProbeFailsClosedForUnsafeInspection(t *testing.T) {
 	}
 }
 
+func TestDockerSandboxProbeCleansUpWithIndependentContextAfterTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := timeoutCleanupRunner{
+		results: map[string]CommandResult{
+			"sbx create --name probe shell .": {Stdout: "created\n"},
+			"sbx stop probe":                  {Stderr: "sandbox not found\n"},
+			"sbx rm --force probe":            {Stderr: "sandbox not found\n"},
+		},
+		cancel: cancel,
+	}
+
+	result, err := (DockerSandbox{Runner: &runner, Binary: "sbx"}).Probe(ctx, probeConfig())
+
+	if err == nil {
+		t.Fatalf("probe unexpectedly succeeded")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+	if !result.CleanupDone {
+		t.Fatalf("expected cleanup to be marked done after timeout")
+	}
+	if runner.cleanupUsedCanceledContext {
+		t.Fatalf("cleanup reused the canceled probe context")
+	}
+	if !runner.sawStop || !runner.sawRemove {
+		t.Fatalf("expected stop and rm cleanup after timeout, got stop=%v rm=%v", runner.sawStop, runner.sawRemove)
+	}
+}
+
 func probeConfig() config.Config {
 	return config.Config{
 		Network: config.Network{
@@ -242,6 +273,47 @@ func probeRunner(env, mounts string) stubRunner {
 			"sbx stop probe":       errors.New("exit status 1"),
 			"sbx rm --force probe": errors.New("exit status 1"),
 		},
+	}
+}
+
+type timeoutCleanupRunner struct {
+	results                    map[string]CommandResult
+	cancel                     context.CancelFunc
+	sawStop                    bool
+	sawRemove                  bool
+	cleanupUsedCanceledContext bool
+}
+
+func (r *timeoutCleanupRunner) LookPath(file string) (string, error) {
+	return file, nil
+}
+
+func (r *timeoutCleanupRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
+	key := strings.Join(append([]string{name}, args...), " ")
+	switch key {
+	case "sbx exec -e TZ=UTC -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe env":
+		r.cancel()
+		return CommandResult{}, context.DeadlineExceeded
+	case "sbx stop probe":
+		r.sawStop = true
+		if ctx.Err() != nil {
+			r.cleanupUsedCanceledContext = true
+			return CommandResult{}, ctx.Err()
+		}
+		return r.results[key], errors.New("exit status 1")
+	case "sbx rm --force probe":
+		r.sawRemove = true
+		if ctx.Err() != nil {
+			r.cleanupUsedCanceledContext = true
+			return CommandResult{}, ctx.Err()
+		}
+		return r.results[key], errors.New("exit status 1")
+	default:
+		result, ok := r.results[key]
+		if !ok {
+			return CommandResult{}, fmt.Errorf("unexpected command %q", key)
+		}
+		return result, nil
 	}
 }
 
