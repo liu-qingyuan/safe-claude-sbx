@@ -1,0 +1,6 @@
+expected_egress_ip: "203.0.113.10"
+route_check_target: "1.1.1.1"
+ip_check_url: "https://api.ipify.org"
+sandbox_name: "claude-sbx"
+backend: "docker-sandbox"
+workspace_mount: "~"

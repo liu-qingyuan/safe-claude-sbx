@@ -1,0 +1,36 @@
+expected_egress_ip: "203.0.113.10"
+route_check_target: "1.1.1.1"
+ip_check_url: "https://api.ipify.org"
+ip_check_timeout_seconds: 10
+sandbox_name: "claude-sbx"
+probe_sandbox_name: "claude-sbx-probe"
+backend: "docker-sandbox"
+agent: "claude"
+workspace_mount: "."
+use_clone_mode: false
+timezone: "America/Los_Angeles"
+locale: "en_US.UTF-8"
+require_tun_interface_prefix: "utun"
+forbidden_env_vars:
+  - HTTP_PROXY
+  - HTTPS_PROXY
+  - ALL_PROXY
+  - NO_PROXY
+  - http_proxy
+  - https_proxy
+  - all_proxy
+  - no_proxy
+forbidden_mount_paths:
+  - "~"
+  - "~/.ssh"
+  - "~/.claude"
+  - "~/.config/clash"
+  - "~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev"
+  - "~/Library/Keychains"
+  - "/Library/Keychains"
+log_level: "info"
+log_file: ""
+cleanup:
+  stop_on_exit: true
+  remove_probe_sandbox: true
+  remove_main_sandbox_on_exit: false
