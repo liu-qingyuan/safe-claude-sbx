@@ -236,8 +236,9 @@ Observed runtime behavior:
   `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` as Docker-managed placeholders such
   as `proxy-managed`. The real credential value stays outside the sandbox.
 - When the host has an SSH agent, Docker Sandbox may forward it into the sandbox
-  as `SSH_AUTH_SOCK`. Private keys stay on the host, but sandbox processes can
-  request signatures from the forwarded agent.
+  as SSH forwarding environment such as `SSH_AUTH_SOCK` and
+  `SSH_AUTH_SOCK_GATEWAY`. Private keys stay on the host, but sandbox processes
+  can request signatures from the forwarded agent.
 - Docker Sandbox injects proxy variables by default inside the sandbox:
   `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `NO_PROXY`, and
   `no_proxy`.
@@ -307,7 +308,8 @@ Current launcher behavior:
 - The probe still inspects the sandbox environment after creation. Docker-managed
   credential placeholders such as `proxy-managed` are allowed, raw credential
   values fail closed, host or unknown proxy targets fail closed, and
-  `SSH_AUTH_SOCK` is allowed only when
+  SSH forwarding environment such as `SSH_AUTH_SOCK` and
+  `SSH_AUTH_SOCK_GATEWAY` is allowed only when
   `environment.allow_ssh_agent_forwarding` is explicitly `true`.
 - If a future Docker Sandbox version documents a create/run clean-env,
   allowlist, profile, template, or kit contract, the backend adapter should use

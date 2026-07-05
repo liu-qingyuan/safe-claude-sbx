@@ -36,6 +36,7 @@ environment:
     - ANTHROPIC_API_KEY
     - CLAUDE_API_KEY
     - SSH_AUTH_SOCK
+    - SSH_AUTH_SOCK_GATEWAY
     - SSH_AGENT_PID
     - HTTP_PROXY
     - HTTPS_PROXY

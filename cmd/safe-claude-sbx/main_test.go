@@ -61,6 +61,7 @@ func TestLaunchDoesNotPassHostSensitiveEnvironmentToMainSandboxCommand(t *testin
 		"PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"OPENAI_API_KEY=SECRET_SHOULD_NOT_LEAK",
 		"SSH_AUTH_SOCK=/tmp/ssh-agent.sock",
+		"SSH_AUTH_SOCK_GATEWAY=gateway.docker.internal",
 		"HTTP_PROXY=http://127.0.0.1:7897",
 	)
 
@@ -69,7 +70,7 @@ func TestLaunchDoesNotPassHostSensitiveEnvironmentToMainSandboxCommand(t *testin
 		t.Fatalf("launch failed: %v\n%s", err, output)
 	}
 	log := readFile(t, logPath)
-	for _, forbidden := range []string{"OPENAI_API_KEY=", "SSH_AUTH_SOCK=", "HTTP_PROXY="} {
+	for _, forbidden := range []string{"OPENAI_API_KEY=", "SSH_AUTH_SOCK=", "SSH_AUTH_SOCK_GATEWAY=", "HTTP_PROXY="} {
 		if strings.Contains(log, forbidden) {
 			t.Fatalf("main sandbox command inherited forbidden host env %q:\n%s", forbidden, log)
 		}
@@ -435,8 +436,9 @@ func TestDoctorAllowsSSHAgentForwardingOnlyWhenConfigured(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	socket := "/run/host-services/ssh-auth.sock"
+	gateway := "gateway.docker.internal"
 	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
-		EnvOutput: "PATH=/usr/bin\nSSH_AUTH_SOCK=" + socket + "\nHTTP_PROXY=http://gateway.docker.internal:3128\nNO_PROXY=localhost,127.0.0.1,gateway.docker.internal\n",
+		EnvOutput: "PATH=/usr/bin\nSSH_AUTH_SOCK=" + socket + "\nSSH_AUTH_SOCK_GATEWAY=" + gateway + "\nHTTP_PROXY=http://gateway.docker.internal:3128\nNO_PROXY=localhost,127.0.0.1,gateway.docker.internal\n",
 	})
 
 	defaultConfig := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10))
@@ -453,6 +455,9 @@ func TestDoctorAllowsSSHAgentForwardingOnlyWhenConfigured(t *testing.T) {
 	}
 	if strings.Contains(string(output), socket) {
 		t.Fatalf("doctor leaked SSH_AUTH_SOCK value:\n%s", output)
+	}
+	if strings.Contains(string(output), gateway) {
+		t.Fatalf("doctor leaked SSH_AUTH_SOCK_GATEWAY value:\n%s", output)
 	}
 
 	allowedConfig := writeTestConfig(t, strings.Replace(
@@ -474,6 +479,9 @@ func TestDoctorAllowsSSHAgentForwardingOnlyWhenConfigured(t *testing.T) {
 	}
 	if strings.Contains(string(output), socket) {
 		t.Fatalf("doctor leaked SSH_AUTH_SOCK value:\n%s", output)
+	}
+	if strings.Contains(string(output), gateway) {
+		t.Fatalf("doctor leaked SSH_AUTH_SOCK_GATEWAY value:\n%s", output)
 	}
 }
 
@@ -841,7 +849,7 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	}
 	logRunEnvironmentSnippet := ":"
 	if opts.LogPath != "" && opts.LogRunEnvironment {
-		logRunEnvironmentSnippet = fmt.Sprintf("env | grep -E '^(OPENAI_API_KEY|SSH_AUTH_SOCK|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy)=' >> %q || true", opts.LogPath)
+		logRunEnvironmentSnippet = fmt.Sprintf("env | grep -E '^(OPENAI_API_KEY|SSH_AUTH_SOCK|SSH_AUTH_SOCK_GATEWAY|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy)=' >> %q || true", opts.LogPath)
 	}
 	stopFile := filepath.Join(dir, "main-stopped")
 

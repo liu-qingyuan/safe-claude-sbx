@@ -272,6 +272,7 @@ Typical output:
 ```text
 sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.OPENAI_API_KEY: raw credential value visible
 sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.SSH_AUTH_SOCK: ssh agent forwarding is not allowed
+sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.SSH_AUTH_SOCK_GATEWAY: ssh agent forwarding is not allowed
 ```
 
 Meaning:
@@ -281,13 +282,14 @@ Meaning:
   or Keychain-related variable.
 - Docker-managed credential placeholders such as `proxy-managed` are allowed;
   raw credential values are rejected.
-- Docker Sandbox may forward the host SSH agent as `SSH_AUTH_SOCK`. This is
-  rejected unless `environment.allow_ssh_agent_forwarding` is explicitly `true`.
-  When enabled, sandbox processes can request SSH signatures from the host agent.
+- Docker Sandbox may forward the host SSH agent as SSH forwarding environment
+  such as `SSH_AUTH_SOCK` and `SSH_AUTH_SOCK_GATEWAY`. This is rejected unless
+  `environment.allow_ssh_agent_forwarding` is explicitly `true`. When enabled,
+  sandbox processes can request SSH signatures from the host agent.
 - The launcher output intentionally names only the variable, not its value.
 - The launcher also starts `sbx` subprocesses with a small host environment
-  allowlist so `OPENAI_API_KEY`, `SSH_AUTH_SOCK`, and host proxy variables are
-  not passed to the main sandbox command.
+  allowlist so `OPENAI_API_KEY`, `SSH_AUTH_SOCK`, `SSH_AUTH_SOCK_GATEWAY`, and
+  host proxy variables are not passed to the main sandbox command.
 
 Checks:
 
@@ -296,8 +298,9 @@ Checks:
   scripts used to start the launcher.
 - If Docker Sandbox exposes API credential names as `proxy-managed`, no action is
   required.
-- If `SSH_AUTH_SOCK` appears and this workflow needs Git-over-SSH, set
-  `environment.allow_ssh_agent_forwarding: true`; otherwise leave it disabled.
+- If `SSH_AUTH_SOCK` or `SSH_AUTH_SOCK_GATEWAY` appears and this workflow needs
+  Git-over-SSH, set `environment.allow_ssh_agent_forwarding: true`; otherwise
+  leave it disabled.
 - Do not paste the variable value into issues.
 
 Expected behavior:

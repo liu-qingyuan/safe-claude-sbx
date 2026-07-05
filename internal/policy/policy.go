@@ -104,7 +104,7 @@ func validateEnvironment(policy InspectionPolicy, env map[string]string) error {
 			}
 			continue
 		}
-		if isSSHAuthSockEnv(name) {
+		if isSSHAgentForwardingEnv(name) {
 			if err := validateSSHAgentEnv(policy, name, value); err != nil {
 				return err
 			}
@@ -130,8 +130,20 @@ func validateSSHAgentEnv(policy InspectionPolicy, name, value string) error {
 	if !policy.AllowSSHAgentForwarding {
 		return fmt.Errorf("environment.inspection.env.%s: ssh agent forwarding is not allowed", name)
 	}
-	if strings.TrimSpace(value) == "" {
-		return fmt.Errorf("environment.inspection.env.%s: ssh agent socket path missing", name)
+	trimmed := strings.TrimSpace(value)
+	if strings.EqualFold(name, "SSH_AUTH_SOCK") {
+		if trimmed == "" {
+			return fmt.Errorf("environment.inspection.env.%s: ssh agent socket path missing", name)
+		}
+		if !filepath.IsAbs(trimmed) || valueMentionsSensitivePath(trimmed, policy.Workspace) {
+			return fmt.Errorf("environment.inspection.env.%s: ssh agent socket path is not Docker-managed", name)
+		}
+		return nil
+	}
+	if strings.EqualFold(name, "SSH_AUTH_SOCK_GATEWAY") {
+		if !isDockerGatewayHost(trimmed) {
+			return fmt.Errorf("environment.inspection.env.%s: ssh agent gateway is not Docker-managed", name)
+		}
 	}
 	return nil
 }
@@ -209,8 +221,8 @@ func isDockerManagedCredentialPlaceholder(name, value string) bool {
 	return isCredentialEnvName(name) && strings.TrimSpace(value) == "proxy-managed"
 }
 
-func isSSHAuthSockEnv(name string) bool {
-	return strings.EqualFold(name, "SSH_AUTH_SOCK")
+func isSSHAgentForwardingEnv(name string) bool {
+	return strings.EqualFold(name, "SSH_AUTH_SOCK") || strings.EqualFold(name, "SSH_AUTH_SOCK_GATEWAY")
 }
 
 func isProxyEnv(name string) bool {
@@ -248,6 +260,14 @@ func proxyTarget(raw string) (string, string, bool) {
 		}
 	}
 	return strings.Trim(host, "[]"), port, true
+}
+
+func isDockerGatewayHost(raw string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return false
+	}
+	host, _, ok := proxyTarget(raw)
+	return ok && strings.EqualFold(host, "gateway.docker.internal")
 }
 
 func dockerManagedNoProxy(raw string) bool {
@@ -324,6 +344,7 @@ func defaultForbiddenPaths() []string {
 func defaultForbiddenEnvNames() []string {
 	return []string{
 		"SSH_AUTH_SOCK",
+		"SSH_AUTH_SOCK_GATEWAY",
 		"SSH_AGENT_PID",
 		"ANTHROPIC_API_KEY",
 		"CLAUDE_API_KEY",

@@ -450,15 +450,16 @@ Prerequisites:
   Docker-managed credential placeholders, for example `OPENAI_API_KEY` or
   `ANTHROPIC_API_KEY` with value class `proxy-managed`.
 - If the host has an SSH agent, observe whether Docker Sandbox forwards
-  `SSH_AUTH_SOCK`. Do not print or paste any credential or socket value.
+  `SSH_AUTH_SOCK` or `SSH_AUTH_SOCK_GATEWAY`. Do not print or paste any
+  credential, socket, or gateway value.
 - Clash Verge TUN and host egress otherwise pass policy.
 
 Steps:
 
 1. Run `safe-claude-sbx doctor --config config.yaml` with
    `environment.allow_ssh_agent_forwarding: false`.
-2. If `SSH_AUTH_SOCK` is observed, confirm `doctor` fails and note only the
-   variable name in the error.
+2. If `SSH_AUTH_SOCK` or `SSH_AUTH_SOCK_GATEWAY` is observed, confirm `doctor`
+   fails and note only the variable name in the error.
 3. Set `environment.allow_ssh_agent_forwarding: true` only if this workflow
    accepts sandbox processes requesting SSH agent signatures, then rerun
    `doctor`.
@@ -469,7 +470,8 @@ Expected CLI output:
 - Docker-managed credential placeholders pass inspection.
 - Raw credential values fail with `environment.inspection.env.<NAME>` and do not
   include the value.
-- `SSH_AUTH_SOCK` fails by default and passes only when explicitly allowed.
+- `SSH_AUTH_SOCK` and `SSH_AUTH_SOCK_GATEWAY` fail by default and pass only
+  when explicitly allowed with Docker-managed socket and gateway shapes.
 
 Expected sandbox stop/cleanup behavior:
 

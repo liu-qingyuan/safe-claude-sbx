@@ -140,9 +140,11 @@ func TestValidateInspectionFailsClosedForForbiddenEnvWithoutLeakingValue(t *test
 
 func TestValidateInspectionAllowsSSHAgentForwardingOnlyWhenConfigured(t *testing.T) {
 	socket := "/run/host-services/ssh-auth.sock"
+	gateway := "gateway.docker.internal"
 	observation := InspectionObservation{
 		Environment: map[string]string{
-			"SSH_AUTH_SOCK": socket,
+			"SSH_AUTH_SOCK":         socket,
+			"SSH_AUTH_SOCK_GATEWAY": gateway,
 		},
 		WorkingDirectory: "/workspace",
 		Mounts:           "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)",
@@ -170,10 +172,68 @@ func TestValidateInspectionAllowsSSHAgentForwardingOnlyWhenConfigured(t *testing
 	if !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
 		t.Fatalf("expected SSH_AUTH_SOCK in error, got %v", err)
 	}
+	if strings.Contains(err.Error(), gateway) {
+		t.Fatalf("policy error leaked SSH_AUTH_SOCK_GATEWAY value: %v", err)
+	}
 
 	policy.AllowSSHAgentForwarding = true
 	if err := ValidateInspection(policy, observation); err != nil {
 		t.Fatalf("expected configured SSH agent forwarding to be accepted: %v", err)
+	}
+}
+
+func TestValidateInspectionRejectsUnexpectedSSHAgentForwardingShapes(t *testing.T) {
+	tests := []struct {
+		name       string
+		envName    string
+		envValue   string
+		wantReason string
+	}{
+		{
+			name:       "socket is not a path",
+			envName:    "SSH_AUTH_SOCK",
+			envValue:   "not-a-socket-path",
+			wantReason: "ssh agent socket path is not Docker-managed",
+		},
+		{
+			name:       "gateway is not Docker-managed",
+			envName:    "SSH_AUTH_SOCK_GATEWAY",
+			envValue:   "host.docker.internal",
+			wantReason: "ssh agent gateway is not Docker-managed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateInspection(InspectionPolicy{
+				Workspace: WorkspacePolicy{
+					Mount:          ".",
+					ForbiddenPaths: []string{"~", "~/.ssh"},
+					HomeDir:        "/Users/alice",
+					WorkingDir:     "/Users/alice/work/safe-claude-sbx",
+				},
+				Timezone:                "America/Los_Angeles",
+				Locale:                  "en_US.UTF-8",
+				AllowSSHAgentForwarding: true,
+			}, InspectionObservation{
+				Environment: map[string]string{
+					tt.envName: tt.envValue,
+				},
+				WorkingDirectory: "/workspace",
+				Mounts:           "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)",
+				Date:             "Sun Jul  5 12:00:00 PDT 2026",
+				Locale:           "LANG=en_US.UTF-8",
+			})
+			if err == nil {
+				t.Fatalf("expected unexpected SSH forwarding shape to fail closed")
+			}
+			if !strings.Contains(err.Error(), tt.envName) || !strings.Contains(err.Error(), tt.wantReason) {
+				t.Fatalf("expected %s diagnostic with %q, got %v", tt.envName, tt.wantReason, err)
+			}
+			if strings.Contains(err.Error(), tt.envValue) {
+				t.Fatalf("policy error leaked SSH forwarding value: %v", err)
+			}
+		})
 	}
 }
 

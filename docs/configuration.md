@@ -39,10 +39,11 @@ safe-claude-sbx doctor --config config.yaml
 - `environment`
   - `timezone`: Sandbox timezone.
   - `locale`: Sandbox `LANG` and `LC_ALL`.
-  - `allow_ssh_agent_forwarding`: Whether Docker Sandbox's forwarded
-    `SSH_AUTH_SOCK` is allowed. The default is `false`; enabling it means
-    sandbox processes can ask the host SSH agent to sign operations, while
-    private keys remain on the host.
+  - `allow_ssh_agent_forwarding`: Whether Docker Sandbox's forwarded SSH agent
+    environment family, including `SSH_AUTH_SOCK` and
+    `SSH_AUTH_SOCK_GATEWAY`, is allowed. The default is `false`; enabling it
+    means sandbox processes can ask the host SSH agent to sign operations,
+    while private keys remain on the host.
   - `forbidden_env_vars`: Host environment variables that must not appear
     inside the sandbox as raw values, such as `OPENAI_API_KEY` and Claude API
     keys. Docker-managed credential placeholders such as `proxy-managed` are
@@ -71,7 +72,8 @@ distinguish `host-egress-mismatch`, `endpoint-failure`, and
 After the Docker Sandbox probe runs, `doctor` validates the sandbox observation
 before printing `sandbox inspection ok`. It rejects visible sensitive mounts,
 raw token or credential-like env values such as `OPENAI_API_KEY`, unexpected
-`SSH_AUTH_SOCK` forwarding, host proxy values such as `127.0.0.1:7897`, and
+SSH agent forwarding env such as `SSH_AUTH_SOCK` and
+`SSH_AUTH_SOCK_GATEWAY`, host proxy values such as `127.0.0.1:7897`, and
 unknown proxy targets. Docker-managed credential placeholders are allowed.
 These errors name the policy object and env variable but do not print captured
 secret values.
