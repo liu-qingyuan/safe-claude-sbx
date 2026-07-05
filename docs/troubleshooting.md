@@ -6,7 +6,7 @@ Clash Verge TUN mode may be off, another VPN may own the route, or macOS may hav
 
 ## Host IP mismatch
 
-The configured `expected_egress_ip` does not match the IP returned by the configured IP check URL.
+The configured `network.egress_ip.expected_ip` does not match the IP returned by `network.egress_ip.host_check_url`. Confirm the endpoint returns a plain IP address and that the host is using the expected network path.
 
 ## Sandbox IP mismatch
 

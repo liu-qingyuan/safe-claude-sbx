@@ -21,7 +21,7 @@ The project is intended for compliant local development workflows. It does not b
 
 ## Current Status
 
-This repository is initialized with planning artifacts only. The first implementation target is the Docker Sandbox / `sbx` MVP described in:
+This repository is implementing the Docker Sandbox / `sbx` MVP described in:
 
 - `docs/prds/safe-claude-sbx-prd.md`
 - `docs/decision-maps/safe-claude-sbx.md`
@@ -36,7 +36,7 @@ safe-claude-sbx doctor --config config.yaml
 
 ## Configuration
 
-Copy `config.example.yaml` to `config.yaml` and set `expected_egress_ip` before running the future CLI.
+Copy `config.example.yaml` to `config.yaml`, then set `network.egress_ip.expected_ip` and `network.egress_ip.host_check_url` for your local network policy before running `doctor`.
 
 ## Safety Notice
 

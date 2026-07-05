@@ -4,7 +4,8 @@ The CLI reads a structured YAML file with separate objects for network policy,
 sandbox behavior, workspace mount policy, runtime environment, watchdog logging,
 and cleanup behavior. See `config.example.yaml` for a complete example.
 
-Run the configuration doctor before starting a sandbox:
+Run the doctor before starting a sandbox. It validates the configuration and
+checks that the host public egress IP matches `network.egress_ip.expected_ip`:
 
 ```bash
 safe-claude-sbx doctor --config config.yaml
@@ -45,9 +46,12 @@ safe-claude-sbx doctor --config config.yaml
 
 ## Validation
 
-`doctor --config` fails closed when required objects or fields are missing. Error
-messages include object paths such as `network.clash_verge` or
-`network.egress_ip.expected_ip`.
+`doctor --config` fails closed when required objects or fields are missing, when
+`network.egress_ip.expected_ip` is not an IP address, or when the host egress
+check cannot prove that the observed public IP matches the configured expected
+IP. Error messages include object paths such as `network.clash_verge` or
+`network.egress_ip.expected_ip`, and host egress failures distinguish
+`host-egress-mismatch`, `endpoint-failure`, and `response-parse-failure`.
 
 Legacy flat fields such as `expected_egress_ip`, `sandbox_name`,
 `workspace_mount`, `timezone`, and `cleanup.stop_on_exit` are not accepted by the

@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"net/netip"
 	"os"
 	"sort"
 	"strings"
@@ -69,22 +70,30 @@ type Cleanup struct {
 }
 
 func LoadAndValidate(path string) error {
+	_, err := Load(path)
+	return err
+}
+
+func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read config: %w", err)
+		return Config{}, fmt.Errorf("read config: %w", err)
 	}
 	if err := inspectTopLevelConfig(data); err != nil {
-		return err
+		return Config{}, err
 	}
 
 	var cfg Config
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
-		return fmt.Errorf("parse YAML: %w", err)
+		return Config{}, fmt.Errorf("parse YAML: %w", err)
 	}
 
-	return cfg.Validate()
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 func inspectTopLevelConfig(data []byte) error {
@@ -171,6 +180,9 @@ func (c Config) Validate() error {
 	}
 	if c.Network.EgressIP.TimeoutSeconds <= 0 {
 		return fmt.Errorf("invalid field network.egress_ip.timeout_seconds: must be greater than 0")
+	}
+	if _, err := netip.ParseAddr(strings.TrimSpace(c.Network.EgressIP.ExpectedIP)); err != nil {
+		return fmt.Errorf("invalid field network.egress_ip.expected_ip: must be an IP address")
 	}
 	if len(c.Workspace.ForbiddenPaths) == 0 {
 		return fmt.Errorf("missing required field workspace.forbidden_paths")

@@ -1,24 +1,120 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDoctorAcceptsValidStructuredConfig(t *testing.T) {
-	configPath := writeTestConfig(t, `
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10))
+
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+	cmd.Dir = "."
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("doctor failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "configuration ok") {
+		t.Fatalf("expected config success output, got:\n%s", output)
+	}
+	if !strings.Contains(string(output), "host egress ok: observed IP 203.0.113.10") {
+		t.Fatalf("expected host egress observed IP, got:\n%s", output)
+	}
+}
+
+func TestDoctorFailsClosedForHostEgressProblems(t *testing.T) {
+	tests := []struct {
+		name        string
+		serverBody  string
+		handler     http.HandlerFunc
+		closeServer bool
+		wantError   string
+	}{
+		{
+			name:       "mismatch",
+			serverBody: "198.51.100.77\n",
+			wantError:  "host-egress-mismatch",
+		},
+		{
+			name:       "empty response",
+			serverBody: "\n",
+			wantError:  "response-parse-failure",
+		},
+		{
+			name:       "non IP response",
+			serverBody: "not an ip\n",
+			wantError:  "response-parse-failure",
+		},
+		{
+			name: "timeout",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				time.Sleep(1500 * time.Millisecond)
+				fmt.Fprintln(w, "203.0.113.10")
+			},
+			wantError: "endpoint-failure",
+		},
+		{
+			name:        "network error",
+			serverBody:  "203.0.113.10\n",
+			closeServer: true,
+			wantError:   "endpoint-failure",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := tt.handler
+			if handler == nil {
+				handler = func(w http.ResponseWriter, r *http.Request) {
+					fmt.Fprint(w, tt.serverBody)
+				}
+			}
+			server := httptest.NewServer(handler)
+			if tt.closeServer {
+				server.Close()
+			} else {
+				t.Cleanup(server.Close)
+			}
+
+			configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 1))
+			cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+			cmd.Dir = "."
+
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("doctor unexpectedly succeeded:\n%s", output)
+			}
+			if !strings.Contains(string(output), tt.wantError) {
+				t.Fatalf("expected %q in output, got:\n%s", tt.wantError, output)
+			}
+		})
+	}
+}
+
+func validConfig(hostCheckURL, expectedIP string, timeoutSeconds int) string {
+	return fmt.Sprintf(`
 network:
   clash_verge:
     route_check_target: "1.1.1.1"
     tun_interface_prefix: "utun"
   egress_ip:
-    expected_ip: "203.0.113.10"
-    host_check_url: "https://api.ipify.org"
+    expected_ip: %q
+    host_check_url: %q
     sandbox_check_url: "https://api.ipify.org"
-    timeout_seconds: 10
+    timeout_seconds: %d
 sandbox:
   backend: "docker-sandbox"
   main_name: "claude-sbx"
@@ -46,18 +142,7 @@ cleanup:
   stop_main_sandbox: true
   remove_probe_sandbox: true
   remove_main_sandbox: false
-`)
-
-	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
-	cmd.Dir = "."
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("doctor failed: %v\n%s", err, output)
-	}
-	if !strings.Contains(string(output), "configuration ok") {
-		t.Fatalf("expected success output, got:\n%s", output)
-	}
+`, expectedIP, hostCheckURL, timeoutSeconds)
 }
 
 func TestDoctorRejectsMissingRequiredObjectPath(t *testing.T) {

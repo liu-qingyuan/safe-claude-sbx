@@ -4,7 +4,7 @@ network:
     route_check_target: "1.1.1.1"
     tun_interface_prefix: "utun"
   egress_ip:
-    expected_ip: "x.x.x.x"
+    expected_ip: "203.0.113.10"
     host_check_url: "https://api.ipify.org"
     sandbox_check_url: "https://api.ipify.org"
     timeout_seconds: 10
