@@ -1,0 +1,12 @@
+interface:
+  display_name: "GitNexus"
+  short_description: "Guide and refresh local GitNexus code graphs"
+  default_prompt: "Use $gitnexus to check local GitNexus status, refresh/index after graph-affecting edits, choose the right GitNexus-related skill, and ground graph claims with source or test evidence."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "gitnexus"
+      description: "Optional local GitNexus MCP server for indexed repository graph context"
+      transport: "stdio"
+policy:
+  allow_implicit_invocation: true

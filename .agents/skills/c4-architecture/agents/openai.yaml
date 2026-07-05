@@ -1,0 +1,4 @@
+interface:
+  display_name: "C4 Architecture"
+  short_description: "Generate C4 architecture diagrams in Mermaid."
+  default_prompt: "Use $c4-architecture to document this system with C4 Context and Container diagrams."

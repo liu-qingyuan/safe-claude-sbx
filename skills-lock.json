@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "skills": {
+    "c4-architecture": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-curated/c4-architecture/SKILL.md",
+      "computedHash": "a4271e259b302d677e17ce641c5ebdc899a1469054a6db7f0afd43adb3863b69"
+    },
+    "codebase-design-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/codebase-design-lqy/SKILL.md",
+      "computedHash": "2a473b6859a4348af1f84c1839a7b3075de04fd153073bfc92420cee79aa62bc"
+    },
+    "decision-mapping-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-in-progress/decision-mapping-lqy/SKILL.md",
+      "computedHash": "552d5f37d55d397876453a392754a9c7836d2e6496cbe21a55a698e37b0d3bdd"
+    },
+    "diagnosing-bugs-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/diagnosing-bugs-lqy/SKILL.md",
+      "computedHash": "c1b6fcc66a3353dcad4c34dec58ca796c3dca666be144778948835f3ad674df1"
+    },
+    "domain-modeling-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/domain-modeling-lqy/SKILL.md",
+      "computedHash": "e5e53765904a93cdeae017a001ba4f9716dd84b53810d231120666f3b1a0df36"
+    },
+    "gitnexus": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-local/gitnexus/SKILL.md",
+      "computedHash": "42f2f18e032affa264bc3d81a3062a0e0113aea1765e2c3fb3eb98f3e7aa5833"
+    },
+    "grill-me-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/grill-me-lqy/SKILL.md",
+      "computedHash": "31f4e5de3d808d505a365d287589a94b483902f24c10362b6fffbe979aec7a80"
+    },
+    "grill-with-docs-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/grill-with-docs-lqy/SKILL.md",
+      "computedHash": "710c357751d77185a69dc930d168360c66132db7545e3dff17f710d8aa33d1dc"
+    },
+    "grilling-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/grilling-lqy/SKILL.md",
+      "computedHash": "5f3a64487e98486e578b664fc1a48503a92176ec857162fbc6e251a1975a0c0e"
+    },
+    "handoff-out": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-local/handoff-out/SKILL.md",
+      "computedHash": "75773894fa5a491e4e2f5f1b6bbddc0396e51448248c17a86755f077367ab816"
+    },
+    "implement-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/implement-lqy/SKILL.md",
+      "computedHash": "1f4181f0917e902aefb85ee9997ac5c7ea500ad7154c38bf103a5b3b5c7ff97f"
+    },
+    "improve-codebase-architecture-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/improve-codebase-architecture-lqy/SKILL.md",
+      "computedHash": "7009a5ed52a3100fb5a6e368e6b7d572ab121e3dd69c2695ba0997406365b659"
+    },
+    "loop-me-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-in-progress/loop-me-lqy/SKILL.md",
+      "computedHash": "43106015c4c29b67bc84038d1bd90b68b52cd3610560eede7ae907bb40c2ee66"
+    },
+    "mermaid-visualizer": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-curated/mermaid-visualizer/SKILL.md",
+      "computedHash": "4cd0c51a2c2568ddff0b1b21b6a82f7ee2369d60f32f5a34e784588bf5f8c2b4"
+    },
+    "pact": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-curated/pact/SKILL.md",
+      "computedHash": "2d8d32781c37d915bab118927aeac1d66523458b94b2978558e45ea2a919c09f"
+    },
+    "pea": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-local/pea/SKILL.md",
+      "computedHash": "e617d03911fc5035083e80af05d2810f6f8f9538f749c31f4a98f9a5c7fefb2f"
+    },
+    "playwright-ci": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-curated/playwright-ci/SKILL.md",
+      "computedHash": "dd770b38d456d4866299d2cd1526eae007573694fcbce9aacf7cdc552f54b528"
+    },
+    "playwright-cli": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-curated/playwright-cli/SKILL.md",
+      "computedHash": "0a16f6d2b0906e51803fbe7de8760e9192424b7e2687d3c633ca73b67bf2cc23"
+    },
+    "playwright-core": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-curated/playwright-core/SKILL.md",
+      "computedHash": "96c32439c12b8754edaf6210e31b207c253325e3b21378bb49868926aa19d061"
+    },
+    "ralph-plan-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-local/ralph-plan-lqy/SKILL.md",
+      "computedHash": "77356f19230f3669ffd84ea62b2d6a041e7497f2a292eff7d349a3d88c998e30"
+    },
+    "resolving-merge-conflicts-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/resolving-merge-conflicts-lqy/SKILL.md",
+      "computedHash": "75a7423b924e416adb2fe6f7ac0bc388e3ff936a6caa4bd43b3f8fa335398fb8"
+    },
+    "setup-matt-pocock-skills-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/setup-matt-pocock-skills-lqy/SKILL.md",
+      "computedHash": "5e4ad8ad90e5e96e60c2beb8337a8459feb092a55ca71bc76b3928b0062c8576"
+    },
+    "simple": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-local/simple/SKILL.md",
+      "computedHash": "c4bb090239ebb26585cc4191a306b4148f127260868a681b852eccb7aa9286d9"
+    },
+    "tdd-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/tdd-lqy/SKILL.md",
+      "computedHash": "e40ae0bb816f36f941fc0742c6a95a1d20ee33a026b0fbda72d68a60f351b5b5"
+    },
+    "tea": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/lqy-local/tea/SKILL.md",
+      "computedHash": "af1016e55e078dfa2f552355c2203a47b2af08d777ff5040f945deab7ff63de9"
+    },
+    "teach-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/teach-lqy/SKILL.md",
+      "computedHash": "47334f75ab144ef39ebf92c60dcc43fa9cba7309836c5b5dfd502bd7051f561f"
+    },
+    "to-issues-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/to-issues-lqy/SKILL.md",
+      "computedHash": "a71853dc7e54e7d027f91fd723a2dd9f104e14fbe5cc0f37c712169d159f311e"
+    },
+    "to-prd-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/to-prd-lqy/SKILL.md",
+      "computedHash": "160d48d4731ba5d24b4be664ca03ad756e30c2af616811ffbbd550816bc6bed9"
+    },
+    "triage-lqy": {
+      "source": "liu-qingyuan/skills-sync-lqy",
+      "sourceType": "github",
+      "skillPath": "skills/matt-lqy-core/triage-lqy/SKILL.md",
+      "computedHash": "b9cf329f91a9367b7f89000ea3848b1db9d9eff924dcb1f520df70670817b169"
+    }
+  }
+}
