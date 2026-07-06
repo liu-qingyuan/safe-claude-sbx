@@ -95,6 +95,10 @@ func ValidateInspection(policy InspectionPolicy, observation InspectionObservati
 	return nil
 }
 
+func ValidateWorkspaceVisibility(observation WorkspaceVisibilityObservation) error {
+	return validateWorkspaceVisibility(observation)
+}
+
 func validateMountObservation(policy WorkspacePolicy, mounts string) error {
 	forbidden := allForbiddenPaths(policy)
 	for _, forbiddenPath := range forbidden {

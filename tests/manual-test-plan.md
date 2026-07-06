@@ -460,7 +460,10 @@ Steps:
 3. Remove the parent `CLAUDE.md` marker and rerun `doctor`.
 4. Remove the sibling marker or enable a stricter isolation mode such as
    `workspace.use_clone_mode: true` when supported, then rerun `doctor`.
-5. Run `sbx ls` after each failure.
+5. With markers restored, run `safe-claude-sbx --config config.yaml`.
+6. For sandbox-local Herdr, run `safe-herdr --config herdr-config.yaml` against
+   a disposable existing main sandbox.
+7. Run `sbx ls` after each failure.
 
 Expected CLI output:
 
@@ -477,7 +480,10 @@ Expected sandbox stop/cleanup behavior:
 
 - On inspection failure, the probe sandbox is removed when
   `cleanup.remove_probe_sandbox` is `true`.
-- The main sandbox is not started after the failed visibility inspection.
+- When the probe visibility inspection fails, the main sandbox is not started.
+- When the real main sandbox visibility inspection fails after launcher start
+  or `safe-herdr` attach, the launcher stops the main sandbox and does not enter
+  watchdog supervision.
 
 ## 16. Credential placeholders and SSH agent forwarding in probe
 

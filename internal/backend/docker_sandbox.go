@@ -278,6 +278,25 @@ func (b DockerSandbox) CheckRuntimeEgress(ctx context.Context, cfg config.Config
 	return result, nil
 }
 
+func (b DockerSandbox) CheckMainWorkspaceVisibility(ctx context.Context, cfg config.Config) (policy.WorkspaceVisibilityObservation, error) {
+	workspace, err := resolveWorkspaceVisibilityPath(cfg.Workspace.Mount)
+	if err != nil {
+		return policy.WorkspaceVisibilityObservation{}, fmt.Errorf("main sandbox workspace visibility inspection: resolve workspace mount: %w", err)
+	}
+	output, err := b.execRuntimeMain(ctx, cfg, "sh", "-lc", workspaceVisibilityScript(workspace))
+	if err != nil {
+		return policy.WorkspaceVisibilityObservation{}, fmt.Errorf("main sandbox workspace visibility inspection: %w", err)
+	}
+	visibility, err := parseWorkspaceVisibility(output)
+	if err != nil {
+		return policy.WorkspaceVisibilityObservation{}, err
+	}
+	if err := policy.ValidateWorkspaceVisibility(visibility); err != nil {
+		return visibility, fmt.Errorf("main sandbox inspection invalid: %w", err)
+	}
+	return visibility, nil
+}
+
 func egressTimeoutContext(parent context.Context, seconds int) (context.Context, context.CancelFunc) {
 	if seconds <= 0 {
 		seconds = 30

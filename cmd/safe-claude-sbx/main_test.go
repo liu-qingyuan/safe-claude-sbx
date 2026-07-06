@@ -40,6 +40,44 @@ func TestLaunchStartsMainSandboxAfterAllPreflightsPass(t *testing.T) {
 	}
 }
 
+func TestLaunchFailsClosedWhenMainSandboxWorkspaceVisibilityEscapes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validLaunchConfig(t, server.URL, "203.0.113.10", 10))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:             "203.0.113.10",
+		LogPath:              logPath,
+		MainVisibilityOutput: "parent-guidance-readable=/Users/alice/work/CLAUDE.md\n",
+	})
+
+	cmd := exec.Command("go", "run", ".", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("launch unexpectedly succeeded with escaping main sandbox visibility:\n%s\nsbx log:\n%s", output, readFile(t, logPath))
+	}
+	if !strings.Contains(string(output), "main sandbox inspection invalid") || !strings.Contains(string(output), "workspace.inspection.visibility.parent_guidance") {
+		t.Fatalf("expected main sandbox visibility diagnostic, got:\n%s", output)
+	}
+	if strings.Contains(string(output), "TOP_SECRET_PARENT_GUIDANCE") {
+		t.Fatalf("launch leaked parent guidance contents:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	runIndex := strings.Index(log, "run claude --name claude-sbx .")
+	visibilityIndex := strings.Index(log, "exec claude-sbx sh -lc workspace=")
+	stopIndex := strings.LastIndex(log, "\nstop claude-sbx\n")
+	if runIndex < 0 || visibilityIndex < 0 || stopIndex < 0 || !(runIndex < visibilityIndex && visibilityIndex < stopIndex) {
+		t.Fatalf("expected main sandbox run, visibility inspection, then cleanup stop, got:\n%s", log)
+	}
+}
+
 func TestLaunchDoesNotPassHostSensitiveEnvironmentToMainSandboxCommand(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "203.0.113.10")
@@ -1501,6 +1539,7 @@ type fakeSBXOptions struct {
 	EnvOutput             string
 	MountOutput           string
 	VisibilityOutput      string
+	MainVisibilityOutput  string
 	LogPath               string
 	LogRunEnvironment     bool
 	FailCreate            bool
@@ -1538,6 +1577,10 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	visibilityOutput := opts.VisibilityOutput
 	if visibilityOutput == "" {
 		visibilityOutput = "ok\n"
+	}
+	mainVisibilityOutput := opts.MainVisibilityOutput
+	if mainVisibilityOutput == "" {
+		mainVisibilityOutput = visibilityOutput
 	}
 	existingMainWorkspace := opts.ExistingMainWorkspace
 	if existingMainWorkspace == "" {
@@ -1585,6 +1628,9 @@ case "$1" in
           exit 1
         fi
         printf '%%s\n' %q
+        ;;
+      *" claude-sbx sh -lc workspace="*)
+        printf '%%b' %q
         ;;
       *" sh -lc workspace="*)
         printf '%%b' %q
@@ -1710,6 +1756,7 @@ esac
 		shellBool(opts.FailCreate),
 		shellBool(opts.FailCurl),
 		egressIP,
+		mainVisibilityOutput,
 		visibilityOutput,
 		envOutput,
 		mountOutput,

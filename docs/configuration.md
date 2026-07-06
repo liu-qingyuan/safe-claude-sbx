@@ -161,13 +161,16 @@ values such as `OPENAI_API_KEY`, unexpected SSH agent forwarding env such as
 placeholders are allowed. These errors name the policy object and env variable
 but do not print captured secret values.
 
-The probe also checks workspace visibility. The configured workspace is the only
-project tree expected to be readable by Herdr, Claude Code, and the `cc` process
-started inside Herdr because they share the same Docker Sandbox filesystem
-view. If the sandbox can read a parent `CLAUDE.md` guidance file or a file under
-a sibling project directory, `doctor` and launcher startup fail closed with
-`workspace.inspection.visibility.*`. The diagnostic names the readable
-non-workspace path but does not print file contents.
+The probe and the configured main sandbox both check workspace visibility. The
+configured workspace is the only project tree expected to be readable by Herdr,
+Claude Code, and the `cc` process started inside Herdr because they share the
+same Docker Sandbox filesystem view. If either sandbox can read a parent
+`CLAUDE.md` guidance file or a file under a sibling project directory, `doctor`
+or launcher startup fails closed with `workspace.inspection.visibility.*`. The
+diagnostic names the readable non-workspace path but does not print file
+contents. During launcher startup, a main sandbox visibility failure happens
+after the main sandbox is started or attached; cleanup then stops the main
+sandbox instead of entering the watchdog loop.
 
 For stricter isolation, prefer `workspace.use_clone_mode: true` when the Docker
 Sandbox backend supports it for the workflow, or use a disposable temporary

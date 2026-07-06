@@ -336,10 +336,13 @@ Current launcher behavior:
   SSH forwarding environment such as `SSH_AUTH_SOCK` and
   `SSH_AUTH_SOCK_GATEWAY` is allowed only when
   `environment.allow_ssh_agent_forwarding` is explicitly `true`.
-- The probe performs workspace visibility read checks without reading file
-  contents. It fails closed if the sandbox can read the configured workspace
-  parent's `CLAUDE.md` file or a readable file under a sibling project
-  directory. Diagnostics report the readable path only.
+- The probe and the configured main sandbox perform workspace visibility read
+  checks without reading file contents. They fail closed if the sandbox can read
+  the configured workspace parent's `CLAUDE.md` file or a readable file under a
+  sibling project directory. Diagnostics report the readable path only. Launcher
+  startup runs the main sandbox check after `sbx run`, Herdr startup, or
+  `safe-herdr` attach succeeds; failures stop the main sandbox and do not enter
+  runtime watchdog supervision.
 - If a future Docker Sandbox version documents a create/run clean-env,
   allowlist, profile, template, or kit contract, the backend adapter should use
   that official mechanism and keep the inspection step as verification.

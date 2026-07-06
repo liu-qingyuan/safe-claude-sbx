@@ -149,6 +149,20 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 	}
 	fmt.Fprintf(stdout, "%s started: %s\n", targetStartedLabel(target), start.SandboxName)
 
+	mainInspectionCtx, cancelMainInspection := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+	_, err = sandbox.CheckMainWorkspaceVisibility(mainInspectionCtx, cfg)
+	cancelMainInspection()
+	if err != nil {
+		stopMainCommand()
+		if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
+			fmt.Fprintf(stderr, "%v; cleanup main sandbox failed: %v\n", err, cleanupErr)
+			return 1
+		}
+		fmt.Fprintf(stderr, "%v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "main sandbox inspection ok")
+
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 
