@@ -26,7 +26,7 @@ PRD 可以作为实现规格和验收上下文；如果用户只传入一个 PRD
 
 完成后，使用 /review-lqy 来检查工作。
 
-写 issue 评论、完成摘要或关闭说明前，遵守 `docs/agents/issue-tracker.md` 的语言约定；没有约定时，LQY 默认使用中文。
+写 issue 评论、完成摘要或关闭说明前，遵守 `docs/agents/issue-tracker.md` 的语言约定；没有约定时默认使用中文。
 
 多行 `gh issue comment` 使用 heredoc 或 `--body-file`，避免 shell 展开 `$(...)`。
 
