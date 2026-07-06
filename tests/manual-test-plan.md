@@ -478,3 +478,177 @@ Expected sandbox stop/cleanup behavior:
 - On inspection failure, the probe sandbox is removed when
   `cleanup.remove_probe_sandbox` is `true`.
 - The launcher must not start the main sandbox after the failed probe.
+
+## 16. Sandbox-local Herdr mode successful startup
+
+Prerequisites:
+
+- Complete scenario 2 with the default direct Claude config first.
+- Copy `config.yaml` to `herdr-config.yaml`.
+- Keep all existing network, workspace, environment, watchdog, and cleanup
+  policy from the working config.
+- Change only the sandbox supervision block:
+
+```yaml
+sandbox:
+  backend: "docker-sandbox"
+  main_name: "claude-sbx"
+  probe_name: "claude-sbx-probe"
+  agent: "claude"
+  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: true
+      socket_path: "/home/agent/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"
+```
+
+The normal direct Claude path remains the default when
+`sandbox.supervision.mode` is omitted or set to `direct-claude`.
+
+Steps:
+
+1. Run `safe-claude-sbx doctor --config herdr-config.yaml`.
+2. Run `safe-claude-sbx --config herdr-config.yaml`.
+3. In the attached terminal, confirm Claude Code has a real interactive TTY by
+   typing a harmless command such as `/status`, then return to the prompt.
+4. In a second terminal, set the sandbox name and inspect Herdr inside the
+   running sandbox:
+
+```bash
+MAIN=claude-sbx
+sbx exec "$MAIN" sh -lc 'command -v herdr && herdr --version'
+sbx exec "$MAIN" sh -lc \
+  'test -x /home/agent/.claude/hooks/herdr-agent-state.sh && echo hook-installed'
+sbx exec "$MAIN" herdr status server --json
+sbx exec "$MAIN" herdr session list --json
+```
+
+5. Confirm host Herdr isolation from the same host terminal:
+
+```bash
+env HERDR_SOCKET_PATH=/tmp/host-herdr.sock HERDR_PANE_ID=host-pane HERDR_ENV=1 \
+  sbx exec "$MAIN" sh -lc 'env | grep "^HERDR_" || true'
+```
+
+6. Exit the attached Claude session or press Ctrl+C in the launcher terminal.
+7. Run `sbx ls` after the launcher exits.
+
+Expected CLI output:
+
+- `doctor` prints `configuration ok`, `host egress ok`,
+  `sandbox backend ok`, `sandbox egress ok`, and `sandbox inspection ok`.
+- Launcher startup prints `configuration ok`,
+  `TUN preflight ok: startup interface utunX`,
+  `host egress ok: observed IP <expected-ip>`,
+  `sandbox backend ok: sbx version: ...`,
+  `sandbox egress ok: observed IP <expected-ip>`,
+  `sandbox inspection ok`, and `sandbox started: <main-name>`.
+- The in-sandbox Herdr checks print a Herdr binary path, `herdr <version>`,
+  `hook-installed`, server status with the configured socket path, and a JSON
+  session list.
+- The host Herdr isolation command prints no `HERDR_*` values from inside the
+  sandbox unless they are the sandbox-local values injected by the launcher for
+  the Claude process itself.
+- Host Herdr does not show sandbox Claude state. Sandbox-local Herdr state is
+  visible only from inside the Docker Sandbox. This is the intended isolation
+  boundary, not a bug.
+
+Expected sandbox stop/cleanup behavior:
+
+- The probe sandbox is removed after preflight when
+  `cleanup.remove_probe_sandbox` is `true`.
+- On normal exit or Ctrl+C, cleanup stops the sandbox-local Herdr server before
+  stopping the main sandbox.
+- The main sandbox remains listed as stopped unless
+  `cleanup.remove_main_sandbox` is `true`.
+
+Known limits for this mode:
+
+- There is no host-to-sandbox Herdr bridge.
+- The launcher does not expose or reuse the host Herdr socket.
+- The launcher does not pass host `HERDR_*` environment into Docker Sandbox.
+- The watchdog remains route-event based; this mode does not add periodic
+  polling.
+
+## 17. Sandbox-local Herdr mode fail-closed checks
+
+Run these with `herdr-config.yaml` from scenario 16 and a disposable sandbox
+name when the test can mutate sandbox state:
+
+```yaml
+sandbox:
+  main_name: "claude-sbx-herdr-negative"
+  probe_name: "claude-sbx-herdr-negative-probe"
+```
+
+### TUN disabled
+
+Steps:
+
+1. Turn Clash Verge TUN mode off.
+2. Run `safe-claude-sbx --config herdr-config.yaml`.
+3. Run `sbx ls`.
+
+Expected result:
+
+- Startup fails before `sandbox backend ok`.
+- The error starts with `TUN preflight invalid:`.
+- No probe sandbox is created and no main sandbox is started.
+
+### Host egress mismatch
+
+Steps:
+
+1. Turn TUN mode back on.
+2. Set `network.egress_ip.expected_ip` to an intentionally wrong IP.
+3. Run `safe-claude-sbx doctor --config herdr-config.yaml`.
+4. Run `safe-claude-sbx --config herdr-config.yaml`.
+
+Expected result:
+
+- Both commands fail with `host egress invalid: host-egress-mismatch`.
+- The launcher fails before creating the probe or main sandbox.
+
+### Sandbox egress or inspection failure
+
+Steps:
+
+1. Restore the correct host expected IP.
+2. Force a sandbox probe failure by using a sandbox check endpoint that returns
+   a different IP, or by setting `workspace.mount` to a forbidden path such as
+   `~/.ssh` in a disposable config.
+3. Run `safe-claude-sbx doctor --config herdr-config.yaml`.
+4. Run `safe-claude-sbx --config herdr-config.yaml`.
+
+Expected result:
+
+- Sandbox egress mismatch fails with
+  `sandbox probe invalid: sandbox-egress-mismatch`.
+- Forbidden mount inspection fails with
+  `configuration invalid: workspace.mount: path is forbidden by workspace policy`.
+- When a probe sandbox was created before the failure, it is removed when
+  `cleanup.remove_probe_sandbox` is `true`.
+- The main sandbox is not started after the failed probe or inspection.
+
+### Herdr unavailable or startup failure
+
+Steps:
+
+1. Use a fresh disposable `sandbox.main_name`.
+2. Set `sandbox.supervision.herdr.install_if_missing: false`.
+3. Run `safe-claude-sbx --config herdr-config.yaml`.
+4. Run `sbx ls`.
+
+Expected result:
+
+- If the fresh Claude template does not already contain Herdr, startup fails
+  after `sandbox inspection ok` with `sandbox start invalid:` and a reason that
+  includes `sandbox-local Herdr unavailable`.
+- If a future Claude template includes Herdr by default, record that this
+  negative precondition is unavailable and instead validate a Herdr startup
+  failure by blocking the sandbox from reaching the Herdr installer endpoint
+  before step 3 with `install_if_missing: true`.
+- The launcher does not fall back to direct Claude mode.
+- Cleanup stops the disposable main sandbox. The main sandbox remains listed as
+  stopped unless `cleanup.remove_main_sandbox` is `true`.

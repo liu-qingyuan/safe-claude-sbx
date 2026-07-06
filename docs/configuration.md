@@ -11,6 +11,42 @@ checks that the host public egress IP matches `network.egress_ip.expected_ip`:
 safe-claude-sbx doctor --config config.yaml
 ```
 
+## Supervision Examples
+
+The default supervision mode is direct Claude startup. A minimal explicit
+configuration is:
+
+```yaml
+sandbox:
+  backend: "docker-sandbox"
+  main_name: "claude-sbx"
+  probe_name: "claude-sbx-probe"
+  agent: "claude"
+  supervision:
+    mode: "direct-claude"
+```
+
+To opt in to sandbox-local Herdr mode, keep the same network, workspace,
+environment, watchdog, and cleanup policy, and change only the sandbox
+supervision block:
+
+```yaml
+sandbox:
+  backend: "docker-sandbox"
+  main_name: "claude-sbx"
+  probe_name: "claude-sbx-probe"
+  agent: "claude"
+  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: true
+      socket_path: "/home/agent/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"
+```
+
+This declares sandbox-local Herdr startup inputs only. It does not expose host
+Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
+
 ## Object Model
 
 - `network.clash_verge`
