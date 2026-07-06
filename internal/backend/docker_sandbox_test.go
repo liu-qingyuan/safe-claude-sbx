@@ -478,6 +478,90 @@ func TestDockerSandboxStartMainInstallsMissingSandboxLocalHerdrWhenConfigured(t 
 	}
 }
 
+func TestDockerSandboxStartMainTimesOutSandboxLocalHerdrInstallAndCleansUp(t *testing.T) {
+	runner := &herdrInstallTimeoutRunner{}
+	plan := NewStartPlan(herdrConfig())
+	plan.Supervision.Herdr.InstallTimeout = time.Nanosecond
+	plan.Supervision.Herdr.InstallAttempts = 1
+
+	_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).StartMain(context.Background(), plan)
+
+	if err == nil {
+		t.Fatalf("expected Herdr install timeout")
+	}
+	if !strings.Contains(err.Error(), "install sandbox-local Herdr") || !strings.Contains(err.Error(), "timed out after") || !strings.Contains(err.Error(), "attempt 1/1") {
+		t.Fatalf("expected bounded install diagnostic, got %v", err)
+	}
+	if !runner.installHadDeadline {
+		t.Fatalf("Herdr install did not receive a bounded context")
+	}
+	if got := strings.Join(runner.calls, "\n"); !strings.Contains(got, "sbx stop main-sbx") {
+		t.Fatalf("expected main sandbox cleanup after install timeout, got:\n%s", got)
+	}
+	if strings.Contains(err.Error(), "/tmp/host-herdr.sock") {
+		t.Fatalf("install error leaked host Herdr state: %v", err)
+	}
+}
+
+func TestDockerSandboxStartMainRetriesSandboxLocalHerdrInstallUntilSuccess(t *testing.T) {
+	runner := &herdrInstallAttemptRunner{
+		installResults: []CommandResult{
+			{Stderr: "download failed\n"},
+			{Stdout: "installed\n"},
+		},
+		installErrors: []error{
+			errors.New("exit status 28"),
+			nil,
+		},
+	}
+	plan := NewStartPlan(herdrConfig())
+	plan.Supervision.Herdr.InstallAttempts = 2
+
+	if _, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).StartMain(context.Background(), plan); err != nil {
+		t.Fatalf("expected Herdr install retry to succeed: %v", err)
+	}
+	if runner.installCalls != 2 {
+		t.Fatalf("expected two install attempts, got %d with calls:\n%s", runner.installCalls, strings.Join(runner.calls, "\n"))
+	}
+	if got := strings.Join(runner.calls, "\n"); !strings.Contains(got, "sbx exec -e HERDR_ENV=1") {
+		t.Fatalf("expected Claude to start after retry succeeds, got:\n%s", got)
+	}
+}
+
+func TestDockerSandboxStartMainFailsClosedWhenSandboxLocalHerdrInstallRetriesExhausted(t *testing.T) {
+	runner := &herdrInstallAttemptRunner{
+		installResults: []CommandResult{
+			{Stderr: "download failed\n"},
+			{Stderr: "download failed\n"},
+		},
+		installErrors: []error{
+			errors.New("exit status 28"),
+			errors.New("exit status 28"),
+		},
+	}
+	plan := NewStartPlan(herdrConfig())
+	plan.Supervision.Herdr.InstallAttempts = 2
+
+	_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).StartMain(context.Background(), plan)
+
+	if err == nil {
+		t.Fatalf("expected Herdr install retries to fail")
+	}
+	if !strings.Contains(err.Error(), "attempt 2/2 failed") || !strings.Contains(err.Error(), "download failed") {
+		t.Fatalf("expected retry exhausted diagnostic, got %v", err)
+	}
+	got := strings.Join(runner.calls, "\n")
+	if strings.Contains(got, "HERDR_ENV=1") {
+		t.Fatalf("Claude should not start after install retries are exhausted, got:\n%s", got)
+	}
+	if !strings.Contains(got, "sbx exec main-sbx herdr server stop\nsbx stop main-sbx") {
+		t.Fatalf("expected Herdr server and main sandbox cleanup after install failure, got:\n%s", got)
+	}
+	if strings.Contains(err.Error(), "/tmp/host-herdr.sock") {
+		t.Fatalf("install error leaked host Herdr state: %v", err)
+	}
+}
+
 func TestDockerSandboxCleanupMainStopsSandboxLocalHerdrBeforeSandbox(t *testing.T) {
 	calls := []string{}
 	runner := stubRunner{
@@ -805,4 +889,90 @@ func (r *sequenceRunner) Run(ctx context.Context, name string, args ...string) (
 	}
 	result := r.results[key]
 	return result, r.errors[key]
+}
+
+type herdrInstallTimeoutRunner struct {
+	calls              []string
+	installHadDeadline bool
+}
+
+func (r *herdrInstallTimeoutRunner) LookPath(file string) (string, error) {
+	return file, nil
+}
+
+func (r *herdrInstallTimeoutRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
+	key := strings.Join(append([]string{name}, args...), " ")
+	r.calls = append(r.calls, key)
+	switch key {
+	case "sbx ls":
+		return CommandResult{Stdout: "No sandboxes found.\n"}, nil
+	case "sbx create --name main-sbx claude /work/project":
+		return CommandResult{Stdout: "created\n"}, nil
+	case "sbx exec main-sbx command -v herdr":
+		return CommandResult{}, errors.New("exit status 127")
+	case "sbx exec main-sbx sh -lc curl -fsSL https://herdr.dev/install.sh | sh":
+		_, r.installHadDeadline = ctx.Deadline()
+		if !r.installHadDeadline {
+			return CommandResult{}, errors.New("install used unbounded context")
+		}
+		<-ctx.Done()
+		return CommandResult{Stderr: "downloading v0.7.1\n"}, ctx.Err()
+	case "sbx exec main-sbx herdr server stop":
+		return CommandResult{Stderr: "command not found\n"}, errors.New("exit status 127")
+	case "sbx stop main-sbx":
+		return CommandResult{Stdout: "stopped\n"}, nil
+	default:
+		return CommandResult{}, fmt.Errorf("unexpected command %q", key)
+	}
+}
+
+type herdrInstallAttemptRunner struct {
+	calls          []string
+	installCalls   int
+	installResults []CommandResult
+	installErrors  []error
+}
+
+func (r *herdrInstallAttemptRunner) LookPath(file string) (string, error) {
+	return file, nil
+}
+
+func (r *herdrInstallAttemptRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
+	key := strings.Join(append([]string{name}, args...), " ")
+	r.calls = append(r.calls, key)
+	switch key {
+	case "sbx ls":
+		return CommandResult{Stdout: "No sandboxes found.\n"}, nil
+	case "sbx create --name main-sbx claude /work/project":
+		return CommandResult{Stdout: "created\n"}, nil
+	case "sbx exec main-sbx command -v herdr":
+		return CommandResult{}, errors.New("exit status 127")
+	case "sbx exec main-sbx sh -lc curl -fsSL https://herdr.dev/install.sh | sh":
+		index := r.installCalls
+		r.installCalls++
+		if index >= len(r.installResults) {
+			return CommandResult{}, fmt.Errorf("unexpected install attempt %d", index+1)
+		}
+		var err error
+		if index < len(r.installErrors) {
+			err = r.installErrors[index]
+		}
+		return r.installResults[index], err
+	case "sbx exec main-sbx herdr --version":
+		return CommandResult{Stdout: "herdr 0.7.1\n"}, nil
+	case "sbx exec main-sbx herdr integration install claude":
+		return CommandResult{Stdout: "installed\n"}, nil
+	case "sbx exec main-sbx herdr server":
+		return CommandResult{Stdout: "server started\n"}, nil
+	case "sbx exec main-sbx herdr status server --json":
+		return CommandResult{Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"}, nil
+	case "sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude":
+		return CommandResult{Stdout: "claude started\n"}, nil
+	case "sbx exec main-sbx herdr server stop":
+		return CommandResult{Stderr: "command not found\n"}, errors.New("exit status 127")
+	case "sbx stop main-sbx":
+		return CommandResult{Stdout: "stopped\n"}, nil
+	default:
+		return CommandResult{}, fmt.Errorf("unexpected command %q", key)
+	}
 }

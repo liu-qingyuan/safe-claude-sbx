@@ -471,8 +471,15 @@ The implementation contract for sandbox-local Herdr mode is:
 
 - Use the `claude` template sandbox, not the `shell` probe template, for Herdr
   integration validation.
-- Install or reuse `/home/agent/.local/bin/herdr`; fail closed if the install
-  command or version check fails.
+- Install or reuse `/home/agent/.local/bin/herdr`. The launcher checks inside
+  the sandbox with `command -v herdr` first, so a preinstalled or cached binary
+  is reused without downloading.
+- If Herdr is missing and install is allowed, run the sandbox-local installer
+  with two attempts. Each attempt is bounded by
+  `network.egress_ip.timeout_seconds`; timeout, download failure, or retry
+  exhaustion fails closed with an actionable attempt count and timeout
+  diagnostic.
+- Fail closed if the install command or version check fails.
 - Run `herdr integration install claude` inside the Claude template sandbox and
   verify `/home/agent/.claude/hooks/herdr-agent-state.sh`.
 - Start `herdr server` inside the sandbox before starting Claude under the

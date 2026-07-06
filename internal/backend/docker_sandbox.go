@@ -25,6 +25,8 @@ const (
 	AvailabilityIncompatible AvailabilityKind = "version-incompatible"
 )
 
+const sandboxLocalHerdrInstallAttempts = 2
+
 type Availability struct {
 	OK         bool
 	Kind       AvailabilityKind
@@ -77,6 +79,8 @@ type HerdrPlan struct {
 	SocketPath       string
 	PaneID           string
 	ReadinessTimeout time.Duration
+	InstallTimeout   time.Duration
+	InstallAttempts  int
 }
 
 func NewStartPlan(cfg config.Config) StartPlan {
@@ -91,6 +95,8 @@ func NewStartPlan(cfg config.Config) StartPlan {
 			SocketPath:       strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.SocketPath),
 			PaneID:           strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.PaneID),
 			ReadinessTimeout: time.Duration(cfg.Network.EgressIP.TimeoutSeconds) * time.Second,
+			InstallTimeout:   time.Duration(cfg.Network.EgressIP.TimeoutSeconds) * time.Second,
+			InstallAttempts:  sandboxLocalHerdrInstallAttempts,
 		}
 	}
 	return StartPlan{
@@ -412,8 +418,8 @@ func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartP
 		if !plan.Supervision.Herdr.InstallIfMissing {
 			return fmt.Errorf("sandbox-local Herdr unavailable: %s", commandText(result, err))
 		}
-		if install, installErr := runner.Run(ctx, binary, "exec", plan.SandboxName, "sh", "-lc", "curl -fsSL https://herdr.dev/install.sh | sh"); installErr != nil {
-			return fmt.Errorf("install sandbox-local Herdr: %s", commandText(install, installErr))
+		if installErr := b.installSandboxLocalHerdr(ctx, plan); installErr != nil {
+			return installErr
 		}
 	}
 	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "herdr", "--version"); err != nil {
@@ -423,6 +429,36 @@ func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartP
 		return fmt.Errorf("install Claude Herdr integration: %s", commandText(result, err))
 	}
 	return nil
+}
+
+func (b DockerSandbox) installSandboxLocalHerdr(ctx context.Context, plan StartPlan) error {
+	timeout := plan.Supervision.Herdr.InstallTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	attempts := plan.Supervision.Herdr.InstallAttempts
+	if attempts <= 0 {
+		attempts = sandboxLocalHerdrInstallAttempts
+	}
+
+	var last string
+	for attempt := 1; attempt <= attempts; attempt++ {
+		installCtx, cancel := context.WithTimeout(ctx, timeout)
+		result, err := b.runner().Run(installCtx, b.binary(), "exec", plan.SandboxName, "sh", "-lc", "curl -fsSL https://herdr.dev/install.sh | sh")
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(installCtx.Err(), context.DeadlineExceeded) {
+			last = fmt.Sprintf("attempt %d/%d timed out after %s: %s", attempt, attempts, timeout, commandText(result, err))
+		} else {
+			last = fmt.Sprintf("attempt %d/%d failed: %s", attempt, attempts, commandText(result, err))
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return fmt.Errorf("install sandbox-local Herdr failed after %d attempt(s); last error: %s", attempts, last)
 }
 
 type herdrServerStatus struct {

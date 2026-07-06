@@ -58,8 +58,9 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
   - `host_check_url`: Endpoint the host uses to read its public IP.
   - `sandbox_check_url`: Endpoint the sandbox uses to read its public IP.
   - `timeout_seconds`: Timeout for backend commands, sandbox probe commands,
-    cleanup attempts, and egress IP checks. Use at least `30` for real Docker
-    Sandbox probes because first-run image and daemon startup can be slow.
+    sandbox-local Herdr install attempts, cleanup attempts, and egress IP
+    checks. Use at least `30` for real Docker Sandbox probes because first-run
+    image and daemon startup can be slow.
 - `sandbox`
   - `backend`: Runtime backend. MVP value: `docker-sandbox`.
   - `main_name`: Main Docker Sandbox name.
@@ -72,7 +73,11 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
     `sandbox-local-herdr`. This object declares sandbox-local Herdr startup
     inputs, not host Herdr state.
     - `install_if_missing`: Whether the launcher may install Herdr inside the
-      sandbox if the sandbox-local binary is absent.
+      sandbox if the sandbox-local binary is absent. When installation is
+      enabled, the launcher first checks for `/home/agent/.local/bin/herdr`
+      with `command -v herdr`; an already installed binary is reused without
+      downloading. Missing Herdr is installed inside the sandbox with two
+      attempts, each bounded by `network.egress_ip.timeout_seconds`.
     - `socket_path`: Sandbox-local Herdr socket path. It must point inside the
       sandbox user's home, such as `/home/agent/.config/herdr/herdr.sock`.
     - `pane_id`: Non-empty sandbox-local pane identity used by the Herdr
