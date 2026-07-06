@@ -156,7 +156,7 @@ Expected behavior:
 Typical output:
 
 ```text
-watchdog stopped sandbox: route-monitor runtime check failed: indeterminate runtime egress check failed after 2 attempt(s): runtime sandbox egress command failed against configured sandbox_check_url ...
+watchdog stopped sandbox: route-monitor runtime check failed: indeterminate runtime egress check failed after 10 attempt(s): runtime egress indeterminate retry 10/10: runtime sandbox egress command failed against configured network.egress_ip.sandbox_check_url ...
 ```
 
 Meaning:
@@ -181,7 +181,10 @@ Checks:
 
 Expected behavior:
 
-- Runtime checks retry indeterminate failures once before failing closed.
+- Runtime checks retry indeterminate failures up to 10 attempts with capped
+  exponential backoff before failing closed.
+- Before each retry, the watchdog revalidates the startup TUN route and fails
+  closed immediately if the route or startup TUN interface is explicitly unsafe.
 - If the configured sandbox check URL later returns the expected IP, the
   watchdog keeps the main sandbox running even when Google connectivity fails.
 - Explicit TUN mismatch, TUN missing, or observed IP mismatch still fail closed

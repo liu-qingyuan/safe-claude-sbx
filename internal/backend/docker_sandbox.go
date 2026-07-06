@@ -267,7 +267,7 @@ func (b DockerSandbox) CheckRuntimeEgress(ctx context.Context, cfg config.Config
 
 	egressText, err := b.execRuntimeMain(egressCtx, cfg, "curl", "-fsS", cfg.Network.EgressIP.SandboxCheckURL)
 	if err != nil {
-		egress, classifyErr := runtimeEgressIndeterminate(cfg.Network.EgressIP, "runtime sandbox egress command failed against configured sandbox_check_url %q: %v", cfg.Network.EgressIP.SandboxCheckURL, err)
+		egress, classifyErr := runtimeEgressIndeterminate(cfg.Network.EgressIP, "runtime sandbox egress command failed against configured network.egress_ip.sandbox_check_url: %v", err)
 		return ProbeResult{Egress: egress}, classifyErr
 	}
 	egress, err := compareSandboxEgress(cfg.Network.EgressIP, egressText)

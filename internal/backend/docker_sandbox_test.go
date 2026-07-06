@@ -212,17 +212,19 @@ func TestDockerSandboxCheckRuntimeEgressUsesConfiguredTimeout(t *testing.T) {
 }
 
 func TestDockerSandboxCheckRuntimeEgressClassifiesTimeoutAsIndeterminate(t *testing.T) {
+	const sandboxCheckURL = "https://example.test/ip?token=secret-token&cookie=secret-cookie"
 	runner := stubRunner{
 		path: "/tmp/sbx",
 		results: map[string]CommandResult{
-			"sbx exec main-sbx curl -fsS https://example.test/ip": {Stderr: "Get \"https://registry-1.docker.io/v2/\": net/http: request canceled while waiting for connection\n"},
+			"sbx exec main-sbx curl -fsS " + sandboxCheckURL: {Stderr: "Get \"https://registry-1.docker.io/v2/\": net/http: request canceled while waiting for connection\n"},
 		},
 		errors: map[string]error{
-			"sbx exec main-sbx curl -fsS https://example.test/ip": context.DeadlineExceeded,
+			"sbx exec main-sbx curl -fsS " + sandboxCheckURL: context.DeadlineExceeded,
 		},
 	}
 	cfg := probeConfig()
 	cfg.Sandbox.MainName = "main-sbx"
+	cfg.Network.EgressIP.SandboxCheckURL = sandboxCheckURL
 
 	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckRuntimeEgress(context.Background(), cfg)
 
@@ -237,6 +239,9 @@ func TestDockerSandboxCheckRuntimeEgressClassifiesTimeoutAsIndeterminate(t *test
 	}
 	if strings.Contains(err.Error(), "mismatch") {
 		t.Fatalf("timeout should not be reported as IP mismatch: %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "secret-cookie") {
+		t.Fatalf("runtime egress diagnostic leaked sandbox_check_url secret: %v", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package watchdog
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,7 @@ func TestRuntimeCheckerFailsWhenStartupTUNDisappears(t *testing.T) {
 }
 
 func TestRuntimeCheckerFailsWhenSandboxEgressMismatches(t *testing.T) {
+	sandboxCalls := 0
 	checker := RuntimeChecker{
 		Config:              runtimeCheckConfig(),
 		StartupTUNInterface: "utun9",
@@ -74,7 +76,23 @@ func TestRuntimeCheckerFailsWhenSandboxEgressMismatches(t *testing.T) {
 			routeInterface: "utun9",
 			interfaces:     map[string]bool{"utun9": true},
 		},
-		Sandbox: fakeProbeBackend{err: errors.New("sandbox-egress-mismatch: observed IP mismatch")},
+		Sandbox: fakeProbeBackend{
+			result: backend.ProbeResult{Egress: network.EgressResult{
+				OK:            false,
+				ExpectedIP:    "203.0.113.10",
+				ObservedIP:    "198.51.100.77",
+				FailureKind:   network.EgressFailureKind("sandbox-egress-mismatch"),
+				FailureReason: "sandbox egress observed IP 198.51.100.77 does not match expected IP 203.0.113.10",
+			}},
+			err:   errors.New("sandbox-egress-mismatch: observed IP mismatch"),
+			calls: &sandboxCalls,
+		},
+		RetryPolicy: RuntimeEgressRetryPolicy{
+			Attempts:       10,
+			InitialBackoff: time.Second,
+			MaxBackoff:     time.Second,
+			Sleeper:        &recordingSleeper{},
+		},
 	}
 
 	result, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
@@ -86,6 +104,9 @@ func TestRuntimeCheckerFailsWhenSandboxEgressMismatches(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sandbox egress invalid") {
 		t.Fatalf("expected sandbox egress reason, got %v", err)
+	}
+	if sandboxCalls != 1 {
+		t.Fatalf("explicit egress mismatch should not retry, got %d calls", sandboxCalls)
 	}
 }
 
@@ -151,27 +172,22 @@ func TestRuntimeCheckerFailsWhenSandboxEgressResultIsNotOK(t *testing.T) {
 	}
 }
 
-func TestRuntimeCheckerRetriesIndeterminateRuntimeEgress(t *testing.T) {
-	sandbox := &retryRuntimeSandbox{
-		results: []runtimeAttempt{
-			{
-				result: backend.ProbeResult{Egress: network.EgressResult{
-					OK:            false,
-					ExpectedIP:    "203.0.113.10",
-					FailureKind:   "sandbox-egress-indeterminate",
-					FailureReason: "Docker registry auth failed: net/http timeout",
-				}},
-				err: errors.New("sandbox-egress-indeterminate: Docker registry auth failed: net/http timeout"),
-			},
-			{
-				result: backend.ProbeResult{Egress: network.EgressResult{
-					OK:         true,
-					ObservedIP: "203.0.113.10",
-					ExpectedIP: "203.0.113.10",
-				}},
-			},
-		},
+func TestRuntimeCheckerRetriesIndeterminateRuntimeEgressUntilTenthAttemptSucceeds(t *testing.T) {
+	attempts := make([]runtimeAttempt, 0, 10)
+	for range 9 {
+		attempts = append(attempts, indeterminateRuntimeAttempt("configured sandbox egress URL timed out"))
 	}
+	attempts = append(attempts, runtimeAttempt{
+		result: backend.ProbeResult{Egress: network.EgressResult{
+			OK:         true,
+			ObservedIP: "203.0.113.10",
+			ExpectedIP: "203.0.113.10",
+		}},
+	})
+	sandbox := &retryRuntimeSandbox{
+		results: attempts,
+	}
+	sleeper := &recordingSleeper{}
 	checker := RuntimeChecker{
 		Config:              runtimeCheckConfig(),
 		StartupTUNInterface: "utun9",
@@ -180,6 +196,12 @@ func TestRuntimeCheckerRetriesIndeterminateRuntimeEgress(t *testing.T) {
 			interfaces:     map[string]bool{"utun9": true},
 		},
 		Sandbox: sandbox,
+		RetryPolicy: RuntimeEgressRetryPolicy{
+			Attempts:       10,
+			InitialBackoff: time.Second,
+			MaxBackoff:     4 * time.Second,
+			Sleeper:        sleeper,
+		},
 	}
 
 	result, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
@@ -190,8 +212,22 @@ func TestRuntimeCheckerRetriesIndeterminateRuntimeEgress(t *testing.T) {
 	if !result.OK {
 		t.Fatalf("runtime check did not pass after retry: %#v", result)
 	}
-	if sandbox.calls != 2 {
-		t.Fatalf("expected one retry after indeterminate failure, got %d calls", sandbox.calls)
+	if sandbox.calls != 10 {
+		t.Fatalf("expected tenth attempt to recover indeterminate runtime egress, got %d calls", sandbox.calls)
+	}
+	wantBackoffs := []time.Duration{
+		time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		4 * time.Second,
+		4 * time.Second,
+		4 * time.Second,
+		4 * time.Second,
+		4 * time.Second,
+		4 * time.Second,
+	}
+	if got := sleeper.durations; !equalDurations(got, wantBackoffs) {
+		t.Fatalf("expected capped exponential backoff %v, got %v", wantBackoffs, got)
 	}
 	if sandbox.probeCalled {
 		t.Fatal("runtime egress retry should not run startup deep probe")
@@ -199,28 +235,14 @@ func TestRuntimeCheckerRetriesIndeterminateRuntimeEgress(t *testing.T) {
 }
 
 func TestRuntimeCheckerFailsIndeterminateRuntimeEgressAfterRetryExhaustion(t *testing.T) {
-	sandbox := &retryRuntimeSandbox{
-		results: []runtimeAttempt{
-			{
-				result: backend.ProbeResult{Egress: network.EgressResult{
-					OK:            false,
-					ExpectedIP:    "203.0.113.10",
-					FailureKind:   "sandbox-egress-indeterminate",
-					FailureReason: "configured sandbox egress URL timed out",
-				}},
-				err: errors.New("sandbox-egress-indeterminate: configured sandbox egress URL timed out"),
-			},
-			{
-				result: backend.ProbeResult{Egress: network.EgressResult{
-					OK:            false,
-					ExpectedIP:    "203.0.113.10",
-					FailureKind:   "sandbox-egress-indeterminate",
-					FailureReason: "configured sandbox egress URL timed out",
-				}},
-				err: errors.New("sandbox-egress-indeterminate: configured sandbox egress URL timed out"),
-			},
-		},
+	attempts := make([]runtimeAttempt, 0, 10)
+	for range 10 {
+		attempts = append(attempts, indeterminateRuntimeAttempt("configured sandbox egress URL timed out"))
 	}
+	sandbox := &retryRuntimeSandbox{
+		results: attempts,
+	}
+	sleeper := &recordingSleeper{}
 	checker := RuntimeChecker{
 		Config:              runtimeCheckConfig(),
 		StartupTUNInterface: "utun9",
@@ -229,6 +251,9 @@ func TestRuntimeCheckerFailsIndeterminateRuntimeEgressAfterRetryExhaustion(t *te
 			interfaces:     map[string]bool{"utun9": true},
 		},
 		Sandbox: sandbox,
+		RetryPolicy: RuntimeEgressRetryPolicy{
+			Sleeper: sleeper,
+		},
 	}
 
 	result, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
@@ -245,8 +270,57 @@ func TestRuntimeCheckerFailsIndeterminateRuntimeEgressAfterRetryExhaustion(t *te
 	if strings.Contains(err.Error(), "mismatch") {
 		t.Fatalf("indeterminate failure should not be reported as mismatch: %v", err)
 	}
-	if sandbox.calls != 2 {
+	if !strings.Contains(err.Error(), "runtime egress indeterminate retry 10/10") {
+		t.Fatalf("expected final retry attempt diagnostic, got %v", err)
+	}
+	if sandbox.calls != 10 {
 		t.Fatalf("expected bounded retry attempts, got %d", sandbox.calls)
+	}
+	if len(sleeper.durations) != 9 {
+		t.Fatalf("expected sleep only between attempts, got %d sleeps", len(sleeper.durations))
+	}
+}
+
+func TestRuntimeCheckerStopsIndeterminateRetryWhenRouteBecomesUnsafe(t *testing.T) {
+	sandbox := &retryRuntimeSandbox{
+		results: []runtimeAttempt{
+			indeterminateRuntimeAttempt("configured sandbox egress URL timed out"),
+			indeterminateRuntimeAttempt("should not be called"),
+		},
+	}
+	sleeper := &recordingSleeper{}
+	checker := RuntimeChecker{
+		Config:              runtimeCheckConfig(),
+		StartupTUNInterface: "utun9",
+		RouteRunner: &sequenceRouteRunner{
+			routeInterfaces: []string{"utun9", "en0"},
+			interfaces:      map[string]bool{"utun9": true},
+		},
+		Sandbox: sandbox,
+		RetryPolicy: RuntimeEgressRetryPolicy{
+			Attempts:       10,
+			InitialBackoff: time.Second,
+			MaxBackoff:     time.Second,
+			Sleeper:        sleeper,
+		},
+	}
+
+	result, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
+
+	if err == nil {
+		t.Fatal("expected route failure during indeterminate retry")
+	}
+	if result.OK {
+		t.Fatal("runtime check unexpectedly passed")
+	}
+	if !strings.Contains(err.Error(), "default route changed from startup interface utun9 to en0") {
+		t.Fatalf("expected retry to stop on unsafe route, got %v", err)
+	}
+	if sandbox.calls != 1 {
+		t.Fatalf("expected retry to stop before second egress attempt, got %d calls", sandbox.calls)
+	}
+	if len(sleeper.durations) != 0 {
+		t.Fatalf("unsafe route should interrupt retry before backoff sleep, got %v", sleeper.durations)
 	}
 }
 
@@ -300,6 +374,30 @@ func (r fakeRouteRunner) Run(name string, args ...string) (string, error) {
 	return "", errors.New("unexpected command")
 }
 
+type sequenceRouteRunner struct {
+	routeInterfaces []string
+	routeCalls      int
+	interfaces      map[string]bool
+}
+
+func (r *sequenceRouteRunner) Run(name string, args ...string) (string, error) {
+	if name == "route" && len(args) == 2 && args[0] == "get" {
+		index := r.routeCalls
+		r.routeCalls++
+		if index >= len(r.routeInterfaces) {
+			index = len(r.routeInterfaces) - 1
+		}
+		return "interface: " + r.routeInterfaces[index] + "\n", nil
+	}
+	if name == "ifconfig" && len(args) == 1 {
+		if r.interfaces[args[0]] {
+			return args[0] + ": flags=8051<UP>\n", nil
+		}
+		return "", errors.New("interface missing")
+	}
+	return "", errors.New("unexpected command")
+}
+
 type fakeProbeBackend struct {
 	result backend.ProbeResult
 	err    error
@@ -343,6 +441,18 @@ type runtimeAttempt struct {
 	err    error
 }
 
+func indeterminateRuntimeAttempt(reason string) runtimeAttempt {
+	return runtimeAttempt{
+		result: backend.ProbeResult{Egress: network.EgressResult{
+			OK:            false,
+			ExpectedIP:    "203.0.113.10",
+			FailureKind:   network.EgressFailureIndeterminate,
+			FailureReason: reason,
+		}},
+		err: fmt.Errorf("%s: %s", network.EgressFailureIndeterminate, reason),
+	}
+}
+
 type retryRuntimeSandbox struct {
 	results     []runtimeAttempt
 	calls       int
@@ -362,6 +472,27 @@ func (b *retryRuntimeSandbox) CheckRuntimeEgress(context.Context, config.Config)
 func (b *retryRuntimeSandbox) Probe(context.Context, config.Config) (backend.ProbeResult, error) {
 	b.probeCalled = true
 	return backend.ProbeResult{}, nil
+}
+
+type recordingSleeper struct {
+	durations []time.Duration
+}
+
+func (s *recordingSleeper) Sleep(ctx context.Context, duration time.Duration) error {
+	s.durations = append(s.durations, duration)
+	return ctx.Err()
+}
+
+func equalDurations(a, b []time.Duration) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func waitRuntimeCheck(t *testing.T, done <-chan error) error {
