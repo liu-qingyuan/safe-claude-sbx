@@ -545,8 +545,8 @@ Expected CLI output:
   `sandbox egress ok: observed IP <expected-ip>`,
   `sandbox inspection ok`, and `sandbox started: <main-name>`.
 - The in-sandbox Herdr checks print a Herdr binary path, `herdr <version>`,
-  `hook-installed`, server status with the configured socket path, and a JSON
-  session list.
+  `hook-installed`, server status reporting a running server with the configured
+  socket path, and a JSON session list.
 - The host Herdr isolation command prints no `HERDR_*` values from inside the
   sandbox unless they are the sandbox-local values injected by the launcher for
   the Claude process itself.

@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -75,6 +76,7 @@ type HerdrPlan struct {
 	InstallIfMissing bool
 	SocketPath       string
 	PaneID           string
+	ReadinessTimeout time.Duration
 }
 
 func NewStartPlan(cfg config.Config) StartPlan {
@@ -88,6 +90,7 @@ func NewStartPlan(cfg config.Config) StartPlan {
 			InstallIfMissing: cfg.Sandbox.Supervision.Herdr.InstallIfMissing != nil && *cfg.Sandbox.Supervision.Herdr.InstallIfMissing,
 			SocketPath:       strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.SocketPath),
 			PaneID:           strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.PaneID),
+			ReadinessTimeout: time.Duration(cfg.Network.EgressIP.TimeoutSeconds) * time.Second,
 		}
 	}
 	return StartPlan{
@@ -360,13 +363,21 @@ func (b DockerSandbox) startSandboxLocalHerdr(ctx context.Context, plan StartPla
 	}
 	for _, args := range [][]string{
 		{"exec", plan.SandboxName, "herdr", "server"},
-		herdrClaudeArgs(plan),
 	} {
 		result, err := b.runner().Run(ctx, b.binary(), args...)
 		if err != nil {
 			b.cleanupStartedMain(context.Background(), plan)
 			return start, fmt.Errorf("start main sandbox: %s", commandText(result, err))
 		}
+	}
+	if err := b.waitSandboxLocalHerdrReady(ctx, plan); err != nil {
+		b.cleanupStartedMain(context.Background(), plan)
+		return start, err
+	}
+	result, err := b.runner().Run(ctx, b.binary(), herdrClaudeArgs(plan)...)
+	if err != nil {
+		b.cleanupStartedMain(context.Background(), plan)
+		return start, fmt.Errorf("start main sandbox: %s", commandText(result, err))
 	}
 	return start, nil
 }
@@ -377,6 +388,10 @@ func (b DockerSandbox) startSandboxLocalHerdrAttached(ctx context.Context, plan 
 	}
 	herdrWait, err := b.startAttachedCommand(ctx, []string{"exec", plan.SandboxName, "herdr", "server"}, "start sandbox-local Herdr server", nil, stdout, stderr)
 	if err != nil {
+		return nil, err
+	}
+	if err := b.waitSandboxLocalHerdrReady(ctx, plan); err != nil {
+		b.stopSandboxLocalHerdr(context.Background(), plan.SandboxName)
 		return nil, err
 	}
 	claudeWait, err := b.startAttachedCommand(ctx, herdrClaudeArgs(plan), "start main sandbox", stdin, stdout, stderr)
@@ -408,6 +423,69 @@ func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartP
 		return fmt.Errorf("install Claude Herdr integration: %s", commandText(result, err))
 	}
 	return nil
+}
+
+type herdrServerStatus struct {
+	Running bool
+	Socket  string
+}
+
+func (b DockerSandbox) waitSandboxLocalHerdrReady(ctx context.Context, plan StartPlan) error {
+	timeout := plan.Supervision.Herdr.ReadinessTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var lastNotReady error
+	for {
+		result, err := b.runner().Run(readyCtx, b.binary(), "exec", plan.SandboxName, "herdr", "status", "server", "--json")
+		if err != nil {
+			return fmt.Errorf("wait for sandbox-local Herdr readiness: %s", commandText(result, err))
+		}
+		status, err := parseHerdrServerStatus(result.Stdout)
+		if err != nil {
+			return fmt.Errorf("wait for sandbox-local Herdr readiness: %w", err)
+		}
+		if status.Running {
+			if status.Socket != plan.Supervision.Herdr.SocketPath {
+				return fmt.Errorf("wait for sandbox-local Herdr readiness: socket path mismatch")
+			}
+			return nil
+		}
+		lastNotReady = errors.New("server is not running")
+
+		select {
+		case <-readyCtx.Done():
+			return fmt.Errorf("wait for sandbox-local Herdr readiness timed out: %w", lastNotReady)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func parseHerdrServerStatus(output string) (herdrServerStatus, error) {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(output), &raw); err != nil {
+		return herdrServerStatus{}, fmt.Errorf("parse status JSON: %w", err)
+	}
+
+	status := herdrServerStatus{}
+	if running, ok := raw["running"].(bool); ok {
+		status.Running = running
+	} else if text, ok := raw["status"].(string); ok {
+		status.Running = strings.EqualFold(strings.TrimSpace(text), "running")
+	}
+	for _, key := range []string{"socket", "socket_path"} {
+		if socket, ok := raw[key].(string); ok {
+			status.Socket = strings.TrimSpace(socket)
+			break
+		}
+	}
+	if status.Socket == "" {
+		return herdrServerStatus{}, fmt.Errorf("status JSON missing socket path")
+	}
+	return status, nil
 }
 
 func (b DockerSandbox) ensureFreshMainSandbox(ctx context.Context, plan StartPlan) error {

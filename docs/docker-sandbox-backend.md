@@ -477,6 +477,8 @@ The implementation contract for sandbox-local Herdr mode is:
   verify `/home/agent/.claude/hooks/herdr-agent-state.sh`.
 - Start `herdr server` inside the sandbox before starting Claude under the
   sandbox-local Herdr environment.
+- Wait for `herdr status server --json` to report a running server whose socket
+  path matches the configured sandbox-local socket before starting Claude.
 - Use `/home/agent/.config/herdr/herdr.sock` as the sandbox-local socket path
   unless configuration supplies another path under `/home/agent`.
 - Provide only sandbox-local `HERDR_ENV=1`, `HERDR_SOCKET_PATH`, and
@@ -545,7 +547,10 @@ sequenceDiagram
     S-->>K: Hook and settings installed
     L->>S: sbx exec main herdr server
     S-->>H: Foreground server owns sandbox socket
-    H-->>L: Socket /home/agent/.config/herdr/herdr.sock
+    loop until ready or bounded timeout
+        L->>S: sbx exec main herdr status server --json
+        S-->>L: running flag and socket path
+    end
     L->>S: start Claude with sandbox-local HERDR env
     S-->>C: Claude process
     C->>K: SessionStart hook

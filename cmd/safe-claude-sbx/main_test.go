@@ -118,6 +118,7 @@ func TestLaunchStartsSandboxLocalHerdrAfterAllPreflightsPass(t *testing.T) {
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
 		"exec claude-sbx herdr server",
+		"exec claude-sbx herdr status server --json",
 		"exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude claude-sbx claude",
 	} {
 		if !containsLogLine(log, want) {
@@ -167,6 +168,10 @@ func TestLaunchRebuildsStoppedSandboxLocalHerdrMainAfterPreflights(t *testing.T)
 		"rm --force claude-sbx",
 		"create --name claude-sbx claude .",
 		"exec claude-sbx command -v herdr",
+		"exec claude-sbx herdr --version",
+		"exec claude-sbx herdr integration install claude",
+		"exec claude-sbx herdr server",
+		"exec claude-sbx herdr status server --json",
 	})
 }
 
@@ -1334,6 +1339,9 @@ case "$1" in
           exit 1
         fi
         printf 'installed\n'
+        ;;
+      *" herdr status server --json")
+        printf '{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}\n'
         ;;
       *" herdr server stop")
         touch %q

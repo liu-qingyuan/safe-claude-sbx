@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/config"
 )
@@ -180,6 +181,7 @@ func TestDockerSandboxStartMainPreparesSandboxLocalHerdr(t *testing.T) {
 			"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
 			"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
 			"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
+			"sbx exec main-sbx herdr status server --json":       {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
 			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stdout: "claude started\n"},
 		},
 	}
@@ -215,9 +217,123 @@ func TestDockerSandboxStartMainPreparesSandboxLocalHerdr(t *testing.T) {
 		"sbx ls",
 		"sbx create --name main-sbx claude /work/project",
 		"sbx exec main-sbx command -v herdr",
+		"sbx exec main-sbx herdr --version",
+		"sbx exec main-sbx herdr integration install claude",
+		"sbx exec main-sbx herdr server",
+		"sbx exec main-sbx herdr status server --json",
+		"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude",
 	}, "\n")
 	if !strings.Contains(got, want) {
 		t.Fatalf("expected first Herdr startup to inspect then create main sandbox, got:\n%s", got)
+	}
+}
+
+func TestDockerSandboxStartMainWaitsForSandboxLocalHerdrReadiness(t *testing.T) {
+	calls := []string{}
+	runner := sequenceRunner{
+		stubRunner: stubRunner{
+			path:  "/tmp/sbx",
+			calls: &calls,
+			results: map[string]CommandResult{
+				"sbx ls": {Stdout: "No sandboxes found.\n"},
+				"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
+				"sbx exec main-sbx command -v herdr":                 {Stdout: "/home/agent/.local/bin/herdr\n"},
+				"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
+				"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
+				"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
+				"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stdout: "claude started\n"},
+			},
+		},
+		sequences: map[string][]CommandResult{
+			"sbx exec main-sbx herdr status server --json": {
+				{Stdout: `{"running":false,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
+				{Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
+			},
+		},
+	}
+
+	_, err := (DockerSandbox{Runner: &runner, Binary: "sbx"}).StartMain(context.Background(), NewStartPlan(herdrConfig()))
+
+	if err != nil {
+		t.Fatalf("expected Herdr readiness wait to succeed: %v", err)
+	}
+	got := strings.Join(calls, "\n")
+	want := strings.Join([]string{
+		"sbx exec main-sbx herdr status server --json",
+		"sbx exec main-sbx herdr status server --json",
+		"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude",
+	}, "\n")
+	if !strings.Contains(got, want) {
+		t.Fatalf("expected Claude to start after repeated readiness checks, got:\n%s", got)
+	}
+}
+
+func TestDockerSandboxStartMainFailsClosedWhenSandboxLocalHerdrReadinessFails(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       CommandResult
+		statusErr    error
+		wantErr      string
+		shortTimeout bool
+	}{
+		{
+			name:         "timeout",
+			status:       CommandResult{Stdout: `{"running":false,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
+			wantErr:      "timed out",
+			shortTimeout: true,
+		},
+		{
+			name:      "status command failure",
+			status:    CommandResult{Stderr: "status failed\n"},
+			statusErr: errors.New("exit status 1"),
+			wantErr:   "status failed",
+		},
+		{
+			name:    "socket mismatch",
+			status:  CommandResult{Stdout: `{"running":true,"socket":"/tmp/wrong-herdr.sock"}` + "\n"},
+			wantErr: "socket path mismatch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := []string{}
+			runner := stubRunner{
+				path:  "/tmp/sbx",
+				calls: &calls,
+				results: map[string]CommandResult{
+					"sbx ls": {Stdout: "No sandboxes found.\n"},
+					"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
+					"sbx exec main-sbx command -v herdr":                 {Stdout: "/home/agent/.local/bin/herdr\n"},
+					"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
+					"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
+					"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
+					"sbx exec main-sbx herdr status server --json":       tt.status,
+					"sbx exec main-sbx herdr server stop":                {Stdout: "stopped\n"},
+					"sbx stop main-sbx":                                  {Stdout: "stopped\n"},
+				},
+				errors: map[string]error{
+					"sbx exec main-sbx herdr status server --json": tt.statusErr,
+				},
+			}
+			plan := NewStartPlan(herdrConfig())
+			if tt.shortTimeout {
+				plan.Supervision.Herdr.ReadinessTimeout = time.Nanosecond
+			}
+
+			_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).StartMain(context.Background(), plan)
+
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected readiness error containing %q, got %v", tt.wantErr, err)
+			}
+			got := strings.Join(calls, "\n")
+			if strings.Contains(got, "HERDR_ENV=1") {
+				t.Fatalf("Claude should not start after readiness failure, got:\n%s", got)
+			}
+			if !strings.Contains(got, "sbx exec main-sbx herdr server stop\nsbx stop main-sbx") {
+				t.Fatalf("expected Herdr server and main sandbox cleanup after readiness failure, got:\n%s", got)
+			}
+		})
 	}
 }
 
@@ -235,6 +351,7 @@ func TestDockerSandboxStartMainRebuildsStoppedSandboxLocalHerdrMain(t *testing.T
 			"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
 			"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
 			"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
+			"sbx exec main-sbx herdr status server --json":       {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
 			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stdout: "claude started\n"},
 		},
 	}
@@ -344,6 +461,7 @@ func TestDockerSandboxStartMainInstallsMissingSandboxLocalHerdrWhenConfigured(t 
 			"sbx exec main-sbx herdr --version":                                     {Stdout: "herdr 0.7.1\n"},
 			"sbx exec main-sbx herdr integration install claude":                    {Stdout: "installed\n"},
 			"sbx exec main-sbx herdr server":                                        {Stdout: "server started\n"},
+			"sbx exec main-sbx herdr status server --json":                          {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
 			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stdout: "claude started\n"},
 		},
 		errors: map[string]error{
@@ -661,4 +779,30 @@ func (r stubRunner) saw(key string) bool {
 		}
 	}
 	return false
+}
+
+type sequenceRunner struct {
+	stubRunner
+	sequences map[string][]CommandResult
+	counts    map[string]int
+}
+
+func (r *sequenceRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
+	key := strings.Join(append([]string{name}, args...), " ")
+	if r.calls != nil {
+		*r.calls = append(*r.calls, key)
+	}
+	if sequence := r.sequences[key]; len(sequence) > 0 {
+		if r.counts == nil {
+			r.counts = map[string]int{}
+		}
+		index := r.counts[key]
+		r.counts[key] = index + 1
+		if index >= len(sequence) {
+			index = len(sequence) - 1
+		}
+		return sequence[index], nil
+	}
+	result := r.results[key]
+	return result, r.errors[key]
 }
