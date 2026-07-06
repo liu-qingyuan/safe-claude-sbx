@@ -319,6 +319,269 @@ Host-side `sbx` and `sandboxd` logs still use the host timezone. A timestamp
 such as `time=2026-07-05T21:32:31.321+08:00` should be treated as host/daemon
 log time, not proof that the sandbox main agent timezone is configured.
 
+### Sandbox-Local Herdr Prototype
+
+Issue #15 validated the sandbox-local Herdr startup contract against a real
+Docker Sandbox `claude` template on 2026-07-06. This was prototype research
+only; it did not change the launcher behavior.
+
+The prototype used a separate sandbox name so it would not mutate the normal
+`claude-sbx` sandbox:
+
+```bash
+sbx create --name safe-claude-sbx-herdr-prototype claude .
+sbx exec safe-claude-sbx-herdr-prototype env
+sbx exec safe-claude-sbx-herdr-prototype sh -lc 'ls -ld /home/agent /home/agent/.claude; command -v claude || true; command -v herdr || true'
+```
+
+Observed result:
+
+- `sbx create --name safe-claude-sbx-herdr-prototype claude .` created a real
+  Claude template sandbox with `/home/agent/.claude`.
+- `command -v claude` returned `/home/agent/.local/bin/claude`.
+- `command -v herdr` was initially empty, so the prototype installed Herdr
+  inside the sandbox rather than relying on a preexisting binary.
+- The sandbox environment did not contain host `HERDR_ENV`,
+  `HERDR_SOCKET_PATH`, or `HERDR_PANE_ID`.
+
+The repeatable installation command is:
+
+```bash
+sbx exec safe-claude-sbx-herdr-prototype sh -lc 'curl -fsSL https://herdr.dev/install.sh | sh'
+sbx exec safe-claude-sbx-herdr-prototype herdr --version
+```
+
+Observed result:
+
+- The installer detected `linux/aarch64`.
+- It downloaded Herdr `v0.7.1`.
+- It installed Herdr to `/home/agent/.local/bin/herdr`.
+- `herdr --version` returned `herdr 0.7.1`.
+
+The Claude integration hook is repeatable:
+
+```bash
+sbx exec safe-claude-sbx-herdr-prototype herdr integration install claude
+sbx exec safe-claude-sbx-herdr-prototype sh -lc 'cat /home/agent/.claude/settings.json'
+sbx exec safe-claude-sbx-herdr-prototype sh -lc 'sed -n "1,220p" /home/agent/.claude/hooks/herdr-agent-state.sh'
+```
+
+Observed result:
+
+- `herdr integration install claude` installed
+  `/home/agent/.claude/hooks/herdr-agent-state.sh`.
+- It ensured Claude settings at `/home/agent/.claude/settings.json`.
+- The settings hook entry calls:
+  `bash '/home/agent/.claude/hooks/herdr-agent-state.sh' session`.
+- The hook exits before reporting unless all of these are present:
+  `HERDR_ENV=1`, non-empty `HERDR_SOCKET_PATH`, and non-empty `HERDR_PANE_ID`.
+- With those values present and a session payload containing `session_id`, the
+  hook attempts a Unix socket request to `pane.report_agent_session`.
+
+The sandbox-local server/socket command shape is:
+
+```bash
+sbx exec safe-claude-sbx-herdr-prototype herdr status server
+sbx exec safe-claude-sbx-herdr-prototype herdr server
+sbx exec safe-claude-sbx-herdr-prototype herdr status server --json
+sbx exec safe-claude-sbx-herdr-prototype herdr session list --json
+```
+
+Observed result:
+
+- Before startup, `herdr status server` reported `status: not running` and
+  socket `/home/agent/.config/herdr/herdr.sock`.
+- `herdr server` runs as a foreground server process and prints:
+  `api socket: /home/agent/.config/herdr/herdr.sock`,
+  `client socket: /home/agent/.config/herdr/herdr-client.sock`, and
+  `logs: /home/agent/.config/herdr/herdr-server.log`.
+- A running server reports JSON status with `running: true`, `version: "0.7.1"`,
+  `protocol: 14`, and socket `/home/agent/.config/herdr/herdr.sock`.
+- The server creates a default session whose `socket_path` is
+  `/home/agent/.config/herdr/herdr.sock`.
+- In this prototype, `sbx exec --detach ... herdr server` still kept the host
+  command attached until the server stopped. A launcher should supervise this
+  foreground process explicitly or validate a stronger detached/session
+  contract before depending on it.
+
+The hook can be exercised without starting a real Claude account session:
+
+```bash
+sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-local:claude safe-claude-sbx-herdr-prototype sh -lc 'printf "%s\n" "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"prototype-session\",\"transcript_path\":\"/home/agent/.claude/projects/prototype.jsonl\",\"source\":\"startup\"}" | /home/agent/.claude/hooks/herdr-agent-state.sh session; echo hook_exit:$?'
+sbx exec safe-claude-sbx-herdr-prototype sh -lc 'tail -n 80 /home/agent/.config/herdr/herdr-server.log'
+```
+
+Observed result:
+
+- The hook exited `0`.
+- The Herdr server log recorded an API request for
+  `method="pane.report_agent_session"` with a `herdr:claude` request id.
+- The API request outcome was `error` because the synthetic pane id was not a
+  real Herdr pane. That still confirms the hook reached the sandbox-local Herdr
+  socket when given sandbox-local `HERDR_*` values.
+
+Host Herdr isolation was checked explicitly:
+
+```bash
+env HERDR_SOCKET_PATH=/tmp/host-herdr.sock HERDR_PANE_ID=host-pane HERDR_ENV=1 sbx exec safe-claude-sbx-herdr-prototype sh -lc 'env | grep "^HERDR_" || true'
+```
+
+Observed result:
+
+- No `HERDR_*` values were printed inside the sandbox.
+- Host `HERDR_*` values did not enter `sbx exec` unless explicitly passed with
+  `-e`.
+- The future launcher must keep using an explicit environment allowlist for host
+  `sbx` subprocesses and must only inject sandbox-local Herdr values inside the
+  sandbox command that needs them.
+
+Cleanup behavior:
+
+```bash
+sbx exec safe-claude-sbx-herdr-prototype herdr server stop
+sbx stop safe-claude-sbx-herdr-prototype
+sbx rm --force safe-claude-sbx-herdr-prototype
+```
+
+Observed result:
+
+- `herdr server stop` stopped the foreground Herdr server.
+- `sbx stop` stopped the prototype sandbox.
+- `sbx rm --force` removed the prototype sandbox.
+- After cleanup, `sbx ls` showed only the preexisting stopped `claude-sbx`.
+
+The implementation contract for sandbox-local Herdr mode is:
+
+- Use the `claude` template sandbox, not the `shell` probe template, for Herdr
+  integration validation.
+- Install or reuse `/home/agent/.local/bin/herdr`; fail closed if the install
+  command or version check fails.
+- Run `herdr integration install claude` inside the Claude template sandbox and
+  verify `/home/agent/.claude/hooks/herdr-agent-state.sh`.
+- Start `herdr server` inside the sandbox before starting Claude under the
+  sandbox-local Herdr environment.
+- Use `/home/agent/.config/herdr/herdr.sock` as the sandbox-local socket path
+  unless configuration supplies another path under `/home/agent`.
+- Provide only sandbox-local `HERDR_ENV=1`, `HERDR_SOCKET_PATH`, and
+  `HERDR_PANE_ID` to the Claude/Herdr process boundary.
+- Never pass host `HERDR_SOCKET_PATH`, host pane ids, host workspace ids, or
+  host Herdr sockets into the sandbox.
+- On startup failure or watchdog-triggered shutdown, stop the sandbox-local
+  Herdr server and then use the existing sandbox cleanup path.
+
+#### Sandbox-Local Herdr Architecture
+
+```mermaid
+graph TB
+    hostLauncher["Host launcher"]
+    hostEnv["Host environment allowlist"]
+    hostHerdr["Host Herdr state"]
+    sbxCli["sbx CLI"]
+    sandbox["Docker Sandbox claude template"]
+    localHerdr["Sandbox-local Herdr server"]
+    localSocket["Sandbox socket /home/agent/.config/herdr/herdr.sock"]
+    claude["Sandbox-local Claude Code"]
+    hook["Claude Herdr hook"]
+
+    hostLauncher --> hostEnv
+    hostLauncher --> sbxCli
+    sbxCli --> sandbox
+    sandbox --> localHerdr
+    localHerdr --> localSocket
+    sandbox --> claude
+    claude --> hook
+    hook --> localSocket
+    hostHerdr -.->|must not pass socket or HERDR env| sandbox
+
+    classDef hostClass fill:#e7f5ff,stroke:#1971c2,color:#0b3d66
+    classDef blockedClass fill:#ffe3e3,stroke:#c92a2a,color:#5c1a1a
+    classDef sandboxClass fill:#c5f6fa,stroke:#0c8599,color:#073b43
+    classDef herdrClass fill:#e5dbff,stroke:#5f3dc4,color:#2b145e
+    class hostLauncher,hostEnv,sbxCli hostClass
+    class hostHerdr blockedClass
+    class sandbox,claude,hook sandboxClass
+    class localHerdr,localSocket herdrClass
+```
+
+#### Sandbox-Local Herdr Startup Sequence
+
+```mermaid
+sequenceDiagram
+    participant L as Launcher
+    participant S as sbx CLI
+    participant X as Claude sandbox
+    participant H as Sandbox Herdr
+    participant C as Claude Code
+    participant K as Claude hook
+
+    L->>S: sbx create --name main claude workspace
+    S-->>X: Claude template with /home/agent/.claude
+    L->>S: sbx exec main command -v herdr
+    alt Herdr missing and install allowed
+        L->>S: sbx exec main install Herdr
+        S-->>X: /home/agent/.local/bin/herdr
+    else Herdr unavailable or install disabled
+        L->>S: sbx stop main
+        S-->>L: fail closed
+    end
+    L->>S: sbx exec main herdr integration install claude
+    S-->>K: Hook and settings installed
+    L->>S: sbx exec main herdr server
+    S-->>H: Foreground server owns sandbox socket
+    H-->>L: Socket /home/agent/.config/herdr/herdr.sock
+    L->>S: start Claude with sandbox-local HERDR env
+    S-->>C: Claude process
+    C->>K: SessionStart hook
+    K->>H: pane.report_agent_session over sandbox socket
+    alt startup or runtime failure
+        L->>S: herdr server stop
+        L->>S: sbx stop main
+    end
+```
+
+#### Sandbox-Local Herdr Prototype Contract
+
+```mermaid
+classDiagram
+    class HerdrStartupContract {
+        +sandboxName string
+        +workspace string
+        +installIfMissing bool
+        +socketPath string
+        +paneID string
+    }
+
+    class HerdrInstallResult {
+        +binaryPath string
+        +version string
+        +installed bool
+    }
+
+    class ClaudeIntegrationResult {
+        +hookPath string
+        +settingsPath string
+        +requiresEnv bool
+    }
+
+    class HerdrServerResult {
+        +socketPath string
+        +clientSocketPath string
+        +logPath string
+        +foregroundProcess bool
+    }
+
+    class HerdrCleanupResult {
+        +serverStopped bool
+        +sandboxStopped bool
+        +sandboxRemoved bool
+    }
+
+    HerdrStartupContract --> HerdrInstallResult
+    HerdrStartupContract --> ClaudeIntegrationResult
+    HerdrStartupContract --> HerdrServerResult
+    HerdrStartupContract --> HerdrCleanupResult
+```
+
 ### Stop And Cleanup
 
 Default cleanup policy:
