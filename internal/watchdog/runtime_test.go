@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,6 +145,52 @@ func TestRuntimeCheckerFailsWhenSandboxEgressResultIsNotOK(t *testing.T) {
 	}
 }
 
+func TestRuntimeCheckerUsesIsolatedProbeNamesForOverlappingChecks(t *testing.T) {
+	sandbox := newOverlappingProbeSandbox()
+	checker := RuntimeChecker{
+		Config:              runtimeCheckConfig(),
+		StartupTUNInterface: "utun9",
+		RouteRunner: fakeRouteRunner{
+			routeInterface: "utun9",
+			interfaces:     map[string]bool{"utun9": true},
+		},
+		Sandbox: sandbox,
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
+		firstDone <- err
+	}()
+	firstName := sandbox.waitFirstProbe(t)
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
+		secondDone <- err
+	}()
+
+	var secondName string
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second runtime check finished before isolated probe started: %v", err)
+	case secondName = <-sandbox.secondProbeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("second runtime check did not reach isolated probe")
+	}
+	if secondName == firstName {
+		t.Fatalf("overlapping runtime checks reused probe name %q", firstName)
+	}
+
+	sandbox.release()
+	if err := waitRuntimeCheck(t, firstDone); err != nil {
+		t.Fatalf("first runtime check failed: %v", err)
+	}
+	if err := waitRuntimeCheck(t, secondDone); err != nil {
+		t.Fatalf("second runtime check failed: %v", err)
+	}
+}
+
 func TestRuntimeCheckerPassesWhenTUNAndSandboxEgressRemainValid(t *testing.T) {
 	checker := RuntimeChecker{
 		Config:              runtimeCheckConfig(),
@@ -223,5 +270,86 @@ func (b *fakeFastSandbox) Probe(ctx context.Context, _ config.Config) (backend.P
 		return backend.ProbeResult{}, ctx.Err()
 	case <-b.probeDone:
 		return backend.ProbeResult{}, nil
+	}
+}
+
+type overlappingProbeSandbox struct {
+	mu                 sync.Mutex
+	active             map[string]bool
+	firstProbeStarted  chan string
+	secondProbeStarted chan string
+	releaseProbes      chan struct{}
+}
+
+func newOverlappingProbeSandbox() *overlappingProbeSandbox {
+	return &overlappingProbeSandbox{
+		active:             map[string]bool{},
+		firstProbeStarted:  make(chan string, 1),
+		secondProbeStarted: make(chan string, 1),
+		releaseProbes:      make(chan struct{}),
+	}
+}
+
+func (b *overlappingProbeSandbox) CheckSandboxEgress(_ context.Context, cfg config.Config) (backend.ProbeResult, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.active[cfg.Sandbox.ProbeName] {
+		return backend.ProbeResult{}, errors.New("probe name collision")
+	}
+	return backend.ProbeResult{
+		Egress: network.EgressResult{OK: true, ObservedIP: cfg.Network.EgressIP.ExpectedIP, ExpectedIP: cfg.Network.EgressIP.ExpectedIP},
+	}, nil
+}
+
+func (b *overlappingProbeSandbox) Probe(ctx context.Context, cfg config.Config) (backend.ProbeResult, error) {
+	b.mu.Lock()
+	name := cfg.Sandbox.ProbeName
+	if b.active[name] {
+		b.mu.Unlock()
+		return backend.ProbeResult{}, errors.New("probe name collision")
+	}
+	b.active[name] = true
+	activeCount := len(b.active)
+	b.mu.Unlock()
+
+	if activeCount == 1 {
+		b.firstProbeStarted <- name
+	} else {
+		b.secondProbeStarted <- name
+	}
+
+	select {
+	case <-ctx.Done():
+		return backend.ProbeResult{}, ctx.Err()
+	case <-b.releaseProbes:
+		return backend.ProbeResult{
+			Egress: network.EgressResult{OK: true, ObservedIP: cfg.Network.EgressIP.ExpectedIP, ExpectedIP: cfg.Network.EgressIP.ExpectedIP},
+		}, nil
+	}
+}
+
+func (b *overlappingProbeSandbox) waitFirstProbe(t *testing.T) string {
+	t.Helper()
+	select {
+	case name := <-b.firstProbeStarted:
+		return name
+	case <-time.After(time.Second):
+		t.Fatal("first runtime check did not reach deep probe")
+		return ""
+	}
+}
+
+func (b *overlappingProbeSandbox) release() {
+	close(b.releaseProbes)
+}
+
+func waitRuntimeCheck(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("runtime check did not finish")
+		return nil
 	}
 }

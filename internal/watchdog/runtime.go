@@ -3,6 +3,7 @@ package watchdog
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/backend"
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/config"
@@ -20,6 +21,8 @@ type RuntimeChecker struct {
 	RouteRunner         network.CommandRunner
 	Sandbox             SandboxRuntimeProbe
 }
+
+var runtimeProbeSequence atomic.Uint64
 
 func (c RuntimeChecker) Check(ctx context.Context, event Event) (CheckResult, error) {
 	runner := c.RouteRunner
@@ -41,17 +44,28 @@ func (c RuntimeChecker) Check(ctx context.Context, event Event) (CheckResult, er
 	if c.Sandbox == nil {
 		return runtimeFail("sandbox probe unavailable")
 	}
-	egress, err := c.Sandbox.CheckSandboxEgress(ctx, c.Config)
+	runtimeConfig := c.runtimeProbeConfig()
+	egress, err := c.Sandbox.CheckSandboxEgress(ctx, runtimeConfig)
 	if err != nil {
 		return runtimeFail("sandbox egress invalid: %v", err)
 	}
 	if !egress.Egress.OK {
 		return runtimeFail("sandbox egress invalid: %s", egress.Egress.FailureReason)
 	}
-	if _, err := c.Sandbox.Probe(ctx, c.Config); err != nil {
+	if _, err := c.Sandbox.Probe(ctx, runtimeConfig); err != nil {
 		return runtimeFail("sandbox inspection invalid: %v", err)
 	}
 	return CheckResult{OK: true}, nil
+}
+
+func (c RuntimeChecker) runtimeProbeConfig() config.Config {
+	cfg := c.Config
+	if cfg.Sandbox.ProbeName == "" {
+		return cfg
+	}
+	sequence := runtimeProbeSequence.Add(1)
+	cfg.Sandbox.ProbeName = fmt.Sprintf("%s-runtime-%d", cfg.Sandbox.ProbeName, sequence)
+	return cfg
 }
 
 func runtimeFail(format string, args ...any) (CheckResult, error) {
