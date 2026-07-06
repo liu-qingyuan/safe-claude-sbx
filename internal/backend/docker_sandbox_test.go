@@ -158,6 +158,75 @@ func TestDockerSandboxProbeRemovesStaleProbeSandboxAndRetriesCreate(t *testing.T
 	}
 }
 
+func TestDockerSandboxCheckSandboxEgressSkipsDeepInspection(t *testing.T) {
+	calls := []string{}
+	runner := stubRunner{
+		path:  "/tmp/sbx",
+		calls: &calls,
+		results: map[string]CommandResult{
+			"sbx create --name probe shell .":                  {Stdout: "created\n"},
+			"sbx exec probe curl -fsS https://example.test/ip": {Stdout: "203.0.113.10\n"},
+			"sbx stop probe":       {Stderr: "sandbox not found\n"},
+			"sbx rm --force probe": {Stderr: "sandbox not found\n"},
+		},
+		errors: map[string]error{
+			"sbx stop probe":       errors.New("exit status 1"),
+			"sbx rm --force probe": errors.New("exit status 1"),
+		},
+	}
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckSandboxEgress(context.Background(), probeConfig())
+
+	if err != nil {
+		t.Fatalf("sandbox egress check failed: %v", err)
+	}
+	if !result.CleanupDone {
+		t.Fatal("expected fast egress check to clean up probe sandbox")
+	}
+	if !result.Egress.OK || result.Egress.ObservedIP != "203.0.113.10" {
+		t.Fatalf("expected matching sandbox egress, got %#v", result.Egress)
+	}
+	got := strings.Join(calls, "\n")
+	want := strings.Join([]string{
+		"sbx create --name probe shell .",
+		"sbx exec probe curl -fsS https://example.test/ip",
+		"sbx stop probe",
+		"sbx rm --force probe",
+	}, "\n")
+	if got != want {
+		t.Fatalf("fast egress check should skip deep inspection, got:\n%s", got)
+	}
+}
+
+func TestDockerSandboxCheckSandboxEgressUsesConfiguredTimeout(t *testing.T) {
+	runner := &deadlineRecordingRunner{
+		results: map[string]CommandResult{
+			"sbx create --name probe shell .":                  {Stdout: "created\n"},
+			"sbx exec probe curl -fsS https://example.test/ip": {Stdout: "203.0.113.10\n"},
+			"sbx stop probe":       {Stderr: "sandbox not found\n"},
+			"sbx rm --force probe": {Stderr: "sandbox not found\n"},
+		},
+		errors: map[string]error{
+			"sbx stop probe":       errors.New("exit status 1"),
+			"sbx rm --force probe": errors.New("exit status 1"),
+		},
+	}
+	cfg := probeConfig()
+	cfg.Network.EgressIP.TimeoutSeconds = 1
+
+	_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckSandboxEgress(context.Background(), cfg)
+
+	if err != nil {
+		t.Fatalf("sandbox egress check failed: %v", err)
+	}
+	if runner.fastDeadlineCount != 2 {
+		t.Fatalf("expected create and curl to use fast egress deadline, got %d", runner.fastDeadlineCount)
+	}
+	if runner.cleanupDeadlineCount != 2 {
+		t.Fatalf("expected cleanup commands to use cleanup deadline, got %d", runner.cleanupDeadlineCount)
+	}
+}
+
 func TestDockerSandboxStartMainPassesMainSandboxContract(t *testing.T) {
 	calls := []string{}
 	runner := stubRunner{
@@ -978,6 +1047,36 @@ type stubRunner struct {
 	results     map[string]CommandResult
 	errors      map[string]error
 	calls       *[]string
+}
+
+type deadlineRecordingRunner struct {
+	results              map[string]CommandResult
+	errors               map[string]error
+	fastDeadlineCount    int
+	cleanupDeadlineCount int
+}
+
+func (r *deadlineRecordingRunner) LookPath(file string) (string, error) {
+	return file, nil
+}
+
+func (r *deadlineRecordingRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
+	key := strings.Join(append([]string{name}, args...), " ")
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if strings.Contains(key, "create --name probe") || strings.Contains(key, "exec probe curl") {
+			if remaining > 0 && remaining <= 2*time.Second {
+				r.fastDeadlineCount++
+			}
+		}
+		if strings.Contains(key, "stop probe") || strings.Contains(key, "rm --force probe") {
+			if remaining > 0 && remaining <= 2*time.Second {
+				r.cleanupDeadlineCount++
+			}
+		}
+	}
+	result := r.results[key]
+	return result, r.errors[key]
 }
 
 func (r stubRunner) LookPath(file string) (string, error) {

@@ -9,7 +9,8 @@ import (
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/network"
 )
 
-type SandboxProbe interface {
+type SandboxRuntimeProbe interface {
+	CheckSandboxEgress(ctx context.Context, cfg config.Config) (backend.ProbeResult, error)
 	Probe(ctx context.Context, cfg config.Config) (backend.ProbeResult, error)
 }
 
@@ -17,7 +18,7 @@ type RuntimeChecker struct {
 	Config              config.Config
 	StartupTUNInterface string
 	RouteRunner         network.CommandRunner
-	Sandbox             SandboxProbe
+	Sandbox             SandboxRuntimeProbe
 }
 
 func (c RuntimeChecker) Check(ctx context.Context, event Event) (CheckResult, error) {
@@ -40,8 +41,15 @@ func (c RuntimeChecker) Check(ctx context.Context, event Event) (CheckResult, er
 	if c.Sandbox == nil {
 		return runtimeFail("sandbox probe unavailable")
 	}
-	if _, err := c.Sandbox.Probe(ctx, c.Config); err != nil {
+	egress, err := c.Sandbox.CheckSandboxEgress(ctx, c.Config)
+	if err != nil {
 		return runtimeFail("sandbox egress invalid: %v", err)
+	}
+	if !egress.Egress.OK {
+		return runtimeFail("sandbox egress invalid: %s", egress.Egress.FailureReason)
+	}
+	if _, err := c.Sandbox.Probe(ctx, c.Config); err != nil {
+		return runtimeFail("sandbox inspection invalid: %v", err)
 	}
 	return CheckResult{OK: true}, nil
 }

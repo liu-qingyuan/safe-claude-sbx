@@ -161,9 +161,10 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 		)
 	})
 	supervisor := watchdog.Supervisor{
-		Events:      routeEvents,
-		EventErrors: routeErrors,
-		BackendExit: backendExit,
+		Events:        routeEvents,
+		EventErrors:   routeErrors,
+		BackendExit:   backendExit,
+		EventDebounce: watchdog.DefaultEventDebounce,
 		Check: watchdog.RuntimeChecker{
 			Config:              cfg,
 			StartupTUNInterface: tun.StartupTUNInterface,

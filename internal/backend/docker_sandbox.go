@@ -183,28 +183,9 @@ func (b DockerSandbox) CheckAvailability(ctx context.Context) (Availability, err
 }
 
 func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResult, error) {
-	runner := b.runner()
-	binary := b.binary()
 	probeName := cfg.Sandbox.ProbeName
-
-	create := []string{"create", "--name", probeName, "shell", cfg.Workspace.Mount}
-	if cfg.Workspace.UseCloneMode {
-		create = []string{"create", "--clone", "--name", probeName, "shell", cfg.Workspace.Mount}
-	}
-	if result, err := runner.Run(ctx, binary, create...); err != nil {
-		if cfg.Cleanup.RemoveProbeSandbox && isAlreadyExistsCreate(result) {
-			cleanupCtx, cancel := CleanupTimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
-			cleanupDone := b.cleanupProbe(cleanupCtx, cfg)
-			cancel()
-			if !cleanupDone {
-				return ProbeResult{}, fmt.Errorf("create probe sandbox: %s; cleanup existing probe sandbox failed", commandText(result, err))
-			}
-			if retryResult, retryErr := runner.Run(ctx, binary, create...); retryErr != nil {
-				return b.finishProbe(ctx, cfg, ProbeResult{}, fmt.Errorf("create probe sandbox: %s", commandText(retryResult, retryErr)))
-			}
-		} else {
-			return b.finishProbe(ctx, cfg, ProbeResult{}, fmt.Errorf("create probe sandbox: %s", commandText(result, err)))
-		}
+	if err := b.createProbe(ctx, cfg); err != nil {
+		return b.finishProbe(ctx, cfg, ProbeResult{}, err)
 	}
 
 	env, err := b.execProbe(ctx, probeName, "-e", "TZ="+cfg.Environment.Timezone, "-e", "LANG="+cfg.Environment.Locale, "-e", "LC_ALL="+cfg.Environment.Locale, "env")
@@ -270,6 +251,35 @@ func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResul
 	}
 
 	return b.finishProbe(ctx, cfg, result, nil)
+}
+
+func (b DockerSandbox) CheckSandboxEgress(ctx context.Context, cfg config.Config) (ProbeResult, error) {
+	egressCtx, cancel := egressTimeoutContext(ctx, cfg.Network.EgressIP.TimeoutSeconds)
+	defer cancel()
+
+	// Fast runtime egress uses the same policy-validated probe sandbox and
+	// workspace mount, but skips the slower env, mount, time, and locale checks.
+	if err := b.createProbe(egressCtx, cfg); err != nil {
+		return b.finishProbe(ctx, cfg, ProbeResult{}, err)
+	}
+
+	egressText, err := b.execProbe(egressCtx, cfg.Sandbox.ProbeName, "curl", "-fsS", cfg.Network.EgressIP.SandboxCheckURL)
+	if err != nil {
+		return b.finishProbe(ctx, cfg, ProbeResult{}, err)
+	}
+	egress, err := compareSandboxEgress(cfg.Network.EgressIP, egressText)
+	result := ProbeResult{Egress: egress}
+	if err != nil {
+		return b.finishProbe(ctx, cfg, result, err)
+	}
+	return b.finishProbe(ctx, cfg, result, nil)
+}
+
+func egressTimeoutContext(parent context.Context, seconds int) (context.Context, context.CancelFunc) {
+	if seconds <= 0 {
+		seconds = 30
+	}
+	return context.WithTimeout(parent, time.Duration(seconds)*time.Second)
 }
 
 func herdrRuntimePolicy(cfg config.Config) policy.HerdrRuntimePolicy {
@@ -816,6 +826,33 @@ func (b DockerSandbox) finishProbe(ctx context.Context, cfg config.Config, resul
 		return result, fmt.Errorf("%w; cleanup probe sandbox failed", err)
 	}
 	return result, fmt.Errorf("cleanup probe sandbox failed")
+}
+
+func (b DockerSandbox) createProbe(ctx context.Context, cfg config.Config) error {
+	runner := b.runner()
+	binary := b.binary()
+	probeName := cfg.Sandbox.ProbeName
+
+	create := []string{"create", "--name", probeName, "shell", cfg.Workspace.Mount}
+	if cfg.Workspace.UseCloneMode {
+		create = []string{"create", "--clone", "--name", probeName, "shell", cfg.Workspace.Mount}
+	}
+	if result, err := runner.Run(ctx, binary, create...); err != nil {
+		if cfg.Cleanup.RemoveProbeSandbox && isAlreadyExistsCreate(result) {
+			cleanupCtx, cancel := CleanupTimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+			cleanupDone := b.cleanupProbe(cleanupCtx, cfg)
+			cancel()
+			if !cleanupDone {
+				return fmt.Errorf("create probe sandbox: %s; cleanup existing probe sandbox failed", commandText(result, err))
+			}
+			if retryResult, retryErr := runner.Run(ctx, binary, create...); retryErr != nil {
+				return fmt.Errorf("create probe sandbox: %s", commandText(retryResult, retryErr))
+			}
+			return nil
+		}
+		return fmt.Errorf("create probe sandbox: %s", commandText(result, err))
+	}
+	return nil
 }
 
 func (b DockerSandbox) cleanupProbe(ctx context.Context, cfg config.Config) bool {

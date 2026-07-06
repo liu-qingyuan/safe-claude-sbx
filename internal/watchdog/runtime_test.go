@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/backend"
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/config"
@@ -84,6 +85,65 @@ func TestRuntimeCheckerFailsWhenSandboxEgressMismatches(t *testing.T) {
 	}
 }
 
+func TestRuntimeCheckerFailsSandboxEgressBeforeDeepProbe(t *testing.T) {
+	checker := RuntimeChecker{
+		Config:              runtimeCheckConfig(),
+		StartupTUNInterface: "utun9",
+		RouteRunner: fakeRouteRunner{
+			routeInterface: "utun9",
+			interfaces:     map[string]bool{"utun9": true},
+		},
+		Sandbox: &fakeFastSandbox{
+			egressErr: errors.New("sandbox-egress-mismatch: observed IP mismatch"),
+			probeDone: make(chan struct{}),
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	result, err := checker.Check(ctx, Event{Source: "route-monitor"})
+	if err == nil {
+		t.Fatal("expected sandbox egress error")
+	}
+	if result.OK {
+		t.Fatal("runtime check unexpectedly passed")
+	}
+	if !strings.Contains(err.Error(), "sandbox-egress-mismatch") {
+		t.Fatalf("expected sandbox egress mismatch reason, got %v", err)
+	}
+}
+
+func TestRuntimeCheckerFailsWhenSandboxEgressResultIsNotOK(t *testing.T) {
+	checker := RuntimeChecker{
+		Config:              runtimeCheckConfig(),
+		StartupTUNInterface: "utun9",
+		RouteRunner: fakeRouteRunner{
+			routeInterface: "utun9",
+			interfaces:     map[string]bool{"utun9": true},
+		},
+		Sandbox: &fakeFastSandbox{
+			egressResult: backend.ProbeResult{Egress: network.EgressResult{
+				OK:            false,
+				ExpectedIP:    "203.0.113.10",
+				ObservedIP:    "198.51.100.77",
+				FailureReason: "sandbox egress observed IP 198.51.100.77 does not match expected IP 203.0.113.10",
+			}},
+			probeDone: make(chan struct{}),
+		},
+	}
+
+	result, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
+	if err == nil {
+		t.Fatal("expected sandbox egress policy error")
+	}
+	if result.OK {
+		t.Fatal("runtime check unexpectedly passed")
+	}
+	if !strings.Contains(err.Error(), "198.51.100.77") {
+		t.Fatalf("expected structured egress failure reason, got %v", err)
+	}
+}
+
 func TestRuntimeCheckerPassesWhenTUNAndSandboxEgressRemainValid(t *testing.T) {
 	checker := RuntimeChecker{
 		Config:              runtimeCheckConfig(),
@@ -139,6 +199,29 @@ type fakeProbeBackend struct {
 	err    error
 }
 
+func (b fakeProbeBackend) CheckSandboxEgress(context.Context, config.Config) (backend.ProbeResult, error) {
+	return b.result, b.err
+}
+
 func (b fakeProbeBackend) Probe(context.Context, config.Config) (backend.ProbeResult, error) {
 	return b.result, b.err
+}
+
+type fakeFastSandbox struct {
+	egressResult backend.ProbeResult
+	egressErr    error
+	probeDone    chan struct{}
+}
+
+func (b *fakeFastSandbox) CheckSandboxEgress(context.Context, config.Config) (backend.ProbeResult, error) {
+	return b.egressResult, b.egressErr
+}
+
+func (b *fakeFastSandbox) Probe(ctx context.Context, _ config.Config) (backend.ProbeResult, error) {
+	select {
+	case <-ctx.Done():
+		return backend.ProbeResult{}, ctx.Err()
+	case <-b.probeDone:
+		return backend.ProbeResult{}, nil
+	}
 }
