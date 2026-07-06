@@ -362,20 +362,12 @@ func (b DockerSandbox) StartHerdrTUIAttached(ctx context.Context, plan StartPlan
 	if plan.Supervision.Mode != "sandbox-local-herdr" {
 		return start, nil, fmt.Errorf("start Herdr TUI: sandbox-local-herdr supervision required")
 	}
-	if err := b.prepareSandboxLocalHerdr(ctx, plan); err != nil {
-		if shouldCleanupStartedMain(err) {
-			b.cleanupStartedMain(context.Background(), plan)
-		}
-		return start, nil, err
-	}
-	if err := b.ensureSandboxLocalCC(ctx, plan); err != nil {
-		b.cleanupStartedMain(context.Background(), plan)
+	if err := b.requireExistingSandboxLocalHerdr(ctx, plan); err != nil {
 		return start, nil, err
 	}
 	wait, err := b.startAttachedCommand(ctx, []string{"exec", "-it", plan.SandboxName, "herdr"}, "start sandbox-local Herdr TUI", stdin, stdout, stderr)
 	if err != nil {
-		b.cleanupStartedMain(context.Background(), plan)
-		return start, nil, err
+		return start, nil, preserveExistingMainError{err: err}
 	}
 	return start, wait, nil
 }
@@ -462,6 +454,28 @@ func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartP
 	}
 	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "herdr", "integration", "install", "claude"); err != nil {
 		return fmt.Errorf("install Claude Herdr integration: %s", commandText(result, err))
+	}
+	return nil
+}
+
+func (b DockerSandbox) requireExistingSandboxLocalHerdr(ctx context.Context, plan StartPlan) error {
+	state, err := b.inspectMainSandbox(ctx, plan.SandboxName)
+	if err != nil {
+		return preserveExistingMainError{err: err}
+	}
+	if !state.Exists {
+		return preserveExistingMainError{err: fmt.Errorf("attach existing Herdr TUI: main sandbox %q not found", plan.SandboxName)}
+	}
+	if state.Workspace != "" && state.Workspace != plan.Workspace {
+		return preserveExistingMainError{err: fmt.Errorf("attach existing Herdr TUI: main sandbox %q workspace mismatch: configured %q, observed %q", plan.SandboxName, plan.Workspace, state.Workspace)}
+	}
+
+	result, err := b.runner().Run(ctx, b.binary(), "exec", plan.SandboxName, "sh", "-lc", "command -v herdr")
+	if err != nil {
+		return preserveExistingMainError{err: fmt.Errorf("sandbox-local Herdr unavailable in existing main sandbox %q: %s", plan.SandboxName, commandText(result, err))}
+	}
+	if strings.TrimSpace(result.Stdout) == "" {
+		return preserveExistingMainError{err: fmt.Errorf("sandbox-local Herdr unavailable in existing main sandbox %q: command -v herdr returned empty output", plan.SandboxName)}
 	}
 	return nil
 }
@@ -616,8 +630,9 @@ func (b DockerSandbox) ensureFreshMainSandbox(ctx context.Context, plan StartPla
 }
 
 type mainSandboxState struct {
-	Exists bool
-	Status string
+	Exists    bool
+	Status    string
+	Workspace string
 }
 
 type preserveExistingMainError struct {
@@ -659,7 +674,11 @@ func (b DockerSandbox) inspectMainSandbox(ctx context.Context, sandboxName strin
 		if len(fields) < 3 {
 			return mainSandboxState{Exists: true}, fmt.Errorf("inspect existing main sandbox: %q status unavailable", sandboxName)
 		}
-		return mainSandboxState{Exists: true, Status: strings.ToLower(fields[2])}, nil
+		state := mainSandboxState{Exists: true, Status: strings.ToLower(fields[2])}
+		if len(fields) >= 4 {
+			state.Workspace = fields[len(fields)-1]
+		}
+		return state, nil
 	}
 	return mainSandboxState{}, nil
 }

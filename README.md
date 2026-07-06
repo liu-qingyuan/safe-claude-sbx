@@ -47,6 +47,11 @@ Use the policy-gated sandbox-local Herdr TUI as the daily entry point:
 safe-herdr --config config.yaml
 ```
 
+`safe-herdr` expects the configured main sandbox to already contain the
+sandbox-local Herdr binary and Claude integration. It validates policy and then
+attaches with `sbx exec -it <main_name> herdr`; it does not download Herdr or
+rewrite sandbox-local wrappers.
+
 Inside the Herdr TUI, start Claude with the sandbox-local shortcut:
 
 ```bash

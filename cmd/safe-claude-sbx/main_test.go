@@ -142,9 +142,10 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "sbx.log")
 	fakeBin := writeFakeSystemCommands(t, "utun9", false)
 	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
-		EgressIP:          "203.0.113.10",
-		LogPath:           logPath,
-		LogRunEnvironment: true,
+		EgressIP:           "203.0.113.10",
+		LogPath:            logPath,
+		LogRunEnvironment:  true,
+		ExistingMainStatus: "running",
 	})
 
 	cmd := exec.Command("go", "run", "../safe-herdr", "--config", configPath)
@@ -170,17 +171,103 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 		"exec claude-sbx-probe curl -fsS https://api.ipify.org",
 		"rm --force claude-sbx-probe",
 		"ls",
-		"create --name claude-sbx claude .",
 		"exec claude-sbx sh -lc command -v herdr",
-		"exec claude-sbx herdr --version",
-		"exec claude-sbx herdr integration install claude",
-		"exec -u root claude-sbx sh -lc printf '%s\\n' '#!/usr/bin/env bash' 'export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1' 'exec claude --dangerously-skip-permissions \"$@\"' > /usr/local/bin/cc && chmod 0755 /usr/local/bin/cc && command -v cc",
 		"exec -it claude-sbx herdr",
 	})
+	for _, forbidden := range []string{
+		"create --name claude-sbx claude .",
+		"curl -fsSL https://herdr.dev/install.sh | sh",
+		"herdr integration install claude",
+		"command -v cc",
+	} {
+		if containsLogLine(log, forbidden) {
+			t.Fatalf("safe-herdr should attach without preparing main sandbox, got forbidden command %q:\n%s", forbidden, log)
+		}
+	}
 	for _, forbidden := range []string{"/tmp/host-herdr.sock", "host-pane", "host-workspace"} {
 		if strings.Contains(log, forbidden) {
 			t.Fatalf("safe-herdr leaked host Herdr value %q:\n%s", forbidden, log)
 		}
+	}
+}
+
+func TestSafeHerdrRequiresExistingSandboxLocalHerdr(t *testing.T) {
+	tests := []struct {
+		name      string
+		fakeSBX   fakeSBXOptions
+		wantError string
+	}{
+		{
+			name:      "main sandbox missing",
+			fakeSBX:   fakeSBXOptions{},
+			wantError: `main sandbox "claude-sbx" not found`,
+		},
+		{
+			name: "workspace mismatch",
+			fakeSBX: fakeSBXOptions{
+				ExistingMainStatus:    "running",
+				ExistingMainWorkspace: "/other/workspace",
+			},
+			wantError: "workspace mismatch",
+		},
+		{
+			name: "Herdr unavailable",
+			fakeSBX: fakeSBXOptions{
+				ExistingMainStatus: "running",
+				MissingHerdr:       true,
+			},
+			wantError: "sandbox-local Herdr unavailable",
+		},
+		{
+			name: "attach failure",
+			fakeSBX: fakeSBXOptions{
+				ExistingMainStatus: "running",
+				FailHerdrTUI:       true,
+			},
+			wantError: "start sandbox-local Herdr TUI",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintln(w, "203.0.113.10")
+			}))
+			t.Cleanup(server.Close)
+
+			configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+			logPath := filepath.Join(t.TempDir(), "sbx.log")
+			fakeBin := writeFakeSystemCommands(t, "utun9", false)
+			tt.fakeSBX.EgressIP = "203.0.113.10"
+			tt.fakeSBX.LogPath = logPath
+			fakeSBX := writeFakeSBX(t, tt.fakeSBX)
+
+			cmd := exec.Command("go", "run", "../safe-herdr", "--config", configPath)
+			cmd.Dir = "."
+			cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("safe-herdr unexpectedly succeeded:\n%s", output)
+			}
+			if !strings.Contains(string(output), tt.wantError) {
+				t.Fatalf("expected %q in output, got:\n%s", tt.wantError, output)
+			}
+			log := readFile(t, logPath)
+			for _, forbidden := range []string{
+				"create --name claude-sbx claude .",
+				"curl -fsSL https://herdr.dev/install.sh | sh",
+				"herdr integration install claude",
+				"command -v cc",
+				"exec claude-sbx herdr server stop",
+				"stop claude-sbx",
+				"rm --force claude-sbx",
+			} {
+				if containsLogLine(log, forbidden) {
+					t.Fatalf("safe-herdr should not prepare or clean existing main sandbox, got forbidden command %q:\n%s", forbidden, log)
+				}
+			}
+		})
 	}
 }
 
@@ -193,7 +280,12 @@ func TestSafeHerdrWatchdogStopsSandboxWhenRouteEventChangesDefaultRoute(t *testi
 	configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
 	logPath := filepath.Join(t.TempDir(), "sbx.log")
 	fakeBin := writeFakeSystemCommandsWithRuntime(t, "utun9", "en0", false, true)
-	fakeSBX := writeFakeSBX(t, fakeSBXOptions{EgressIP: "203.0.113.10", LogPath: logPath, BlockRun: true})
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:           "203.0.113.10",
+		LogPath:            logPath,
+		BlockRun:           true,
+		ExistingMainStatus: "running",
+	})
 
 	cmd := exec.Command("go", "run", "../safe-herdr", "--config", configPath)
 	cmd.Dir = "."
@@ -1388,19 +1480,22 @@ func writeTestConfig(t *testing.T, body string) string {
 }
 
 type fakeSBXOptions struct {
-	EgressIP           string
-	VersionOutput      string
-	EnvOutput          string
-	MountOutput        string
-	LogPath            string
-	LogRunEnvironment  bool
-	FailCreate         bool
-	FailCurl           bool
-	FailRun            bool
-	FailHerdrHook      bool
-	FailHerdrServer    bool
-	BlockRun           bool
-	ExistingMainStatus string
+	EgressIP              string
+	VersionOutput         string
+	EnvOutput             string
+	MountOutput           string
+	LogPath               string
+	LogRunEnvironment     bool
+	FailCreate            bool
+	FailCurl              bool
+	FailRun               bool
+	FailHerdrHook         bool
+	FailHerdrServer       bool
+	FailHerdrTUI          bool
+	MissingHerdr          bool
+	BlockRun              bool
+	ExistingMainStatus    string
+	ExistingMainWorkspace string
 }
 
 func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
@@ -1422,6 +1517,10 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	mountOutput := opts.MountOutput
 	if mountOutput == "" {
 		mountOutput = "/dev/disk1 on /workspace type virtiofs\n"
+	}
+	existingMainWorkspace := opts.ExistingMainWorkspace
+	if existingMainWorkspace == "" {
+		existingMainWorkspace = "."
 	}
 	logSnippet := ":"
 	if opts.LogPath != "" {
@@ -1445,7 +1544,7 @@ case "$1" in
   ls)
     if [ -n %q ]; then
       printf 'SANDBOX                       AGENT   STATUS    PORTS   WORKSPACE\n'
-      printf 'claude-sbx                     claude  %%s             .\n' %q
+      printf 'claude-sbx                     claude  %%s             %%s\n' %q %q
     else
       printf 'No sandboxes found.\n'
     fi
@@ -1482,6 +1581,10 @@ case "$1" in
         printf 'LANG=en_US.UTF-8\nLC_ALL=C.UTF-8\n'
         ;;
       *" command -v herdr")
+        if [ %q = "true" ]; then
+          printf 'herdr not found\n' >&2
+          exit 1
+        fi
         printf '/home/agent/.local/bin/herdr\n'
         ;;
       *" herdr --version")
@@ -1515,6 +1618,10 @@ case "$1" in
         done
         ;;
       *"-it "*" herdr")
+        if [ %q = "true" ]; then
+          printf 'herdr tui failed\n' >&2
+          exit 1
+        fi
         printf 'herdr tui\n'
         if [ %q = "true" ]; then
           while [ ! -f %q ]; do
@@ -1575,15 +1682,18 @@ esac
 		version,
 		opts.ExistingMainStatus,
 		opts.ExistingMainStatus,
+		existingMainWorkspace,
 		shellBool(opts.FailCreate),
 		shellBool(opts.FailCurl),
 		egressIP,
 		envOutput,
 		mountOutput,
+		shellBool(opts.MissingHerdr),
 		shellBool(opts.FailHerdrHook),
 		herdrStopFile,
 		shellBool(opts.FailHerdrServer),
 		herdrStopFile,
+		shellBool(opts.FailHerdrTUI),
 		shellBool(opts.BlockRun),
 		stopFile,
 		shellBool(opts.FailRun),

@@ -19,6 +19,11 @@ entrypoint:
 safe-herdr --config config.yaml
 ```
 
+`safe-herdr` is an attach-only daily entrypoint. It requires the configured main
+sandbox to already exist for the configured workspace and to have Herdr available
+inside the sandbox; it does not install Herdr, install the Claude integration, or
+rewrite `/usr/local/bin/cc`.
+
 Inside the Herdr TUI, run `cc` to start Claude. The `cc` command is created only
 inside the Docker Sandbox when needed.
 
@@ -83,12 +88,14 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
   - `supervision.herdr`: Required only when `supervision.mode` is
     `sandbox-local-herdr`. This object declares sandbox-local Herdr startup
     inputs, not host Herdr state.
-    - `install_if_missing`: Whether the launcher may install Herdr inside the
-      sandbox if the sandbox-local binary is absent. When installation is
-      enabled, the launcher first checks for `/home/agent/.local/bin/herdr`
-      with `command -v herdr`; an already installed binary is reused without
-      downloading. Missing Herdr is installed inside the sandbox with two
-      attempts, each bounded by `network.egress_ip.timeout_seconds`.
+    - `install_if_missing`: Whether the `safe-claude-sbx` initialization/start
+      path may install Herdr inside the sandbox if the sandbox-local binary is
+      absent. When installation is enabled, the launcher first checks for
+      `/home/agent/.local/bin/herdr` with `command -v herdr`; an already
+      installed binary is reused without downloading. Missing Herdr is installed
+      inside the sandbox with two attempts, each bounded by
+      `network.egress_ip.timeout_seconds`. The `safe-herdr` daily entrypoint
+      does not use this install path.
     - `socket_path`: Sandbox-local Herdr socket path. It must point inside the
       sandbox user's home, such as `/home/agent/.config/herdr/herdr.sock`.
     - `pane_id`: Non-empty sandbox-local pane identity used by the Herdr
