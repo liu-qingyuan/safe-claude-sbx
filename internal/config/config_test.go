@@ -30,6 +30,19 @@ func TestLoadAcceptsProjectRelativeWorkspaceMount(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsDockerSandboxBindMountWorkspaceMode(t *testing.T) {
+	path := writeConfig(t, strings.Replace(validConfigYAML(), `use_clone_mode: true`, `use_clone_mode: false`, 1))
+
+	_, err := Load(path)
+
+	if err == nil {
+		t.Fatal("expected docker-sandbox bind mount workspace mode to be rejected")
+	}
+	if !strings.Contains(err.Error(), "workspace.use_clone_mode") {
+		t.Fatalf("expected workspace.use_clone_mode error, got %v", err)
+	}
+}
+
 func TestLoadDefaultsSandboxSupervisionModeToDirectClaude(t *testing.T) {
 	path := writeConfig(t, validConfigYAML())
 
@@ -98,7 +111,7 @@ sandbox:
   agent: "claude"
 workspace:
   mount: "."
-  use_clone_mode: false
+  use_clone_mode: true
   forbidden_paths:
     - "~"
     - "~/.ssh"

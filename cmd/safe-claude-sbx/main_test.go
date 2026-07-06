@@ -35,7 +35,7 @@ func TestLaunchStartsMainSandboxAfterAllPreflightsPass(t *testing.T) {
 		t.Fatalf("expected launch success output, got:\n%s", output)
 	}
 	log := readFile(t, logPath)
-	if !strings.Contains(log, "run claude --name claude-sbx .") {
+	if !strings.Contains(log, "run --clone claude --name claude-sbx .") {
 		t.Fatalf("expected main sandbox run command, got:\n%s", log)
 	}
 }
@@ -70,7 +70,7 @@ func TestLaunchFailsClosedWhenMainSandboxWorkspaceVisibilityEscapes(t *testing.T
 		t.Fatalf("launch leaked parent guidance contents:\n%s", output)
 	}
 	log := readFile(t, logPath)
-	runIndex := strings.Index(log, "run claude --name claude-sbx .")
+	runIndex := strings.Index(log, "run --clone claude --name claude-sbx .")
 	visibilityIndex := strings.Index(log, "exec claude-sbx sh -lc workspace=")
 	stopIndex := strings.LastIndex(log, "\nstop claude-sbx\n")
 	if runIndex < 0 || visibilityIndex < 0 || stopIndex < 0 || !(runIndex < visibilityIndex && visibilityIndex < stopIndex) {
@@ -151,7 +151,7 @@ func TestLaunchStartsSandboxLocalHerdrAfterAllPreflightsPass(t *testing.T) {
 	}
 	log := readFile(t, logPath)
 	for _, want := range []string{
-		"create --name claude-sbx claude .",
+		"create --clone --name claude-sbx claude .",
 		"exec claude-sbx sh -lc command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
@@ -205,7 +205,7 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 	}
 	log := readFile(t, logPath)
 	assertLogLineOrder(t, log, []string{
-		"create --name claude-sbx-probe shell .",
+		"create --clone --name claude-sbx-probe shell .",
 		"exec claude-sbx-probe curl -fsS https://api.ipify.org",
 		"rm --force claude-sbx-probe",
 		"ls",
@@ -213,7 +213,7 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 		"exec -it claude-sbx herdr",
 	})
 	for _, forbidden := range []string{
-		"create --name claude-sbx claude .",
+		"create --clone --name claude-sbx claude .",
 		"curl -fsSL https://herdr.dev/install.sh | sh",
 		"herdr integration install claude",
 		"command -v cc",
@@ -226,6 +226,44 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 		if strings.Contains(log, forbidden) {
 			t.Fatalf("safe-herdr leaked host Herdr value %q:\n%s", forbidden, log)
 		}
+	}
+}
+
+func TestSafeHerdrChecksMainWorkspaceVisibilityBeforeTUIAttach(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:             "203.0.113.10",
+		LogPath:              logPath,
+		ExistingMainStatus:   "running",
+		MainVisibilityOutput: "parent-guidance-readable=/Users/alice/work/CLAUDE.md\n",
+	})
+
+	cmd := exec.Command("go", "run", "../safe-herdr", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("safe-herdr unexpectedly attached TUI with unsafe main sandbox visibility:\n%s", output)
+	}
+	if !strings.Contains(string(output), "main sandbox inspection invalid") || !strings.Contains(string(output), "workspace.inspection.visibility.parent_guidance") {
+		t.Fatalf("expected main sandbox visibility diagnostic, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	if containsLogLine(log, "exec -it claude-sbx herdr") {
+		t.Fatalf("Herdr TUI attached before main visibility gate failed:\n%s", log)
+	}
+	herdrCheckIndex := strings.Index(log, "exec claude-sbx sh -lc command -v herdr")
+	visibilityIndex := strings.Index(log, "exec claude-sbx sh -lc workspace=")
+	if herdrCheckIndex < 0 || visibilityIndex < 0 || herdrCheckIndex > visibilityIndex {
+		t.Fatalf("expected existing Herdr check before main visibility gate, got:\n%s", log)
 	}
 }
 
@@ -293,7 +331,7 @@ func TestSafeHerdrRequiresExistingSandboxLocalHerdr(t *testing.T) {
 			}
 			log := readFile(t, logPath)
 			for _, forbidden := range []string{
-				"create --name claude-sbx claude .",
+				"create --clone --name claude-sbx claude .",
 				"curl -fsSL https://herdr.dev/install.sh | sh",
 				"herdr integration install claude",
 				"command -v cc",
@@ -444,13 +482,13 @@ func TestLaunchRebuildsStoppedSandboxLocalHerdrMainAfterPreflights(t *testing.T)
 	}
 	log := readFile(t, logPath)
 	assertLogLineOrder(t, log, []string{
-		"create --name claude-sbx-probe shell .",
+		"create --clone --name claude-sbx-probe shell .",
 		"exec claude-sbx-probe curl -fsS https://api.ipify.org",
 		"rm --force claude-sbx-probe",
 		"ls",
 		"stop claude-sbx",
 		"rm --force claude-sbx",
-		"create --name claude-sbx claude .",
+		"create --clone --name claude-sbx claude .",
 		"exec claude-sbx sh -lc command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
@@ -1280,7 +1318,7 @@ sandbox:
   agent: "claude"
 workspace:
   mount: "."
-  use_clone_mode: false
+  use_clone_mode: true
   forbidden_paths:
     - "~"
     - "~/.ssh"
@@ -1325,7 +1363,7 @@ sandbox:
   agent: "claude"
 workspace:
   mount: "."
-  use_clone_mode: false
+  use_clone_mode: true
   forbidden_paths:
     - "~"
     - "~/.ssh"
@@ -1361,6 +1399,30 @@ func withSandboxLocalHerdr(body string) string {
       pane_id: "sandbox-claude"`,
 		1,
 	)
+}
+
+func withoutCloneMode(body string) string {
+	return strings.Replace(body, `use_clone_mode: true`, `use_clone_mode: false`, 1)
+}
+
+func TestLaunchRejectsDockerSandboxBindMountWorkspaceMode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withoutCloneMode(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+
+	cmd := exec.Command("go", "run", ".", "--config", configPath)
+	cmd.Dir = "."
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("launch unexpectedly accepted bind mount workspace mode:\n%s", output)
+	}
+	if !strings.Contains(string(output), "workspace.use_clone_mode") {
+		t.Fatalf("expected clone mode configuration error, got:\n%s", output)
+	}
 }
 
 func TestDoctorRejectsMissingRequiredObjectPath(t *testing.T) {

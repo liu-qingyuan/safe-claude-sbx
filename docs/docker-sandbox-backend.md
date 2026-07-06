@@ -130,7 +130,7 @@ Prefer `sbx create` when the launcher needs to create the sandbox before
 attaching an agent:
 
 ```bash
-sbx create --name <main-name> claude <workspace>
+sbx create --clone --name <main-name> claude <workspace>
 ```
 
 Confirmed help contract:
@@ -141,7 +141,9 @@ Confirmed help contract:
 - Names allow letters, numbers, hyphens, periods, plus signs, and minus signs.
 - Additional workspace paths are accepted.
 - Append `:ro` to additional workspace paths for read-only mounts.
-- `--clone` requests a private in-container clone rather than a bind mount.
+- `--clone` requests a private in-container clone rather than a bind mount. The
+  launcher requires this mode for Docker Sandbox because bind mounts can expose
+  workspace parent paths.
 - `--profile` assigns a governance profile.
 - `--cpus`, `--memory`, `--template`, and `--kit` are available resource/image
   controls.
@@ -163,7 +165,7 @@ sandbox as part of startup failure cleanup.
 Use `sbx run` to attach Claude Code to a created or existing sandbox:
 
 ```bash
-sbx run claude --name <main-name> <workspace> -- <agent-args>
+sbx run --clone claude --name <main-name> <workspace> -- <agent-args>
 sbx run --name <main-name>
 ```
 
@@ -175,7 +177,9 @@ Confirmed help contract:
 - Agent arguments are passed after `--`.
 - Additional workspace paths are accepted, with `:ro` for read-only mounts.
 - `--clone`, `--profile`, `--cpus`, `--memory`, `--template`, and `--kit` are
-  supported.
+  supported. New main sandbox starts must use `--clone`; named reattach is only
+  used for an existing sandbox after the launcher validates its workspace and
+  visibility.
 - Help text mentions `--detached (-d)`, but the observed flag list did not show
   it. Do not depend on detached `run` until verified after login.
 
@@ -339,10 +343,11 @@ Current launcher behavior:
 - The probe and the configured main sandbox perform workspace visibility read
   checks without reading file contents. They fail closed if the sandbox can read
   the configured workspace parent's `CLAUDE.md` file or a readable file under a
-  sibling project directory. Diagnostics report the readable path only. Launcher
-  startup runs the main sandbox check after `sbx run`, Herdr startup, or
-  `safe-herdr` attach succeeds; failures stop the main sandbox and do not enter
-  runtime watchdog supervision.
+  sibling project directory. Diagnostics report the readable path only. Direct
+  launcher startup runs the main sandbox check after `sbx run` or sandbox-local
+  Herdr startup; failures stop the main sandbox and do not enter runtime
+  watchdog supervision. `safe-herdr` checks the existing main sandbox before
+  attaching the interactive Herdr TUI.
 - If a future Docker Sandbox version documents a create/run clean-env,
   allowlist, profile, template, or kit contract, the backend adapter should use
   that official mechanism and keep the inspection step as verification.
@@ -558,7 +563,7 @@ sequenceDiagram
     participant C as Claude Code
     participant K as Claude hook
 
-    L->>S: sbx create --name main claude workspace
+    L->>S: sbx create --clone --name main claude workspace
     S-->>X: Claude template with /home/agent/.claude
     L->>S: sbx exec main command -v herdr
     alt Herdr missing and install allowed
@@ -734,17 +739,17 @@ sequenceDiagram
     S->>A: Browser device-code login
     A-->>S: Human completes login
     S-->>B: Authenticated session
-    B->>S: sbx create --name probe shell workspace
+    B->>S: sbx create --clone --name probe shell workspace
     S->>D: Create probe
     D-->>P: Probe ready
     B->>S: sbx exec probe env
     B->>S: sbx exec probe curl check-url
     S-->>B: Env and egress observations
     B->>S: sbx rm --force probe
-    B->>S: sbx create --name main claude workspace
+    B->>S: sbx create --clone --name main claude workspace
     S->>D: Create main
     D-->>M: Main ready
-    B->>S: sbx run claude --name main
+    B->>S: sbx run --clone claude --name main
     M-->>L: Agent session
     L->>B: Cleanup on exit or watchdog failure
     B->>S: sbx stop main

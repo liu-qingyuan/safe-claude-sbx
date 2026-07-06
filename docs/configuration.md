@@ -84,7 +84,8 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
   - `agent`: Agent command to run, normally `claude`.
   - `supervision.mode`: Agent startup supervision mode. Supported values are
     `direct-claude` and `sandbox-local-herdr`. If omitted, the launcher uses
-    `direct-claude`, preserving the current `sbx run claude` startup path.
+    `direct-claude`, preserving the current `sbx run --clone claude` startup
+    path.
   - `supervision.herdr`: Required only when `supervision.mode` is
     `sandbox-local-herdr`. This object declares sandbox-local Herdr startup
     inputs, not host Herdr state.
@@ -102,7 +103,10 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
       integration.
 - `workspace`
   - `mount`: Host project directory mounted into the sandbox.
-  - `use_clone_mode`: Whether a copied workspace mode is requested.
+  - `use_clone_mode`: Must be `true` for the Docker Sandbox backend. The
+    launcher uses `sbx --clone` so the main sandbox receives a private
+    in-container workspace copy instead of a bind mount that can expose parent
+    paths.
   - `forbidden_paths`: Host paths that must never be used as workspace mounts.
     The policy expands `~`, rejects sensitive paths such as SSH, Claude config,
     Clash config, and Keychain paths recursively, and fails before backend
@@ -168,15 +172,19 @@ same Docker Sandbox filesystem view. If either sandbox can read a parent
 `CLAUDE.md` guidance file or a file under a sibling project directory, `doctor`
 or launcher startup fails closed with `workspace.inspection.visibility.*`. The
 diagnostic names the readable non-workspace path but does not print file
-contents. During launcher startup, a main sandbox visibility failure happens
-after the main sandbox is started or attached; cleanup then stops the main
-sandbox instead of entering the watchdog loop.
+contents. Direct Docker Sandbox bind mount mode is rejected by configuration
+validation; `workspace.use_clone_mode: true` is required so `sbx create` and
+`sbx run` use `--clone`. During direct launcher startup, a main sandbox
+visibility failure happens after the main sandbox is started; cleanup then
+stops the main sandbox instead of entering the watchdog loop. During
+`safe-herdr`, the existing main sandbox is checked before the interactive Herdr
+TUI is attached.
 
-For stricter isolation, prefer `workspace.use_clone_mode: true` when the Docker
-Sandbox backend supports it for the workflow, or use a disposable temporary
-workspace that contains only the project files needed for the session. Do not
-depend on Herdr or `cc` to provide another filesystem isolation layer inside the
-same sandbox.
+For workflows that cannot use Docker Sandbox clone mode, use a disposable
+temporary workspace that contains only the project files needed for the session
+and expect this launcher configuration to fail closed until a backend contract
+with equivalent isolation exists. Do not depend on Herdr or `cc` to provide
+another filesystem isolation layer inside the same sandbox.
 
 Legacy flat fields such as `expected_egress_ip`, `sandbox_name`,
 `workspace_mount`, `timezone`, and `cleanup.stop_on_exit` are not accepted by the

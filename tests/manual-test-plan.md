@@ -280,7 +280,8 @@ Expected CLI output:
 - `doctor` should still validate backend availability, probe creation,
   sandbox egress, and sandbox inspection.
 - Launcher startup should either attach to or start the named sandbox according
-  to the observed `sbx run claude --name <main-name> <workspace>` behavior.
+  to the observed `sbx run --clone claude --name <main-name> <workspace>`
+  behavior.
 - If `sbx run` rejects the existing sandbox state, the launcher should fail with
   `sandbox start invalid: start main sandbox: ...`.
 
@@ -458,8 +459,9 @@ Steps:
 1. Point `workspace.mount` at the disposable workspace.
 2. Run `safe-claude-sbx doctor --config config.yaml`.
 3. Remove the parent `CLAUDE.md` marker and rerun `doctor`.
-4. Remove the sibling marker or enable a stricter isolation mode such as
-   `workspace.use_clone_mode: true` when supported, then rerun `doctor`.
+4. Remove the sibling marker or switch to a backend/workspace strategy that
+   preserves the required `workspace.use_clone_mode: true` isolation, then rerun
+   `doctor`.
 5. With markers restored, run `safe-claude-sbx --config config.yaml`.
 6. For sandbox-local Herdr, run `safe-herdr --config herdr-config.yaml` against
    a disposable existing main sandbox.

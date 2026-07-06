@@ -136,9 +136,10 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 	defer stopMainCommand()
 
 	plan := backend.NewStartPlan(cfg)
-	start, backendExit, err := startAttachedTarget(sandbox, target, mainCtx, plan, stdin, stdout, stderr)
+	start, backendExit, err := startAttachedTarget(sandbox, target, mainCtx, cfg, plan, stdin, stdout, stderr)
 	if err != nil {
 		if backend.ShouldCleanupMainAfterStartError(err) {
+			stopMainCommand()
 			if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
 				fmt.Fprintf(stderr, "%s invalid: %v; cleanup main sandbox failed: %v\n", targetStartLabel(target), err, cleanupErr)
 				return 1
@@ -148,20 +149,6 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 		return 1
 	}
 	fmt.Fprintf(stdout, "%s started: %s\n", targetStartedLabel(target), start.SandboxName)
-
-	mainInspectionCtx, cancelMainInspection := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
-	_, err = sandbox.CheckMainWorkspaceVisibility(mainInspectionCtx, cfg)
-	cancelMainInspection()
-	if err != nil {
-		stopMainCommand()
-		if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
-			fmt.Fprintf(stderr, "%v; cleanup main sandbox failed: %v\n", err, cleanupErr)
-			return 1
-		}
-		fmt.Fprintf(stderr, "%v\n", err)
-		return 1
-	}
-	fmt.Fprintln(stdout, "main sandbox inspection ok")
 
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
@@ -199,11 +186,44 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 	return 0
 }
 
-func startAttachedTarget(sandbox backend.DockerSandbox, target launchTarget, ctx context.Context, plan backend.StartPlan, stdin io.Reader, stdout, stderr io.Writer) (backend.StartResult, <-chan error, error) {
+func startAttachedTarget(sandbox backend.DockerSandbox, target launchTarget, ctx context.Context, cfg config.Config, plan backend.StartPlan, stdin io.Reader, stdout, stderr io.Writer) (backend.StartResult, <-chan error, error) {
 	if target == herdrTUITarget {
-		return sandbox.StartHerdrTUIAttached(ctx, plan, stdin, stdout, stderr)
+		start := backend.StartResult{
+			SandboxName: plan.SandboxName,
+			Agent:       plan.Agent,
+			Workspace:   plan.Workspace,
+			Timezone:    plan.Timezone,
+			Locale:      plan.Locale,
+		}
+		if err := sandbox.PrepareHerdrTUI(ctx, plan); err != nil {
+			return start, nil, err
+		}
+		if err := checkMainWorkspaceVisibility(sandbox, cfg); err != nil {
+			return start, nil, err
+		}
+		fmt.Fprintln(stdout, "main sandbox inspection ok")
+		wait, err := sandbox.AttachHerdrTUI(ctx, plan, stdin, stdout, stderr)
+		if err != nil {
+			return start, nil, err
+		}
+		return start, wait, nil
 	}
-	return sandbox.StartMainAttached(ctx, plan, stdin, stdout, stderr)
+	start, wait, err := sandbox.StartMainAttached(ctx, plan, stdin, stdout, stderr)
+	if err != nil {
+		return start, wait, err
+	}
+	if err := checkMainWorkspaceVisibility(sandbox, cfg); err != nil {
+		return start, nil, err
+	}
+	fmt.Fprintln(stdout, "main sandbox inspection ok")
+	return start, wait, nil
+}
+
+func checkMainWorkspaceVisibility(sandbox backend.DockerSandbox, cfg config.Config) error {
+	mainInspectionCtx, cancelMainInspection := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+	defer cancelMainInspection()
+	_, err := sandbox.CheckMainWorkspaceVisibility(mainInspectionCtx, cfg)
+	return err
 }
 
 func targetStartLabel(target launchTarget) string {

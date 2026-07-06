@@ -476,14 +476,29 @@ func (b DockerSandbox) StartHerdrTUIAttached(ctx context.Context, plan StartPlan
 	if plan.Supervision.Mode != "sandbox-local-herdr" {
 		return start, nil, fmt.Errorf("start Herdr TUI: sandbox-local-herdr supervision required")
 	}
-	if err := b.requireExistingSandboxLocalHerdr(ctx, plan); err != nil {
+	if err := b.PrepareHerdrTUI(ctx, plan); err != nil {
 		return start, nil, err
 	}
-	wait, err := b.startAttachedCommand(ctx, []string{"exec", "-it", plan.SandboxName, "herdr"}, "start sandbox-local Herdr TUI", stdin, stdout, stderr)
+	wait, err := b.AttachHerdrTUI(ctx, plan, stdin, stdout, stderr)
 	if err != nil {
-		return start, nil, preserveExistingMainError{err: err}
+		return start, nil, err
 	}
 	return start, wait, nil
+}
+
+func (b DockerSandbox) PrepareHerdrTUI(ctx context.Context, plan StartPlan) error {
+	if plan.Supervision.Mode != "sandbox-local-herdr" {
+		return fmt.Errorf("start Herdr TUI: sandbox-local-herdr supervision required")
+	}
+	return b.requireExistingSandboxLocalHerdr(ctx, plan)
+}
+
+func (b DockerSandbox) AttachHerdrTUI(ctx context.Context, plan StartPlan, stdin io.Reader, stdout, stderr io.Writer) (<-chan error, error) {
+	wait, err := b.startAttachedCommand(ctx, []string{"exec", "-it", plan.SandboxName, "herdr"}, "start sandbox-local Herdr TUI", stdin, stdout, stderr)
+	if err != nil {
+		return nil, preserveExistingMainError{err: err}
+	}
+	return wait, nil
 }
 
 func startMainArgs(plan StartPlan) []string {

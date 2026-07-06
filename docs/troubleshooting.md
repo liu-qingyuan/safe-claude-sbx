@@ -318,9 +318,11 @@ Checks:
 - Check symlinks and relative paths; the policy resolves them before backend
   commands run.
 - Do not mount home directories or credential/config directories.
-- Try `workspace.use_clone_mode: true` if the Docker Sandbox backend supports it
-  for the workflow, or copy only the required project files to a disposable
-  temporary workspace and mount that path.
+- Keep `workspace.use_clone_mode: true`; Docker Sandbox bind mount mode is
+  rejected because it can expose parent guidance or sibling files. If clone mode
+  is not viable for a workflow, copy only the required project files to a
+  disposable temporary workspace and mount that path with a backend contract that
+  provides equivalent isolation.
 - Do not paste the readable file contents into issues or logs; the diagnostic
   path is enough to debug the mount boundary.
 
