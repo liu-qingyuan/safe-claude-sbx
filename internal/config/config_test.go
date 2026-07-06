@@ -30,6 +30,46 @@ func TestLoadAcceptsProjectRelativeWorkspaceMount(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsSandboxSupervisionModeToDirectClaude(t *testing.T) {
+	path := writeConfig(t, validConfigYAML())
+
+	cfg, err := Load(path)
+
+	if err != nil {
+		t.Fatalf("expected config to load: %v", err)
+	}
+	if cfg.Sandbox.Supervision.Mode != "direct-claude" {
+		t.Fatalf("expected default supervision mode direct-claude, got %q", cfg.Sandbox.Supervision.Mode)
+	}
+}
+
+func TestLoadAcceptsSandboxLocalHerdrSupervision(t *testing.T) {
+	path := writeConfig(t, strings.Replace(
+		validConfigYAML(),
+		`agent: "claude"`,
+		`agent: "claude"
+  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: false
+      socket_path: "/home/agent/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"`,
+		1,
+	))
+
+	cfg, err := Load(path)
+
+	if err != nil {
+		t.Fatalf("expected sandbox-local Herdr config to load: %v", err)
+	}
+	if cfg.Sandbox.Supervision.Mode != "sandbox-local-herdr" {
+		t.Fatalf("expected Herdr supervision mode, got %q", cfg.Sandbox.Supervision.Mode)
+	}
+	if cfg.Sandbox.Supervision.Herdr == nil || cfg.Sandbox.Supervision.Herdr.InstallIfMissing == nil || *cfg.Sandbox.Supervision.Herdr.InstallIfMissing {
+		t.Fatalf("expected explicit install_if_missing=false to be preserved, got %#v", cfg.Sandbox.Supervision.Herdr)
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 

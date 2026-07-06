@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"path"
 	"sort"
 	"strings"
 
@@ -40,10 +41,22 @@ type EgressIP struct {
 }
 
 type Sandbox struct {
-	Backend   string `yaml:"backend"`
-	MainName  string `yaml:"main_name"`
-	ProbeName string `yaml:"probe_name"`
-	Agent     string `yaml:"agent"`
+	Backend     string      `yaml:"backend"`
+	MainName    string      `yaml:"main_name"`
+	ProbeName   string      `yaml:"probe_name"`
+	Agent       string      `yaml:"agent"`
+	Supervision Supervision `yaml:"supervision"`
+}
+
+type Supervision struct {
+	Mode  string            `yaml:"mode"`
+	Herdr *HerdrSupervision `yaml:"herdr"`
+}
+
+type HerdrSupervision struct {
+	InstallIfMissing *bool  `yaml:"install_if_missing"`
+	SocketPath       string `yaml:"socket_path"`
+	PaneID           string `yaml:"pane_id"`
 }
 
 type Workspace struct {
@@ -92,6 +105,7 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse YAML: %w", err)
 	}
 
+	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -197,6 +211,53 @@ func (c Config) Validate() error {
 	}
 	if len(c.Environment.ForbiddenEnvVars) == 0 {
 		return fmt.Errorf("missing required field environment.forbidden_env_vars")
+	}
+	if err := c.Sandbox.Supervision.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Config) ApplyDefaults() {
+	if c.Sandbox.Supervision.Mode == "" {
+		c.Sandbox.Supervision.Mode = "direct-claude"
+	}
+}
+
+func (s Supervision) Validate() error {
+	mode := s.Mode
+	if mode == "" {
+		mode = "direct-claude"
+	}
+	switch mode {
+	case "direct-claude":
+		if s.Herdr != nil {
+			return s.Herdr.Validate()
+		}
+		return nil
+	case "sandbox-local-herdr":
+		if s.Herdr == nil {
+			return fmt.Errorf("missing required object sandbox.supervision.herdr")
+		}
+		return s.Herdr.Validate()
+	default:
+		return fmt.Errorf("invalid field sandbox.supervision.mode: supported values are direct-claude, sandbox-local-herdr")
+	}
+}
+
+func (h HerdrSupervision) Validate() error {
+	if h.InstallIfMissing == nil {
+		return fmt.Errorf("missing required field sandbox.supervision.herdr.install_if_missing")
+	}
+	if strings.TrimSpace(h.SocketPath) == "" {
+		return fmt.Errorf("missing required field sandbox.supervision.herdr.socket_path")
+	}
+	cleanSocketPath := path.Clean(strings.TrimSpace(h.SocketPath))
+	if !strings.HasPrefix(cleanSocketPath, "/home/agent/") {
+		return fmt.Errorf("invalid field sandbox.supervision.herdr.socket_path: must point inside sandbox home")
+	}
+	if strings.TrimSpace(h.PaneID) == "" {
+		return fmt.Errorf("missing required field sandbox.supervision.herdr.pane_id")
 	}
 	return nil
 }

@@ -275,6 +275,213 @@ func TestDoctorAcceptsValidStructuredConfig(t *testing.T) {
 	}
 }
 
+func TestDoctorAcceptsSandboxLocalHerdrSupervisionConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configBody := strings.Replace(
+		validConfig(server.URL, "203.0.113.10", 10),
+		`agent: "claude"`,
+		`agent: "claude"
+  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: true
+      socket_path: "/home/agent/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"`,
+		1,
+	)
+	configPath := writeTestConfig(t, configBody)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{EgressIP: "203.0.113.10"})
+
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("doctor rejected sandbox-local Herdr supervision config: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "configuration ok") {
+		t.Fatalf("expected config success output, got:\n%s", output)
+	}
+}
+
+func TestDoctorAcceptsExplicitDirectClaudeSupervisionConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configBody := strings.Replace(
+		validConfig(server.URL, "203.0.113.10", 10),
+		`agent: "claude"`,
+		`agent: "claude"
+  supervision:
+    mode: "direct-claude"`,
+		1,
+	)
+	configPath := writeTestConfig(t, configBody)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{EgressIP: "203.0.113.10"})
+
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("doctor rejected direct Claude supervision config: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "configuration ok") {
+		t.Fatalf("expected config success output, got:\n%s", output)
+	}
+}
+
+func TestDoctorRejectsInvalidSupervisionConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		supervision string
+		wantError   string
+		notLeak     string
+	}{
+		{
+			name: "invalid mode",
+			supervision: `  supervision:
+    mode: "host-herdr"`,
+			wantError: "sandbox.supervision.mode",
+		},
+		{
+			name: "missing Herdr object",
+			supervision: `  supervision:
+    mode: "sandbox-local-herdr"`,
+			wantError: "sandbox.supervision.herdr",
+		},
+		{
+			name: "missing install behavior",
+			supervision: `  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      socket_path: "/home/agent/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"`,
+			wantError: "sandbox.supervision.herdr.install_if_missing",
+		},
+		{
+			name: "host-looking socket path",
+			supervision: `  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: true
+      socket_path: "/Users/alice/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"`,
+			wantError: "sandbox.supervision.herdr.socket_path",
+			notLeak:   "/Users/alice/.config/herdr/herdr.sock",
+		},
+		{
+			name: "direct mode with host-looking Herdr socket path",
+			supervision: `  supervision:
+    mode: "direct-claude"
+    herdr:
+      install_if_missing: true
+      socket_path: "/Users/alice/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"`,
+			wantError: "sandbox.supervision.herdr.socket_path",
+			notLeak:   "/Users/alice/.config/herdr/herdr.sock",
+		},
+		{
+			name: "traversing Herdr socket path",
+			supervision: `  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: true
+      socket_path: "/home/agent/../../Users/alice/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"`,
+			wantError: "sandbox.supervision.herdr.socket_path",
+			notLeak:   "/home/agent/../../Users/alice/.config/herdr/herdr.sock",
+		},
+		{
+			name: "tmp Herdr socket path",
+			supervision: `  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: true
+      socket_path: "/tmp/herdr.sock"
+      pane_id: "sandbox-claude"`,
+			wantError: "sandbox.supervision.herdr.socket_path",
+			notLeak:   "/tmp/herdr.sock",
+		},
+		{
+			name: "empty pane id",
+			supervision: `  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: true
+      socket_path: "/home/agent/.config/herdr/herdr.sock"
+      pane_id: "   "`,
+			wantError: "sandbox.supervision.herdr.pane_id",
+			notLeak:   "pane_id: \"   \"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintln(w, "203.0.113.10")
+			}))
+			t.Cleanup(server.Close)
+
+			configBody := strings.Replace(
+				validConfig(server.URL, "203.0.113.10", 10),
+				`agent: "claude"`,
+				"agent: \"claude\"\n"+tt.supervision,
+				1,
+			)
+			configPath := writeTestConfig(t, configBody)
+
+			cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+			cmd.Dir = "."
+
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("doctor unexpectedly accepted invalid supervision config:\n%s", output)
+			}
+			if !strings.Contains(string(output), tt.wantError) {
+				t.Fatalf("expected %q in output, got:\n%s", tt.wantError, output)
+			}
+			if tt.notLeak != "" && strings.Contains(string(output), tt.notLeak) {
+				t.Fatalf("doctor leaked raw supervision value:\n%s", output)
+			}
+		})
+	}
+}
+
+func TestDoctorRejectsHostHerdrEnvironmentConfigWithoutLeakingValue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	hostSocket := "/Users/alice/.config/herdr/herdr.sock"
+	configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10)+`
+HERDR_SOCKET_PATH: "`+hostSocket+`"
+`)
+
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+	cmd.Dir = "."
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("doctor unexpectedly accepted host HERDR_* config:\n%s", output)
+	}
+	if !strings.Contains(string(output), "HERDR_SOCKET_PATH") {
+		t.Fatalf("expected HERDR_SOCKET_PATH diagnostic, got:\n%s", output)
+	}
+	if strings.Contains(string(output), hostSocket) {
+		t.Fatalf("doctor leaked host Herdr socket path:\n%s", output)
+	}
+}
+
 func TestDoctorAcceptsDockerManagedCredentialPlaceholders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "203.0.113.10")

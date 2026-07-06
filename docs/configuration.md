@@ -29,6 +29,18 @@ safe-claude-sbx doctor --config config.yaml
   - `main_name`: Main Docker Sandbox name.
   - `probe_name`: Temporary probe sandbox name.
   - `agent`: Agent command to run, normally `claude`.
+  - `supervision.mode`: Agent startup supervision mode. Supported values are
+    `direct-claude` and `sandbox-local-herdr`. If omitted, the launcher uses
+    `direct-claude`, preserving the current `sbx run claude` startup path.
+  - `supervision.herdr`: Required only when `supervision.mode` is
+    `sandbox-local-herdr`. This object declares sandbox-local Herdr startup
+    inputs, not host Herdr state.
+    - `install_if_missing`: Whether the launcher may install Herdr inside the
+      sandbox if the sandbox-local binary is absent.
+    - `socket_path`: Sandbox-local Herdr socket path. It must point inside the
+      sandbox user's home, such as `/home/agent/.config/herdr/herdr.sock`.
+    - `pane_id`: Non-empty sandbox-local pane identity used by the Herdr
+      integration.
 - `workspace`
   - `mount`: Host project directory mounted into the sandbox.
   - `use_clone_mode`: Whether a copied workspace mode is requested.
@@ -68,6 +80,13 @@ IP. Error messages include object paths such as `network.clash_verge`,
 `workspace.mount`, or `network.egress_ip.expected_ip`, and host egress failures
 distinguish `host-egress-mismatch`, `endpoint-failure`, and
 `response-parse-failure`.
+
+Supervision config also fails closed. `sandbox.supervision.mode` must be either
+`direct-claude` or `sandbox-local-herdr`. Herdr mode requires the nested
+`sandbox.supervision.herdr` object, declared install behavior, a sandbox-home
+socket path, and a non-empty pane id. Host-looking Herdr socket paths and
+top-level `HERDR_*` config are rejected without printing raw socket or pane
+values.
 
 After the Docker Sandbox probe runs, `doctor` validates the sandbox observation
 before printing `sandbox inspection ok`. It rejects visible sensitive mounts,
