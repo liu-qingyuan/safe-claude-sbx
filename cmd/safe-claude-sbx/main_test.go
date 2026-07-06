@@ -393,6 +393,31 @@ func TestDoctorAcceptsSandboxLocalHerdrSupervisionConfig(t *testing.T) {
 	}
 }
 
+func TestDoctorAcceptsSandboxLocalHerdrInspectionEnv(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(validConfig(server.URL, "203.0.113.10", 10)))
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:  "203.0.113.10",
+		EnvOutput: "PATH=/usr/bin\nHERDR_ENV=1\nHERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock\nHERDR_PANE_ID=sandbox-claude\n",
+	})
+
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("doctor rejected sandbox-local Herdr inspection env: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "sandbox inspection ok") {
+		t.Fatalf("expected sandbox inspection success, got:\n%s", output)
+	}
+}
+
 func TestDoctorAcceptsExplicitDirectClaudeSupervisionConfig(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "203.0.113.10")
@@ -683,6 +708,14 @@ func TestDoctorFailsClosedForUnsafeSandboxInspection(t *testing.T) {
 			},
 			wantError: "environment.inspection.env.OPENAI_API_KEY",
 			notLeak:   "SECRET_SHOULD_NOT_LEAK",
+		},
+		{
+			name: "host Herdr env",
+			fake: fakeSBXOptions{
+				EnvOutput: "PATH=/usr/bin\nHERDR_SOCKET_PATH=/tmp/host-herdr.sock\n",
+			},
+			wantError: "environment.inspection.env.HERDR_SOCKET_PATH",
+			notLeak:   "/tmp/host-herdr.sock",
 		},
 		{
 			name: "sensitive mount",

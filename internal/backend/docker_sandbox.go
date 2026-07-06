@@ -234,6 +234,7 @@ func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResul
 		Locale:                  cfg.Environment.Locale,
 		AllowSSHAgentForwarding: cfg.Environment.AllowSSHAgentForwarding,
 		ForbiddenEnvVars:        cfg.Environment.ForbiddenEnvVars,
+		HerdrRuntime:            herdrRuntimePolicy(cfg),
 	}, policy.InspectionObservation{
 		Environment:      inspection.Environment,
 		WorkingDirectory: inspection.WorkingDirectory,
@@ -245,6 +246,17 @@ func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResul
 	}
 
 	return b.finishProbe(ctx, cfg, result, nil)
+}
+
+func herdrRuntimePolicy(cfg config.Config) policy.HerdrRuntimePolicy {
+	if cfg.Sandbox.Supervision.Mode != "sandbox-local-herdr" || cfg.Sandbox.Supervision.Herdr == nil {
+		return policy.HerdrRuntimePolicy{}
+	}
+	return policy.HerdrRuntimePolicy{
+		Enabled:    true,
+		SocketPath: strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.SocketPath),
+		PaneID:     strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.PaneID),
+	}
 }
 
 func (b DockerSandbox) CleanupProbe(ctx context.Context, cfg config.Config) error {

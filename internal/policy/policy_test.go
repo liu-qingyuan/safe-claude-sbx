@@ -138,6 +138,170 @@ func TestValidateInspectionFailsClosedForForbiddenEnvWithoutLeakingValue(t *test
 	}
 }
 
+func TestValidateInspectionRejectsHostHerdrEnvWithoutLeakingValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		envName  string
+		envValue string
+	}{
+		{name: "enabled flag", envName: "HERDR_ENV", envValue: "1"},
+		{name: "host socket", envName: "HERDR_SOCKET_PATH", envValue: "/tmp/host-herdr.sock"},
+		{name: "host pane", envName: "HERDR_PANE_ID", envValue: "host-pane"},
+		{name: "host tab", envName: "HERDR_TAB_ID", envValue: "host-tab"},
+		{name: "host workspace", envName: "HERDR_WORKSPACE_ID", envValue: "host-workspace"},
+		{name: "host config", envName: "HERDR_CONFIG_DIR", envValue: "/Users/alice/.config/herdr"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateInspection(InspectionPolicy{
+				Workspace: WorkspacePolicy{
+					Mount:          ".",
+					ForbiddenPaths: []string{"~", "~/.ssh"},
+					HomeDir:        "/Users/alice",
+					WorkingDir:     "/Users/alice/work/safe-claude-sbx",
+				},
+				Timezone: "America/Los_Angeles",
+				Locale:   "en_US.UTF-8",
+			}, InspectionObservation{
+				Environment: map[string]string{
+					tt.envName: tt.envValue,
+				},
+				WorkingDirectory: "/workspace",
+				Mounts:           "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)",
+				Date:             "Sun Jul  5 12:00:00 PDT 2026",
+				Locale:           "LANG=en_US.UTF-8",
+			})
+			if err == nil {
+				t.Fatalf("expected host Herdr env to fail closed")
+			}
+			if !strings.Contains(err.Error(), tt.envName) {
+				t.Fatalf("expected Herdr env name in diagnostic, got %v", err)
+			}
+			if strings.Contains(err.Error(), tt.envValue) {
+				t.Fatalf("policy error leaked Herdr value: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateInspectionAllowsConfiguredSandboxLocalHerdrRuntimeEnv(t *testing.T) {
+	err := ValidateInspection(InspectionPolicy{
+		Workspace: WorkspacePolicy{
+			Mount:          ".",
+			ForbiddenPaths: []string{"~", "~/.ssh"},
+			HomeDir:        "/Users/alice",
+			WorkingDir:     "/Users/alice/work/safe-claude-sbx",
+		},
+		Timezone: "America/Los_Angeles",
+		Locale:   "en_US.UTF-8",
+		HerdrRuntime: HerdrRuntimePolicy{
+			Enabled:    true,
+			SocketPath: "/home/agent/.config/herdr/herdr.sock",
+			PaneID:     "sandbox-claude",
+		},
+	}, InspectionObservation{
+		Environment: map[string]string{
+			"HERDR_ENV":         "1",
+			"HERDR_SOCKET_PATH": "/home/agent/.config/herdr/herdr.sock",
+			"HERDR_PANE_ID":     "sandbox-claude",
+		},
+		WorkingDirectory: "/workspace",
+		Mounts:           "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)",
+		Date:             "Sun Jul  5 12:00:00 PDT 2026",
+		Locale:           "LANG=en_US.UTF-8",
+	})
+	if err != nil {
+		t.Fatalf("expected sandbox-local Herdr runtime env to be accepted: %v", err)
+	}
+}
+
+func TestValidateInspectionRejectsUnexpectedHerdrRuntimeEnvWithoutLeakingValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		env      map[string]string
+		leak     string
+		wantName string
+	}{
+		{
+			name: "wrong env flag",
+			env: map[string]string{
+				"HERDR_ENV":         "true",
+				"HERDR_SOCKET_PATH": "/home/agent/.config/herdr/herdr.sock",
+				"HERDR_PANE_ID":     "sandbox-claude",
+			},
+			leak:     "true",
+			wantName: "HERDR_ENV",
+		},
+		{
+			name: "host socket path",
+			env: map[string]string{
+				"HERDR_ENV":         "1",
+				"HERDR_SOCKET_PATH": "/tmp/host-herdr.sock",
+				"HERDR_PANE_ID":     "sandbox-claude",
+			},
+			leak:     "/tmp/host-herdr.sock",
+			wantName: "HERDR_SOCKET_PATH",
+		},
+		{
+			name: "host pane id",
+			env: map[string]string{
+				"HERDR_ENV":         "1",
+				"HERDR_SOCKET_PATH": "/home/agent/.config/herdr/herdr.sock",
+				"HERDR_PANE_ID":     "host-pane",
+			},
+			leak:     "host-pane",
+			wantName: "HERDR_PANE_ID",
+		},
+		{
+			name: "unsupported Herdr var",
+			env: map[string]string{
+				"HERDR_ENV":          "1",
+				"HERDR_SOCKET_PATH":  "/home/agent/.config/herdr/herdr.sock",
+				"HERDR_PANE_ID":      "sandbox-claude",
+				"HERDR_WORKSPACE_ID": "host-workspace",
+			},
+			leak:     "host-workspace",
+			wantName: "HERDR_WORKSPACE_ID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateInspection(InspectionPolicy{
+				Workspace: WorkspacePolicy{
+					Mount:          ".",
+					ForbiddenPaths: []string{"~", "~/.ssh"},
+					HomeDir:        "/Users/alice",
+					WorkingDir:     "/Users/alice/work/safe-claude-sbx",
+				},
+				Timezone: "America/Los_Angeles",
+				Locale:   "en_US.UTF-8",
+				HerdrRuntime: HerdrRuntimePolicy{
+					Enabled:    true,
+					SocketPath: "/home/agent/.config/herdr/herdr.sock",
+					PaneID:     "sandbox-claude",
+				},
+			}, InspectionObservation{
+				Environment:      tt.env,
+				WorkingDirectory: "/workspace",
+				Mounts:           "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)",
+				Date:             "Sun Jul  5 12:00:00 PDT 2026",
+				Locale:           "LANG=en_US.UTF-8",
+			})
+			if err == nil {
+				t.Fatalf("expected unexpected Herdr runtime env to fail closed")
+			}
+			if !strings.Contains(err.Error(), tt.wantName) {
+				t.Fatalf("expected %s diagnostic, got %v", tt.wantName, err)
+			}
+			if strings.Contains(err.Error(), tt.leak) {
+				t.Fatalf("policy error leaked Herdr value: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateInspectionAllowsSSHAgentForwardingOnlyWhenConfigured(t *testing.T) {
 	socket := "/run/host-services/ssh-auth.sock"
 	gateway := "gateway.docker.internal"

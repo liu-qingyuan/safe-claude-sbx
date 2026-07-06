@@ -23,6 +23,13 @@ type InspectionPolicy struct {
 	Locale                  string
 	AllowSSHAgentForwarding bool
 	ForbiddenEnvVars        []string
+	HerdrRuntime            HerdrRuntimePolicy
+}
+
+type HerdrRuntimePolicy struct {
+	Enabled    bool
+	SocketPath string
+	PaneID     string
 }
 
 type InspectionObservation struct {
@@ -98,6 +105,12 @@ func validateMountObservation(policy WorkspacePolicy, mounts string) error {
 
 func validateEnvironment(policy InspectionPolicy, env map[string]string) error {
 	for name, value := range env {
+		if isHerdrEnv(name) {
+			if err := validateHerdrRuntimeEnv(policy, name, value); err != nil {
+				return err
+			}
+			continue
+		}
 		if isProxyEnv(name) {
 			if err := validateProxyEnv(name, value); err != nil {
 				return err
@@ -122,6 +135,32 @@ func validateEnvironment(policy InspectionPolicy, env map[string]string) error {
 		if valueMentionsSensitivePath(value, policy.Workspace) {
 			return fmt.Errorf("environment.inspection.env.%s: sensitive host path visible", name)
 		}
+	}
+	return nil
+}
+
+func validateHerdrRuntimeEnv(policy InspectionPolicy, name, value string) error {
+	if !policy.HerdrRuntime.Enabled {
+		return fmt.Errorf("environment.inspection.env.%s: host Herdr environment variable visible", name)
+	}
+
+	switch strings.ToUpper(name) {
+	case "HERDR_ENV":
+		if strings.TrimSpace(value) != "1" {
+			return fmt.Errorf("environment.inspection.env.%s: sandbox-local Herdr enable flag is invalid", name)
+		}
+	case "HERDR_SOCKET_PATH":
+		expected := strings.TrimSpace(policy.HerdrRuntime.SocketPath)
+		if expected == "" || !isSandboxHomePath(expected) || strings.TrimSpace(value) != expected {
+			return fmt.Errorf("environment.inspection.env.%s: Herdr socket is not sandbox-local", name)
+		}
+	case "HERDR_PANE_ID":
+		expected := strings.TrimSpace(policy.HerdrRuntime.PaneID)
+		if expected == "" || strings.TrimSpace(value) != expected || valueMentionsSensitivePath(value, policy.Workspace) {
+			return fmt.Errorf("environment.inspection.env.%s: Herdr pane id is not sandbox-local", name)
+		}
+	default:
+		return fmt.Errorf("environment.inspection.env.%s: unsupported Herdr environment variable visible", name)
 	}
 	return nil
 }
@@ -223,6 +262,15 @@ func isDockerManagedCredentialPlaceholder(name, value string) bool {
 
 func isSSHAgentForwardingEnv(name string) bool {
 	return strings.EqualFold(name, "SSH_AUTH_SOCK") || strings.EqualFold(name, "SSH_AUTH_SOCK_GATEWAY")
+}
+
+func isHerdrEnv(name string) bool {
+	return strings.HasPrefix(strings.ToUpper(name), "HERDR_")
+}
+
+func isSandboxHomePath(value string) bool {
+	clean := filepath.Clean(strings.TrimSpace(value))
+	return clean == "/home/agent" || strings.HasPrefix(clean, "/home/agent/")
 }
 
 func isProxyEnv(name string) bool {

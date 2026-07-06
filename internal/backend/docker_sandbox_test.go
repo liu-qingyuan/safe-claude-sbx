@@ -151,6 +151,19 @@ func TestDockerSandboxStartMainPassesMainSandboxContract(t *testing.T) {
 	}
 }
 
+func TestSBXProcessEnvDropsHostHerdrState(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_SOCKET_PATH", "/tmp/host-herdr.sock")
+	t.Setenv("HERDR_PANE_ID", "host-pane")
+	t.Setenv("HERDR_WORKSPACE_ID", "host-workspace")
+
+	for _, entry := range sbxProcessEnv() {
+		if strings.HasPrefix(entry, "HERDR_") {
+			t.Fatalf("sbx subprocess environment inherited host Herdr state: %s", entry)
+		}
+	}
+}
+
 func TestDockerSandboxStartMainPreparesSandboxLocalHerdr(t *testing.T) {
 	calls := []string{}
 	runner := stubRunner{
@@ -191,6 +204,25 @@ func TestDockerSandboxStartMainPreparesSandboxLocalHerdr(t *testing.T) {
 		if strings.Contains(key, "/tmp/host-herdr.sock") || strings.Contains(key, "host-pane") {
 			t.Fatalf("start command used host Herdr state: %s", key)
 		}
+	}
+}
+
+func TestDockerSandboxProbeAllowsSandboxLocalHerdrInspectionWhenConfigured(t *testing.T) {
+	cfg := herdrConfig()
+	cfg.Sandbox.ProbeName = "probe"
+	cfg.Workspace.Mount = "."
+	runner := probeRunner(
+		"PATH=/usr/bin\nHERDR_ENV=1\nHERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock\nHERDR_PANE_ID=sandbox-claude\n",
+		"/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)\n",
+	)
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).Probe(context.Background(), cfg)
+
+	if err != nil {
+		t.Fatalf("expected sandbox-local Herdr inspection to pass: %v", err)
+	}
+	if !result.CleanupDone {
+		t.Fatalf("expected probe cleanup to be marked done")
 	}
 }
 
@@ -304,6 +336,12 @@ func TestDockerSandboxProbeFailsClosedForUnsafeInspection(t *testing.T) {
 			wantError: "environment.inspection.env.SSH_AUTH_SOCK",
 		},
 		{
+			name:      "host Herdr config",
+			env:       "PATH=/usr/bin\nHERDR_CONFIG_DIR=/Users/alice/.config/herdr\n",
+			mounts:    "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)\n",
+			wantError: "environment.inspection.env.HERDR_CONFIG_DIR",
+		},
+		{
 			name:      "sensitive mount",
 			env:       "PATH=/usr/bin\nHTTP_PROXY=http://gateway.docker.internal:3128\n",
 			mounts:    "/dev/disk1 on /workspace type virtiofs\n/dev/disk2 on /host-ssh type virtiofs (rw,source=/Users/alice/.ssh)\n",
@@ -317,7 +355,7 @@ func TestDockerSandboxProbeFailsClosedForUnsafeInspection(t *testing.T) {
 			cfg := probeConfig()
 			cfg.Workspace.ForbiddenPaths = append(cfg.Workspace.ForbiddenPaths, "/Users/alice/.ssh")
 
-			_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).Probe(context.Background(), cfg)
+			result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).Probe(context.Background(), cfg)
 
 			if err == nil {
 				t.Fatalf("probe unexpectedly succeeded")
@@ -325,8 +363,11 @@ func TestDockerSandboxProbeFailsClosedForUnsafeInspection(t *testing.T) {
 			if !strings.Contains(err.Error(), tt.wantError) {
 				t.Fatalf("expected %q in error, got %v", tt.wantError, err)
 			}
-			if strings.Contains(err.Error(), "127.0.0.1:7897") || strings.Contains(err.Error(), "/Users/alice/.ssh/agent.sock") {
+			if strings.Contains(err.Error(), "127.0.0.1:7897") || strings.Contains(err.Error(), "/Users/alice/.ssh/agent.sock") || strings.Contains(err.Error(), "/Users/alice/.config/herdr") {
 				t.Fatalf("probe error leaked sensitive value: %v", err)
+			}
+			if !result.CleanupDone {
+				t.Fatalf("expected unsafe inspection to trigger probe cleanup")
 			}
 		})
 	}
