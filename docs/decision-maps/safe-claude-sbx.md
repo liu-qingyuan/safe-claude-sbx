@@ -131,3 +131,43 @@ Initial shape confirmed for the Docker Sandbox adapter:
 
 Avoid committing to equivalent security guarantees for non-`sbx` backends until
 separately researched.
+
+## #6: Decide sandbox-local Herdr supervision model
+
+Blocked by: #1, #2
+Type: Prototype
+
+### Question
+
+Should `safe-claude-sbx` support running a sandbox-local Herdr instance that
+supervises Claude Code inside the Docker Sandbox, without exposing the host
+Herdr socket or host `HERDR_*` environment variables?
+
+### Answer
+
+Chosen direction: prototype option B only. Host Herdr does not need to display
+the sandbox Claude state. Do not expose the host `HERDR_SOCKET_PATH`,
+`HERDR_PANE_ID`, or other host `HERDR_*` values into the sandbox.
+
+Confirmed in the target `claude-sbx` sandbox:
+
+- Herdr can be installed inside the Claude Docker Sandbox:
+  `/home/agent/.local/bin/herdr`, version `0.7.1`.
+- `herdr integration install claude` succeeds inside the `claude` template
+  sandbox because `/home/agent/.claude` exists.
+- The hook is installed at
+  `/home/agent/.claude/hooks/herdr-agent-state.sh`.
+- The hook expects `HERDR_ENV`, `HERDR_SOCKET_PATH`, and `HERDR_PANE_ID`.
+- Without sandbox-local `HERDR_*` values, the hook exits and reports nothing.
+- The shell probe template is not sufficient for this experiment because it does
+  not contain Claude Code or `/home/agent/.claude`.
+
+Next prototype should answer:
+
+- How to start sandbox-local Herdr server/session before Claude Code starts.
+- Which sandbox-local `HERDR_*` values are required for the Claude hook.
+- Whether `sbx run shell` plus an in-sandbox launcher can start Herdr and Claude
+  in the same TTY without weakening TUN, egress, mount, cleanup, or watchdog
+  guarantees.
+- Whether Herdr state remains entirely inside the sandbox when no host Herdr
+  socket is mounted or passed through.
