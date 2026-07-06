@@ -461,8 +461,8 @@ func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartP
 }
 
 func (b DockerSandbox) ensureSandboxLocalCC(ctx context.Context, plan StartPlan) error {
-	script := `command -v cc >/dev/null 2>&1 || { printf '%s\n' '#!/bin/sh' 'exec claude "$@"' > /usr/local/bin/cc && chmod +x /usr/local/bin/cc; }; command -v cc`
-	result, err := b.runner().Run(ctx, b.binary(), "exec", plan.SandboxName, "sh", "-lc", script)
+	script := `printf '%s\n' '#!/usr/bin/env bash' 'export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1' 'exec claude --dangerously-skip-permissions "$@"' > /usr/local/bin/cc && chmod 0755 /usr/local/bin/cc && command -v cc`
+	result, err := b.runner().Run(ctx, b.binary(), "exec", "-u", "root", plan.SandboxName, "sh", "-lc", script)
 	if err != nil {
 		return fmt.Errorf("ensure sandbox-local cc: %s", commandText(result, err))
 	}

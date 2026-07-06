@@ -174,7 +174,7 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 		"exec claude-sbx command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
-		"exec claude-sbx sh -lc command -v cc >/dev/null 2>&1 || { printf '%s\\n' '#!/bin/sh' 'exec claude \"$@\"' > /usr/local/bin/cc && chmod +x /usr/local/bin/cc; }; command -v cc",
+		"exec -u root claude-sbx sh -lc printf '%s\\n' '#!/usr/bin/env bash' 'export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1' 'exec claude --dangerously-skip-permissions \"$@\"' > /usr/local/bin/cc && chmod 0755 /usr/local/bin/cc && command -v cc",
 		"exec -it claude-sbx herdr",
 	})
 	for _, forbidden := range []string{"/tmp/host-herdr.sock", "host-pane", "host-workspace"} {
