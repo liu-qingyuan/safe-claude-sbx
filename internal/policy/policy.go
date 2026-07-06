@@ -33,11 +33,17 @@ type HerdrRuntimePolicy struct {
 }
 
 type InspectionObservation struct {
-	Environment      map[string]string
-	WorkingDirectory string
-	Mounts           string
-	Date             string
-	Locale           string
+	Environment         map[string]string
+	WorkingDirectory    string
+	Mounts              string
+	Date                string
+	Locale              string
+	WorkspaceVisibility WorkspaceVisibilityObservation
+}
+
+type WorkspaceVisibilityObservation struct {
+	ParentGuidancePath string
+	SiblingPath        string
 }
 
 func ValidateWorkspaceMount(policy WorkspacePolicy) error {
@@ -77,6 +83,9 @@ func ValidateInspection(policy InspectionPolicy, observation InspectionObservati
 	if err := validateMountObservation(policy.Workspace, observation.Mounts); err != nil {
 		return err
 	}
+	if err := validateWorkspaceVisibility(observation.WorkspaceVisibility); err != nil {
+		return err
+	}
 	if err := validateEnvironment(policy, observation.Environment); err != nil {
 		return err
 	}
@@ -99,6 +108,16 @@ func validateMountObservation(policy WorkspacePolicy, mounts string) error {
 		if observationMentionsPath(mounts, normalized) {
 			return fmt.Errorf("workspace.inspection.mounts: sensitive host path visible")
 		}
+	}
+	return nil
+}
+
+func validateWorkspaceVisibility(observation WorkspaceVisibilityObservation) error {
+	if strings.TrimSpace(observation.ParentGuidancePath) != "" {
+		return fmt.Errorf("workspace.inspection.visibility.parent_guidance: non-workspace path readable: %s", strings.TrimSpace(observation.ParentGuidancePath))
+	}
+	if strings.TrimSpace(observation.SiblingPath) != "" {
+		return fmt.Errorf("workspace.inspection.visibility.sibling: non-workspace path readable: %s", strings.TrimSpace(observation.SiblingPath))
 	}
 	return nil
 }

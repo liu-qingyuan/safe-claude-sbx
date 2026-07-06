@@ -161,6 +161,20 @@ values such as `OPENAI_API_KEY`, unexpected SSH agent forwarding env such as
 placeholders are allowed. These errors name the policy object and env variable
 but do not print captured secret values.
 
+The probe also checks workspace visibility. The configured workspace is the only
+project tree expected to be readable by Herdr, Claude Code, and the `cc` process
+started inside Herdr because they share the same Docker Sandbox filesystem
+view. If the sandbox can read a parent `CLAUDE.md` guidance file or a file under
+a sibling project directory, `doctor` and launcher startup fail closed with
+`workspace.inspection.visibility.*`. The diagnostic names the readable
+non-workspace path but does not print file contents.
+
+For stricter isolation, prefer `workspace.use_clone_mode: true` when the Docker
+Sandbox backend supports it for the workflow, or use a disposable temporary
+workspace that contains only the project files needed for the session. Do not
+depend on Herdr or `cc` to provide another filesystem isolation layer inside the
+same sandbox.
+
 Legacy flat fields such as `expected_egress_ip`, `sandbox_name`,
 `workspace_mount`, `timezone`, and `cleanup.stop_on_exit` are not accepted by the
 MVP CLI. The doctor reports a migration message with the new object path, for

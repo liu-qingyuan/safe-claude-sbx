@@ -442,7 +442,44 @@ Expected sandbox stop/cleanup behavior:
 - Failure occurs before any backend command.
 - No probe or main sandbox is created.
 
-## 15. Credential placeholders and SSH agent forwarding in probe
+## 15. Workspace parent and sibling visibility
+
+Prerequisites:
+
+- Complete scenario 2 with a disposable workspace under a disposable parent
+  directory.
+- Put a harmless marker file at the workspace parent path named `CLAUDE.md`.
+- Put a harmless marker file under a sibling directory, for example
+  `<parent>/sibling-project/config.yaml`.
+- Do not use real secrets or real project configuration as marker contents.
+
+Steps:
+
+1. Point `workspace.mount` at the disposable workspace.
+2. Run `safe-claude-sbx doctor --config config.yaml`.
+3. Remove the parent `CLAUDE.md` marker and rerun `doctor`.
+4. Remove the sibling marker or enable a stricter isolation mode such as
+   `workspace.use_clone_mode: true` when supported, then rerun `doctor`.
+5. Run `sbx ls` after each failure.
+
+Expected CLI output:
+
+- When the parent guidance marker is readable, `doctor` fails with
+  `workspace.inspection.visibility.parent_guidance`.
+- When the sibling marker is readable, `doctor` fails with
+  `workspace.inspection.visibility.sibling`.
+- The diagnostic may name the readable path, but it must not print marker file
+  contents.
+- Once only the configured workspace is readable, inspection can continue to the
+  normal egress and environment checks.
+
+Expected sandbox stop/cleanup behavior:
+
+- On inspection failure, the probe sandbox is removed when
+  `cleanup.remove_probe_sandbox` is `true`.
+- The main sandbox is not started after the failed visibility inspection.
+
+## 16. Credential placeholders and SSH agent forwarding in probe
 
 Prerequisites:
 
@@ -479,7 +516,7 @@ Expected sandbox stop/cleanup behavior:
   `cleanup.remove_probe_sandbox` is `true`.
 - The launcher must not start the main sandbox after the failed probe.
 
-## 16. Sandbox-local Herdr mode successful startup
+## 17. Sandbox-local Herdr mode successful startup
 
 Prerequisites:
 
@@ -571,9 +608,9 @@ Known limits for this mode:
 - The watchdog remains route-event based; this mode does not add periodic
   polling.
 
-## 17. Sandbox-local Herdr mode fail-closed checks
+## 18. Sandbox-local Herdr mode fail-closed checks
 
-Run these with `herdr-config.yaml` from scenario 16 and a disposable sandbox
+Run these with `herdr-config.yaml` from scenario 17 and a disposable sandbox
 name when the test can mutate sandbox state:
 
 ```yaml

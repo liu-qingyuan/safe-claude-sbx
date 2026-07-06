@@ -1053,6 +1053,22 @@ func TestDoctorFailsClosedForUnsafeSandboxInspection(t *testing.T) {
 			wantError: "workspace.inspection.mounts",
 			notLeak:   home + "/.ssh",
 		},
+		{
+			name: "workspace parent guidance readable",
+			fake: fakeSBXOptions{
+				VisibilityOutput: "parent-guidance-readable=/Users/alice/work/CLAUDE.md\n",
+			},
+			wantError: "workspace.inspection.visibility.parent_guidance",
+			notLeak:   "TOP_SECRET_PARENT_GUIDANCE",
+		},
+		{
+			name: "sibling project file readable",
+			fake: fakeSBXOptions{
+				VisibilityOutput: "sibling-readable=/Users/alice/work/other-project/config.yaml\n",
+			},
+			wantError: "workspace.inspection.visibility.sibling",
+			notLeak:   "TOP_SECRET_SIBLING_CONFIG",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1484,6 +1500,7 @@ type fakeSBXOptions struct {
 	VersionOutput         string
 	EnvOutput             string
 	MountOutput           string
+	VisibilityOutput      string
 	LogPath               string
 	LogRunEnvironment     bool
 	FailCreate            bool
@@ -1517,6 +1534,10 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	mountOutput := opts.MountOutput
 	if mountOutput == "" {
 		mountOutput = "/dev/disk1 on /workspace type virtiofs\n"
+	}
+	visibilityOutput := opts.VisibilityOutput
+	if visibilityOutput == "" {
+		visibilityOutput = "ok\n"
 	}
 	existingMainWorkspace := opts.ExistingMainWorkspace
 	if existingMainWorkspace == "" {
@@ -1564,6 +1585,9 @@ case "$1" in
           exit 1
         fi
         printf '%%s\n' %q
+        ;;
+      *" sh -lc workspace="*)
+        printf '%%b' %q
         ;;
       *" env")
         printf '%%b' %q
@@ -1686,6 +1710,7 @@ esac
 		shellBool(opts.FailCreate),
 		shellBool(opts.FailCurl),
 		egressIP,
+		visibilityOutput,
 		envOutput,
 		mountOutput,
 		shellBool(opts.MissingHerdr),

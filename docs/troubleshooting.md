@@ -258,6 +258,8 @@ Typical output:
 ```text
 configuration invalid: workspace.mount: path is forbidden by workspace policy
 sandbox probe invalid: sandbox inspection invalid: workspace.inspection.mounts: forbidden host path visible
+sandbox probe invalid: sandbox inspection invalid: workspace.inspection.visibility.parent_guidance: non-workspace path readable: /Users/alice/work/CLAUDE.md
+sandbox probe invalid: sandbox inspection invalid: workspace.inspection.visibility.sibling: non-workspace path readable: /Users/alice/work/other-project/config.yaml
 ```
 
 Meaning:
@@ -266,6 +268,9 @@ Meaning:
   inspection exposed a forbidden host path.
 - Forbidden paths include Home, SSH, Claude config, Clash config, Keychain, and
   any extra paths configured under `workspace.forbidden_paths`.
+- The sandbox can read outside the configured workspace, such as a parent
+  `CLAUDE.md` guidance file or a sibling project file. Herdr TUI and `cc` share
+  that same sandbox filesystem view.
 
 Checks:
 
@@ -273,6 +278,11 @@ Checks:
 - Check symlinks and relative paths; the policy resolves them before backend
   commands run.
 - Do not mount home directories or credential/config directories.
+- Try `workspace.use_clone_mode: true` if the Docker Sandbox backend supports it
+  for the workflow, or copy only the required project files to a disposable
+  temporary workspace and mount that path.
+- Do not paste the readable file contents into issues or logs; the diagnostic
+  path is enough to debug the mount boundary.
 
 Expected behavior:
 

@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,12 +40,13 @@ type Availability struct {
 }
 
 type InspectionObservation struct {
-	Environment      map[string]string
-	WorkingDirectory string
-	Mounts           string
-	Date             string
-	Locale           string
-	EgressIP         string
+	Environment         map[string]string
+	WorkingDirectory    string
+	Mounts              string
+	Date                string
+	Locale              string
+	EgressIP            string
+	WorkspaceVisibility policy.WorkspaceVisibilityObservation
 }
 
 type ProbeResult struct {
@@ -200,6 +202,10 @@ func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResul
 	if err != nil {
 		return b.finishProbe(ctx, cfg, ProbeResult{}, err)
 	}
+	visibility, err := b.inspectWorkspaceVisibility(ctx, cfg, probeName)
+	if err != nil {
+		return b.finishProbe(ctx, cfg, ProbeResult{}, err)
+	}
 	date, err := b.execProbe(ctx, probeName, "-e", "TZ="+cfg.Environment.Timezone, "date")
 	if err != nil {
 		return b.finishProbe(ctx, cfg, ProbeResult{}, err)
@@ -219,12 +225,13 @@ func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResul
 	}
 
 	inspection := InspectionObservation{
-		Environment:      parseEnv(env),
-		WorkingDirectory: strings.TrimSpace(pwd),
-		Mounts:           strings.TrimSpace(mounts),
-		Date:             strings.TrimSpace(date),
-		Locale:           strings.TrimSpace(locale),
-		EgressIP:         egress.ObservedIP,
+		Environment:         parseEnv(env),
+		WorkingDirectory:    strings.TrimSpace(pwd),
+		Mounts:              strings.TrimSpace(mounts),
+		Date:                strings.TrimSpace(date),
+		Locale:              strings.TrimSpace(locale),
+		EgressIP:            egress.ObservedIP,
+		WorkspaceVisibility: visibility,
 	}
 	result := ProbeResult{
 		Egress:     egress,
@@ -241,11 +248,12 @@ func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResul
 		ForbiddenEnvVars:        cfg.Environment.ForbiddenEnvVars,
 		HerdrRuntime:            herdrRuntimePolicy(cfg),
 	}, policy.InspectionObservation{
-		Environment:      inspection.Environment,
-		WorkingDirectory: inspection.WorkingDirectory,
-		Mounts:           inspection.Mounts,
-		Date:             inspection.Date,
-		Locale:           inspection.Locale,
+		Environment:         inspection.Environment,
+		WorkingDirectory:    inspection.WorkingDirectory,
+		Mounts:              inspection.Mounts,
+		Date:                inspection.Date,
+		Locale:              inspection.Locale,
+		WorkspaceVisibility: inspection.WorkspaceVisibility,
 	}); err != nil {
 		return b.finishProbe(ctx, cfg, result, fmt.Errorf("sandbox inspection invalid: %w", err))
 	}
@@ -286,6 +294,78 @@ func herdrRuntimePolicy(cfg config.Config) policy.HerdrRuntimePolicy {
 		SocketPath: strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.SocketPath),
 		PaneID:     strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.PaneID),
 	}
+}
+
+func (b DockerSandbox) inspectWorkspaceVisibility(ctx context.Context, cfg config.Config, probeName string) (policy.WorkspaceVisibilityObservation, error) {
+	workspace, err := resolveWorkspaceVisibilityPath(cfg.Workspace.Mount)
+	if err != nil {
+		return policy.WorkspaceVisibilityObservation{}, fmt.Errorf("workspace visibility inspection: resolve workspace mount: %w", err)
+	}
+	output, err := b.execProbe(ctx, probeName, "sh", "-lc", workspaceVisibilityScript(workspace))
+	if err != nil {
+		return policy.WorkspaceVisibilityObservation{}, err
+	}
+	return parseWorkspaceVisibility(output)
+}
+
+func resolveWorkspaceVisibilityPath(mount string) (string, error) {
+	trimmed := strings.TrimSpace(mount)
+	if trimmed == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if trimmed == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		trimmed = home
+	} else if strings.HasPrefix(trimmed, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		trimmed = filepath.Join(home, strings.TrimPrefix(trimmed, "~/"))
+	}
+	return filepath.Abs(trimmed)
+}
+
+func parseWorkspaceVisibility(output string) (policy.WorkspaceVisibilityObservation, error) {
+	var observation policy.WorkspaceVisibilityObservation
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "ok" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return policy.WorkspaceVisibilityObservation{}, fmt.Errorf("workspace visibility inspection: unexpected output")
+		}
+		switch key {
+		case "parent-guidance-readable":
+			observation.ParentGuidancePath = strings.TrimSpace(value)
+		case "sibling-readable":
+			observation.SiblingPath = strings.TrimSpace(value)
+		default:
+			return policy.WorkspaceVisibilityObservation{}, fmt.Errorf("workspace visibility inspection: unexpected output")
+		}
+	}
+	return observation, nil
+}
+
+func workspaceVisibilityScript(workspace string) string {
+	return strings.Join([]string{
+		"workspace=" + shellQuote(workspace),
+		`parent=${workspace%/*}`,
+		`base=${workspace##*/}`,
+		`reported=0`,
+		`if [ "$parent" != "/" ] && [ -r "$parent/CLAUDE.md" ]; then printf 'parent-guidance-readable=%s\n' "$parent/CLAUDE.md"; reported=1; fi`,
+		`if [ "$parent" != "/" ] && [ -d "$parent" ]; then sibling=$(find "$parent" -mindepth 2 -maxdepth 3 -type f -readable ! -path "$workspace/*" ! -path "$parent/$base/*" -print -quit 2>/dev/null || true); if [ -n "$sibling" ]; then printf 'sibling-readable=%s\n' "$sibling"; reported=1; fi; fi`,
+		`if [ "$reported" -eq 0 ]; then printf 'ok\n'; fi`,
+	}, "\n")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func (b DockerSandbox) CleanupProbe(ctx context.Context, cfg config.Config) error {
