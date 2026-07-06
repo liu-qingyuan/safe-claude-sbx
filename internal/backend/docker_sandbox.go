@@ -388,7 +388,7 @@ func shellQuote(value string) string {
 }
 
 func (b DockerSandbox) CleanupProbe(ctx context.Context, cfg config.Config) error {
-	if !b.cleanupProbe(ctx, cfg) {
+	if !b.cleanupProbe(cfg) {
 		return fmt.Errorf("cleanup probe sandbox %q failed", cfg.Sandbox.ProbeName)
 	}
 	return nil
@@ -401,22 +401,20 @@ func (b DockerSandbox) CleanupMain(ctx context.Context, cfg config.Config) error
 	var cleanupErr error
 
 	if cfg.Sandbox.Supervision.Mode == "sandbox-local-herdr" {
-		stopCtx, cancel := context.WithTimeout(ctx, sandboxLocalHerdrCleanupTimeout)
-		result, err := runner.Run(stopCtx, binary, "exec", mainName, "herdr", "server", "stop")
-		cancel()
+		result, err := runCleanupCommand(runner, herdrCleanupTimeout(cfg), binary, "exec", mainName, "herdr", "server", "stop")
 		if err != nil && !isBenignHerdrCleanup(result) {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stop sandbox-local Herdr server in %q failed: %s", mainName, commandText(result, err)))
 		}
 	}
 
 	if cfg.Cleanup.StopMainSandbox {
-		if result, err := runner.Run(ctx, binary, "stop", mainName); err != nil && !isNotFoundCleanup(result) {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stop main sandbox %q failed: %s", mainName, commandText(result, err)))
+		if result, err := runCleanupCommand(runner, cleanupTimeoutDuration(cfg.Network.EgressIP.TimeoutSeconds), binary, "stop", mainName); err != nil && !isNotFoundCleanup(result) {
+			cleanupErr = errors.Join(cleanupErr, cleanupCommandError("stop main sandbox", mainName, result, err))
 		}
 	}
 	if cfg.Cleanup.RemoveMainSandbox {
-		if result, err := runner.Run(ctx, binary, "rm", "--force", mainName); err != nil && !isNotFoundCleanup(result) {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove main sandbox %q failed: %s", mainName, commandText(result, err)))
+		if result, err := runCleanupCommand(runner, cleanupTimeoutDuration(cfg.Network.EgressIP.TimeoutSeconds), binary, "rm", "--force", mainName); err != nil && !isNotFoundCleanup(result) {
+			cleanupErr = errors.Join(cleanupErr, cleanupCommandError("remove main sandbox", mainName, result, err))
 		}
 	}
 	return cleanupErr
@@ -896,23 +894,18 @@ func combineHerdrAndClaudeWait(herdrWait, claudeWait <-chan error) <-chan error 
 
 func (b DockerSandbox) cleanupStartedMain(ctx context.Context, plan StartPlan) {
 	b.stopSandboxLocalHerdr(ctx, plan.SandboxName)
-	_, _ = b.runner().Run(ctx, b.binary(), "stop", plan.SandboxName)
+	_, _ = runCleanupCommand(b.runner(), cleanupTimeoutDuration(0), b.binary(), "stop", plan.SandboxName)
 }
 
 func (b DockerSandbox) stopSandboxLocalHerdr(ctx context.Context, sandboxName string) {
-	stopCtx, cancel := context.WithTimeout(ctx, sandboxLocalHerdrCleanupTimeout)
-	defer cancel()
-	_, _ = b.runner().Run(stopCtx, b.binary(), "exec", sandboxName, "herdr", "server", "stop")
+	_, _ = runCleanupCommand(b.runner(), sandboxLocalHerdrCleanupTimeout, b.binary(), "exec", sandboxName, "herdr", "server", "stop")
 }
 
 func (b DockerSandbox) finishProbe(ctx context.Context, cfg config.Config, result ProbeResult, err error) (ProbeResult, error) {
 	if !cfg.Cleanup.RemoveProbeSandbox {
 		return result, err
 	}
-	cleanupCtx, cancel := CleanupTimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
-	defer cancel()
-
-	result.CleanupDone = b.cleanupProbe(cleanupCtx, cfg)
+	result.CleanupDone = b.cleanupProbe(cfg)
 	if result.CleanupDone {
 		return result, err
 	}
@@ -933,9 +926,7 @@ func (b DockerSandbox) createProbe(ctx context.Context, cfg config.Config) error
 	}
 	if result, err := runner.Run(ctx, binary, create...); err != nil {
 		if cfg.Cleanup.RemoveProbeSandbox && isAlreadyExistsCreate(result) {
-			cleanupCtx, cancel := CleanupTimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
-			cleanupDone := b.cleanupProbe(cleanupCtx, cfg)
-			cancel()
+			cleanupDone := b.cleanupProbe(cfg)
 			if !cleanupDone {
 				return fmt.Errorf("create probe sandbox: %s; cleanup existing probe sandbox failed", commandText(result, err))
 			}
@@ -949,7 +940,7 @@ func (b DockerSandbox) createProbe(ctx context.Context, cfg config.Config) error
 	return nil
 }
 
-func (b DockerSandbox) cleanupProbe(ctx context.Context, cfg config.Config) bool {
+func (b DockerSandbox) cleanupProbe(cfg config.Config) bool {
 	if !cfg.Cleanup.RemoveProbeSandbox {
 		return true
 	}
@@ -957,10 +948,10 @@ func (b DockerSandbox) cleanupProbe(ctx context.Context, cfg config.Config) bool
 	runner := b.runner()
 	binary := b.binary()
 
-	if result, err := runner.Run(ctx, binary, "stop", probeName); err != nil && !isNotFoundCleanup(result) {
+	if result, err := runCleanupCommand(runner, cleanupTimeoutDuration(cfg.Network.EgressIP.TimeoutSeconds), binary, "stop", probeName); err != nil && !isNotFoundCleanup(result) {
 		return false
 	}
-	if result, err := runner.Run(ctx, binary, "rm", "--force", probeName); err != nil && !isNotFoundCleanup(result) {
+	if result, err := runCleanupCommand(runner, cleanupTimeoutDuration(cfg.Network.EgressIP.TimeoutSeconds), binary, "rm", "--force", probeName); err != nil && !isNotFoundCleanup(result) {
 		return false
 	}
 	return true
@@ -1170,10 +1161,53 @@ func TimeoutContext(seconds int) (context.Context, context.CancelFunc) {
 }
 
 func CleanupTimeoutContext(seconds int) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), cleanupTimeoutDuration(seconds))
+}
+
+func runCleanupCommand(runner Runner, timeout time.Duration, name string, args ...string) (CommandResult, error) {
+	if timeout <= 0 {
+		timeout = cleanupTimeoutDuration(0)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return runner.Run(ctx, name, args...)
+}
+
+func cleanupTimeoutDuration(seconds int) time.Duration {
 	if seconds <= 0 {
 		seconds = 30
 	}
-	return context.WithTimeout(context.Background(), time.Duration(seconds)*time.Second)
+	return time.Duration(seconds) * time.Second
+}
+
+func herdrCleanupTimeout(cfg config.Config) time.Duration {
+	configured := cleanupTimeoutDuration(cfg.Network.EgressIP.TimeoutSeconds)
+	if sandboxLocalHerdrCleanupTimeout > 0 && sandboxLocalHerdrCleanupTimeout < configured {
+		return sandboxLocalHerdrCleanupTimeout
+	}
+	return configured
+}
+
+func cleanupCommandError(operation, sandboxName string, result CommandResult, err error) error {
+	diagnostic := commandText(result, err)
+	if isSBXControlPlaneFailure(result, err) {
+		return fmt.Errorf("sbx control-plane failure: %s %q failed: %s", operation, sandboxName, diagnostic)
+	}
+	return fmt.Errorf("%s %q failed: %s", operation, sandboxName, diagnostic)
+}
+
+func isSBXControlPlaneFailure(result CommandResult, err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	text := strings.ToLower(commandText(result, err))
+	if strings.Contains(text, "context canceled") {
+		return true
+	}
+	if strings.Contains(text, "deadline exceeded") || strings.Contains(text, "timed out") || strings.Contains(text, "timeout") {
+		return true
+	}
+	return strings.Contains(text, "http://socket/") || strings.Contains(text, "sandboxd.sock")
 }
 
 func sbxProcessEnv() []string {

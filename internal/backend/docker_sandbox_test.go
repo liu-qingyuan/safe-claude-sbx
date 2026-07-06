@@ -823,6 +823,55 @@ func TestDockerSandboxCleanupMainBoundsSandboxLocalHerdrStop(t *testing.T) {
 	}
 }
 
+func TestDockerSandboxCleanupMainClassifiesMainStopControlPlaneFailure(t *testing.T) {
+	runner := stubRunner{
+		path: "/tmp/sbx",
+		results: map[string]CommandResult{
+			"sbx stop main-sbx": {Stderr: `Error: failed to stop sandbox 'main-sbx': stop runtime: Post "http://socket/sandbox/main-sbx/stop": context canceled` + "\n"},
+		},
+		errors: map[string]error{
+			"sbx stop main-sbx": errors.New("exit status 1"),
+		},
+	}
+	cfg := herdrConfig()
+	cfg.Sandbox.Supervision.Mode = "direct-claude"
+	cfg.Sandbox.Supervision.Herdr = nil
+	cfg.Cleanup.StopMainSandbox = true
+
+	err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CleanupMain(context.Background(), cfg)
+
+	if err == nil {
+		t.Fatalf("expected main sandbox stop failure")
+	}
+	if !strings.Contains(err.Error(), "sbx control-plane failure") {
+		t.Fatalf("expected sbx control-plane failure classification, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "stop main sandbox") {
+		t.Fatalf("expected main sandbox stop operation in diagnostic, got %v", err)
+	}
+}
+
+func TestDockerSandboxCleanupMainUsesIndependentTimeoutForEachOperation(t *testing.T) {
+	runner := &deadlineRecordingRunner{
+		results: map[string]CommandResult{
+			"sbx exec main-sbx herdr server stop": {Stdout: "stopped\n"},
+			"sbx stop main-sbx":                   {Stdout: "stopped\n"},
+			"sbx rm --force main-sbx":             {Stdout: "removed\n"},
+		},
+	}
+	cfg := herdrConfig()
+	cfg.Network.EgressIP.TimeoutSeconds = 1
+	cfg.Cleanup.StopMainSandbox = true
+	cfg.Cleanup.RemoveMainSandbox = true
+
+	if err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CleanupMain(context.Background(), cfg); err != nil {
+		t.Fatalf("cleanup main failed: %v", err)
+	}
+	if runner.mainCleanupDeadlineCount != 3 {
+		t.Fatalf("expected each main cleanup operation to have its own deadline, got %d", runner.mainCleanupDeadlineCount)
+	}
+}
+
 func TestDockerSandboxStartMainAttachedConnectsStdin(t *testing.T) {
 	dir := t.TempDir()
 	stdinPath := filepath.Join(dir, "stdin.txt")
@@ -1185,10 +1234,11 @@ type stubRunner struct {
 }
 
 type deadlineRecordingRunner struct {
-	results              map[string]CommandResult
-	errors               map[string]error
-	fastDeadlineCount    int
-	cleanupDeadlineCount int
+	results                  map[string]CommandResult
+	errors                   map[string]error
+	fastDeadlineCount        int
+	cleanupDeadlineCount     int
+	mainCleanupDeadlineCount int
 }
 
 func (r *deadlineRecordingRunner) LookPath(file string) (string, error) {
@@ -1207,6 +1257,11 @@ func (r *deadlineRecordingRunner) Run(ctx context.Context, name string, args ...
 		if strings.Contains(key, "stop probe") || strings.Contains(key, "rm --force probe") {
 			if remaining > 0 && remaining <= 2*time.Second {
 				r.cleanupDeadlineCount++
+			}
+		}
+		if strings.Contains(key, "herdr server stop") || strings.Contains(key, "stop main-sbx") || strings.Contains(key, "rm --force main-sbx") {
+			if remaining > 0 && remaining <= 2*time.Second {
+				r.mainCleanupDeadlineCount++
 			}
 		}
 	}

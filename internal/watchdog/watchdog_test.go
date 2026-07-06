@@ -243,6 +243,36 @@ func TestSupervisorCleansUpWhenContextIsCanceled(t *testing.T) {
 	}
 }
 
+func TestOnceCleanupRunsOnlyOneCleanupConcurrently(t *testing.T) {
+	cleanup := &blockingCleanup{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	once := &onceCleanup{cleanup: cleanup}
+	results := make(chan error, 3)
+
+	for range 3 {
+		go func() {
+			results <- once.Do(context.Background())
+		}()
+	}
+
+	select {
+	case <-cleanup.started:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not start")
+	}
+	close(cleanup.release)
+	for range 3 {
+		if err := waitDone(t, results); err != nil {
+			t.Fatalf("cleanup returned error: %v", err)
+		}
+	}
+	if cleanup.calls != 1 {
+		t.Fatalf("expected one actual cleanup call, got %d", cleanup.calls)
+	}
+}
+
 func waitDone(t *testing.T, done <-chan error) error {
 	t.Helper()
 	select {
@@ -262,6 +292,22 @@ type recordingCleanup struct {
 func (c *recordingCleanup) Cleanup(context.Context) error {
 	c.calls++
 	return c.err
+}
+
+type blockingCleanup struct {
+	calls   int
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *blockingCleanup) Cleanup(context.Context) error {
+	c.calls++
+	c.once.Do(func() {
+		close(c.started)
+	})
+	<-c.release
+	return nil
 }
 
 var errRuntimeCheck = errors.New("runtime check failed")

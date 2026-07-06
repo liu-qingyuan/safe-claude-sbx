@@ -195,18 +195,25 @@ Typical output:
 sandbox backend invalid: unavailable: sbx not found
 sandbox backend invalid: unavailable: sbx list failed: ERROR: Not authenticated to Docker
 sandbox backend invalid: unavailable: sbx list failed: ...
+watchdog stopped sandbox: ... cleanup failed: sbx control-plane failure: stop main sandbox "claude-sbx" failed: ...
 ```
 
 Meaning:
 
 - The `sbx` CLI is missing, incompatible, unauthenticated, or unable to reach
   its backend.
+- If cleanup reports `sbx control-plane failure`, the launcher already decided
+  to fail closed, but Docker Sandbox's local control plane did not complete the
+  stop or remove request. This is distinct from a TUN, route, or egress policy
+  failure.
+- If `sbx ls` hangs, treat it as Docker Sandbox control plane unavailability,
+  not as evidence that the network safety policy passed or failed.
 
 Checks:
 
 - Run `command -v sbx`.
 - Run `sbx version`.
-- Run `sbx ls`.
+- Run `sbx ls`. If it hangs, stop waiting and use the recovery checks below.
 - If unauthenticated, complete Docker Sandbox login in your local environment.
 - If policy is not initialized, follow Docker Sandbox's own `sbx policy init`
   instructions for the host policy you intend to use.
@@ -215,6 +222,36 @@ Expected behavior:
 
 - Availability failure happens before probe creation and before main sandbox
   startup.
+- Cleanup uses bounded, independent `sbx` operations. A sandbox-local Herdr
+  stop timeout should not prevent the main sandbox stop attempt.
+
+Recovery checks when `sbx ls` or `sbx stop <main-name>` hangs:
+
+```bash
+pgrep -af 'safe-claude-sbx|safe-herdr|sbx stop|sbx daemon|sandboxd|containerd-shim'
+sbx version
+sbx ls
+```
+
+If `sbx ls` is still stuck after terminating stale `safe-claude-sbx`,
+`safe-herdr`, or manual `sbx stop` processes, restart the Docker Sandbox daemon
+from a local terminal:
+
+```bash
+pkill -f 'sbx daemon start'
+sbx daemon start
+```
+
+Keep `sbx daemon start` running in that terminal, then in a second terminal run:
+
+```bash
+sbx ls
+sbx stop <main-name>
+safe-claude-sbx doctor --config config.yaml
+```
+
+If `sbx daemon start` cannot recover `sbx ls`, restart Docker Desktop and rerun
+`safe-claude-sbx doctor --config config.yaml` before launching another sandbox.
 
 ## Docker Sandbox already running
 
