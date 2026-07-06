@@ -132,6 +132,160 @@ func TestLaunchStartsSandboxLocalHerdrAfterAllPreflightsPass(t *testing.T) {
 	}
 }
 
+func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:          "203.0.113.10",
+		LogPath:           logPath,
+		LogRunEnvironment: true,
+	})
+
+	cmd := exec.Command("go", "run", "../safe-herdr", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"HERDR_ENV=1",
+		"HERDR_SOCKET_PATH=/tmp/host-herdr.sock",
+		"HERDR_PANE_ID=host-pane",
+		"HERDR_WORKSPACE_ID=host-workspace",
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("safe-herdr failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "sandbox inspection ok") || !strings.Contains(string(output), "Herdr TUI started: claude-sbx") {
+		t.Fatalf("expected safe-herdr success after safety checks, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	assertLogLineOrder(t, log, []string{
+		"create --name claude-sbx-probe shell .",
+		"exec claude-sbx-probe curl -fsS https://api.ipify.org",
+		"rm --force claude-sbx-probe",
+		"ls",
+		"create --name claude-sbx claude .",
+		"exec claude-sbx command -v herdr",
+		"exec claude-sbx herdr --version",
+		"exec claude-sbx herdr integration install claude",
+		"exec claude-sbx sh -lc command -v cc >/dev/null 2>&1 || { printf '%s\\n' '#!/bin/sh' 'exec claude \"$@\"' > /usr/local/bin/cc && chmod +x /usr/local/bin/cc; }; command -v cc",
+		"exec -it claude-sbx herdr",
+	})
+	for _, forbidden := range []string{"/tmp/host-herdr.sock", "host-pane", "host-workspace"} {
+		if strings.Contains(log, forbidden) {
+			t.Fatalf("safe-herdr leaked host Herdr value %q:\n%s", forbidden, log)
+		}
+	}
+}
+
+func TestSafeHerdrWatchdogStopsSandboxWhenRouteEventChangesDefaultRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommandsWithRuntime(t, "utun9", "en0", false, true)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{EgressIP: "203.0.113.10", LogPath: logPath, BlockRun: true})
+
+	cmd := exec.Command("go", "run", "../safe-herdr", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("safe-herdr unexpectedly succeeded after route change:\n%s", output)
+	}
+	if !strings.Contains(string(output), "route-monitor runtime check failed") {
+		t.Fatalf("expected event source in watchdog output, got:\n%s", output)
+	}
+	if !strings.Contains(string(output), "default route changed from startup interface utun9 to en0") {
+		t.Fatalf("expected route change reason, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	if !containsLogLine(log, "stop claude-sbx") {
+		t.Fatalf("expected watchdog cleanup to stop main sandbox, got:\n%s", log)
+	}
+}
+
+func TestSafeHerdrFailsClosedBeforeTUI(t *testing.T) {
+	tests := []struct {
+		name        string
+		routeIface  string
+		hostEgress  string
+		fakeSBX     fakeSBXOptions
+		wantError   string
+		wantCleanup bool
+	}{
+		{
+			name:       "TUN route missing",
+			routeIface: "en0",
+			hostEgress: "203.0.113.10",
+			fakeSBX:    fakeSBXOptions{EgressIP: "203.0.113.10"},
+			wantError:  "system-route",
+		},
+		{
+			name:       "host egress mismatch",
+			routeIface: "utun9",
+			hostEgress: "198.51.100.77",
+			fakeSBX:    fakeSBXOptions{EgressIP: "203.0.113.10"},
+			wantError:  "host-egress-mismatch",
+		},
+		{
+			name:       "sandbox inspection failure",
+			routeIface: "utun9",
+			hostEgress: "203.0.113.10",
+			fakeSBX: fakeSBXOptions{
+				EgressIP:  "203.0.113.10",
+				EnvOutput: "PATH=/usr/bin\nHERDR_SOCKET_PATH=/tmp/host-herdr.sock\n",
+			},
+			wantError:   "environment.inspection.env.HERDR_SOCKET_PATH",
+			wantCleanup: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintln(w, tt.hostEgress)
+			}))
+			t.Cleanup(server.Close)
+
+			configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+			logPath := filepath.Join(t.TempDir(), "sbx.log")
+			tt.fakeSBX.LogPath = logPath
+			fakeBin := writeFakeSystemCommands(t, tt.routeIface, false)
+			fakeSBX := writeFakeSBX(t, tt.fakeSBX)
+
+			cmd := exec.Command("go", "run", "../safe-herdr", "--config", configPath)
+			cmd.Dir = "."
+			cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("safe-herdr unexpectedly succeeded:\n%s", output)
+			}
+			if !strings.Contains(string(output), tt.wantError) {
+				t.Fatalf("expected %q in output, got:\n%s", tt.wantError, output)
+			}
+			log := readOptionalFile(t, logPath)
+			if containsLogLine(log, "exec -it claude-sbx herdr") {
+				t.Fatalf("Herdr TUI started despite preflight failure:\n%s", log)
+			}
+			if tt.wantCleanup && !strings.Contains(log, "rm --force claude-sbx-probe") {
+				t.Fatalf("expected probe cleanup after startup failure, got:\n%s", log)
+			}
+		})
+	}
+}
+
 func TestLaunchRebuildsStoppedSandboxLocalHerdrMainAfterPreflights(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "203.0.113.10")
@@ -1340,6 +1494,9 @@ case "$1" in
         fi
         printf 'installed\n'
         ;;
+      *" command -v cc"*)
+        printf '/usr/local/bin/cc\n'
+        ;;
       *" herdr status server --json")
         printf '{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}\n'
         ;;
@@ -1356,6 +1513,14 @@ case "$1" in
         while [ ! -f %q ]; do
           sleep 0.05
         done
+        ;;
+      *"-it "*" herdr")
+        printf 'herdr tui\n'
+        if [ %q = "true" ]; then
+          while [ ! -f %q ]; do
+            sleep 0.05
+          done
+        fi
         ;;
       *"HERDR_ENV=1"*" claude")
         if [ %q = "true" ]; then
@@ -1419,6 +1584,8 @@ esac
 		herdrStopFile,
 		shellBool(opts.FailHerdrServer),
 		herdrStopFile,
+		shellBool(opts.BlockRun),
+		stopFile,
 		shellBool(opts.FailRun),
 		shellBool(opts.BlockRun),
 		stopFile,

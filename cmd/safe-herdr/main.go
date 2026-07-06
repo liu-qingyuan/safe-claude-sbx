@@ -7,5 +7,5 @@ import (
 )
 
 func main() {
-	os.Exit(launcher.RunSafeClaudeSBX(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	os.Exit(launcher.RunSafeHerdr(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }

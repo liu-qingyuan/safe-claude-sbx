@@ -345,6 +345,35 @@ func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, st
 	return start, wait, nil
 }
 
+func (b DockerSandbox) StartHerdrTUIAttached(ctx context.Context, plan StartPlan, stdin io.Reader, stdout, stderr io.Writer) (StartResult, <-chan error, error) {
+	start := StartResult{
+		SandboxName: plan.SandboxName,
+		Agent:       plan.Agent,
+		Workspace:   plan.Workspace,
+		Timezone:    plan.Timezone,
+		Locale:      plan.Locale,
+	}
+	if plan.Supervision.Mode != "sandbox-local-herdr" {
+		return start, nil, fmt.Errorf("start Herdr TUI: sandbox-local-herdr supervision required")
+	}
+	if err := b.prepareSandboxLocalHerdr(ctx, plan); err != nil {
+		if shouldCleanupStartedMain(err) {
+			b.cleanupStartedMain(context.Background(), plan)
+		}
+		return start, nil, err
+	}
+	if err := b.ensureSandboxLocalCC(ctx, plan); err != nil {
+		b.cleanupStartedMain(context.Background(), plan)
+		return start, nil, err
+	}
+	wait, err := b.startAttachedCommand(ctx, []string{"exec", "-it", plan.SandboxName, "herdr"}, "start sandbox-local Herdr TUI", stdin, stdout, stderr)
+	if err != nil {
+		b.cleanupStartedMain(context.Background(), plan)
+		return start, nil, err
+	}
+	return start, wait, nil
+}
+
 func startMainArgs(plan StartPlan) []string {
 	args := []string{"run", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
 	if plan.UseCloneMode {
@@ -427,6 +456,15 @@ func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartP
 	}
 	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "herdr", "integration", "install", "claude"); err != nil {
 		return fmt.Errorf("install Claude Herdr integration: %s", commandText(result, err))
+	}
+	return nil
+}
+
+func (b DockerSandbox) ensureSandboxLocalCC(ctx context.Context, plan StartPlan) error {
+	script := `command -v cc >/dev/null 2>&1 || { printf '%s\n' '#!/bin/sh' 'exec claude "$@"' > /usr/local/bin/cc && chmod +x /usr/local/bin/cc; }; command -v cc`
+	result, err := b.runner().Run(ctx, b.binary(), "exec", plan.SandboxName, "sh", "-lc", script)
+	if err != nil {
+		return fmt.Errorf("ensure sandbox-local cc: %s", commandText(result, err))
 	}
 	return nil
 }

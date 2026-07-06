@@ -30,7 +30,8 @@ Checks:
 - Enable TUN in Clash Verge and wait for the core to reload.
 - Confirm `network.clash_verge.app_home` points at the active Clash Verge Rev
   app home if you use portable mode or a non-default app location.
-- Re-run `safe-claude-sbx --config config.yaml`.
+- Re-run `safe-herdr --config config.yaml` for the Herdr TUI flow, or
+  `safe-claude-sbx --config config.yaml` for direct Claude mode.
 
 Do not attach the local Clash config file to an issue. If needed, report only
 whether `enable_tun_mode` and generated `tun.enable` are true after redaction.

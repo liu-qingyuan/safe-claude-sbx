@@ -32,16 +32,19 @@ This repository is implementing the Docker Sandbox / `sbx` MVP described in:
 
 ## Daily Commands
 
-Validate the current network and sandbox policy before starting work:
+Before starting work, update `network.egress_ip.expected_ip` in `config.yaml`
+for the current approved egress IP.
+
+Validate the current network and sandbox policy:
 
 ```bash
 safe-claude-sbx doctor --config config.yaml
 ```
 
-Use sandbox-local Herdr as the daily entry point:
+Use the policy-gated sandbox-local Herdr TUI as the daily entry point:
 
 ```bash
-sbx exec -it claude-sbx herdr
+safe-herdr --config config.yaml
 ```
 
 Inside the Herdr TUI, start Claude with the sandbox-local shortcut:
@@ -53,21 +56,19 @@ cc
 `cc` is a sandbox-local wrapper at `/usr/local/bin/cc`; it should not be
 installed on the host or read host Claude credentials.
 
-For plain Docker Sandbox usage without Herdr, start Claude directly:
+For plain Docker Sandbox usage without Herdr, set
+`sandbox.supervision.mode: "direct-claude"` and start Claude through the guarded
+launcher:
 
 ```bash
-sbx run claude --name claude-sbx .
-```
-
-For an existing sandbox, open Claude interactively:
-
-```bash
-sbx exec -it claude-sbx claude
+safe-claude-sbx --config config.yaml
 ```
 
 ## Configuration
 
-Copy `config.example.yaml` to `config.yaml`, then set `network.egress_ip.expected_ip` and `network.egress_ip.host_check_url` for your local network policy before running `doctor`.
+Copy `config.example.yaml` to `config.yaml`, then set
+`network.egress_ip.expected_ip` and `network.egress_ip.host_check_url` for your
+local network policy before running `doctor` or `safe-herdr`.
 
 ## Safety Notice
 

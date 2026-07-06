@@ -15,7 +15,11 @@ sandbox:
   probe_name: "claude-sbx-probe"
   agent: "claude"
   supervision:
-    mode: "direct-claude"
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: true
+      socket_path: "/home/agent/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"
 
 workspace:
   mount: "."

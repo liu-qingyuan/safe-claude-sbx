@@ -11,6 +11,17 @@ checks that the host public egress IP matches `network.egress_ip.expected_ip`:
 safe-claude-sbx doctor --config config.yaml
 ```
 
+For the sandbox-local Herdr daily flow, update
+`network.egress_ip.expected_ip`, then start the TUI through the guarded
+entrypoint:
+
+```bash
+safe-herdr --config config.yaml
+```
+
+Inside the Herdr TUI, run `cc` to start Claude. The `cc` command is created only
+inside the Docker Sandbox when needed.
+
 ## Supervision Examples
 
 The default supervision mode is direct Claude startup. A minimal explicit
