@@ -114,7 +114,7 @@ func TestLaunchStartsSandboxLocalHerdrAfterAllPreflightsPass(t *testing.T) {
 	log := readFile(t, logPath)
 	for _, want := range []string{
 		"create --name claude-sbx claude .",
-		"exec claude-sbx command -v herdr",
+		"exec claude-sbx sh -lc command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
 		"exec claude-sbx herdr server",
@@ -171,7 +171,7 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 		"rm --force claude-sbx-probe",
 		"ls",
 		"create --name claude-sbx claude .",
-		"exec claude-sbx command -v herdr",
+		"exec claude-sbx sh -lc command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
 		"exec -u root claude-sbx sh -lc printf '%s\\n' '#!/usr/bin/env bash' 'export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1' 'exec claude --dangerously-skip-permissions \"$@\"' > /usr/local/bin/cc && chmod 0755 /usr/local/bin/cc && command -v cc",
@@ -321,7 +321,7 @@ func TestLaunchRebuildsStoppedSandboxLocalHerdrMainAfterPreflights(t *testing.T)
 		"stop claude-sbx",
 		"rm --force claude-sbx",
 		"create --name claude-sbx claude .",
-		"exec claude-sbx command -v herdr",
+		"exec claude-sbx sh -lc command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
 		"exec claude-sbx herdr server",

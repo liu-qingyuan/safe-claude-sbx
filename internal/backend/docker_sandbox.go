@@ -26,6 +26,9 @@ const (
 )
 
 const sandboxLocalHerdrInstallAttempts = 2
+const sandboxLocalHerdrPath = "/home/agent/.local/bin/herdr"
+
+var sandboxLocalHerdrCleanupTimeout = 5 * time.Second
 
 type Availability struct {
 	OK         bool
@@ -282,7 +285,10 @@ func (b DockerSandbox) CleanupMain(ctx context.Context, cfg config.Config) error
 	var cleanupErr error
 
 	if cfg.Sandbox.Supervision.Mode == "sandbox-local-herdr" {
-		if result, err := runner.Run(ctx, binary, "exec", mainName, "herdr", "server", "stop"); err != nil && !isBenignHerdrCleanup(result) {
+		stopCtx, cancel := context.WithTimeout(ctx, sandboxLocalHerdrCleanupTimeout)
+		result, err := runner.Run(stopCtx, binary, "exec", mainName, "herdr", "server", "stop")
+		cancel()
+		if err != nil && !isBenignHerdrCleanup(result) {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stop sandbox-local Herdr server in %q failed: %s", mainName, commandText(result, err)))
 		}
 	}
@@ -443,12 +449,12 @@ func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartP
 	if err := b.ensureFreshMainSandbox(ctx, plan); err != nil {
 		return err
 	}
-	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "command", "-v", "herdr"); err != nil {
+	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "sh", "-lc", "command -v herdr"); err != nil {
 		if !plan.Supervision.Herdr.InstallIfMissing {
 			return fmt.Errorf("sandbox-local Herdr unavailable: %s", commandText(result, err))
 		}
-		if installErr := b.installSandboxLocalHerdr(ctx, plan); installErr != nil {
-			return installErr
+		if err := b.ensureSandboxLocalHerdrOnPath(ctx, plan); err != nil {
+			return err
 		}
 	}
 	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "herdr", "--version"); err != nil {
@@ -456,6 +462,25 @@ func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartP
 	}
 	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "herdr", "integration", "install", "claude"); err != nil {
 		return fmt.Errorf("install Claude Herdr integration: %s", commandText(result, err))
+	}
+	return nil
+}
+
+func (b DockerSandbox) ensureSandboxLocalHerdrOnPath(ctx context.Context, plan StartPlan) error {
+	runner := b.runner()
+	binary := b.binary()
+	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "sh", "-lc", "test -x "+sandboxLocalHerdrPath); err != nil {
+		if installErr := b.installSandboxLocalHerdr(ctx, plan); installErr != nil {
+			return installErr
+		}
+	} else if strings.TrimSpace(result.Stderr) != "" {
+		return fmt.Errorf("verify sandbox-local Herdr install path: %s", commandText(result, nil))
+	}
+
+	linkScript := "ln -sf " + sandboxLocalHerdrPath + " /usr/local/bin/herdr && command -v herdr"
+	result, err := runner.Run(ctx, binary, "exec", "-u", "root", plan.SandboxName, "sh", "-lc", linkScript)
+	if err != nil {
+		return fmt.Errorf("expose sandbox-local Herdr on PATH: %s", commandText(result, err))
 	}
 	return nil
 }
@@ -740,7 +765,9 @@ func (b DockerSandbox) cleanupStartedMain(ctx context.Context, plan StartPlan) {
 }
 
 func (b DockerSandbox) stopSandboxLocalHerdr(ctx context.Context, sandboxName string) {
-	_, _ = b.runner().Run(ctx, b.binary(), "exec", sandboxName, "herdr", "server", "stop")
+	stopCtx, cancel := context.WithTimeout(ctx, sandboxLocalHerdrCleanupTimeout)
+	defer cancel()
+	_, _ = b.runner().Run(stopCtx, b.binary(), "exec", sandboxName, "herdr", "server", "stop")
 }
 
 func (b DockerSandbox) finishProbe(ctx context.Context, cfg config.Config, result ProbeResult, err error) (ProbeResult, error) {

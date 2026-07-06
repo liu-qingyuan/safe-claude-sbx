@@ -177,7 +177,7 @@ func TestDockerSandboxStartMainPreparesSandboxLocalHerdr(t *testing.T) {
 		calls: &calls,
 		results: map[string]CommandResult{
 			"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
-			"sbx exec main-sbx command -v herdr":                 {Stdout: "/home/agent/.local/bin/herdr\n"},
+			"sbx exec main-sbx sh -lc command -v herdr":          {Stdout: "/home/agent/.local/bin/herdr\n"},
 			"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
 			"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
 			"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
@@ -216,7 +216,7 @@ func TestDockerSandboxStartMainPreparesSandboxLocalHerdr(t *testing.T) {
 	want := strings.Join([]string{
 		"sbx ls",
 		"sbx create --name main-sbx claude /work/project",
-		"sbx exec main-sbx command -v herdr",
+		"sbx exec main-sbx sh -lc command -v herdr",
 		"sbx exec main-sbx herdr --version",
 		"sbx exec main-sbx herdr integration install claude",
 		"sbx exec main-sbx herdr server",
@@ -237,7 +237,7 @@ func TestDockerSandboxStartMainWaitsForSandboxLocalHerdrReadiness(t *testing.T) 
 			results: map[string]CommandResult{
 				"sbx ls": {Stdout: "No sandboxes found.\n"},
 				"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
-				"sbx exec main-sbx command -v herdr":                 {Stdout: "/home/agent/.local/bin/herdr\n"},
+				"sbx exec main-sbx sh -lc command -v herdr":          {Stdout: "/home/agent/.local/bin/herdr\n"},
 				"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
 				"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
 				"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
@@ -304,7 +304,7 @@ func TestDockerSandboxStartMainFailsClosedWhenSandboxLocalHerdrReadinessFails(t 
 				results: map[string]CommandResult{
 					"sbx ls": {Stdout: "No sandboxes found.\n"},
 					"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
-					"sbx exec main-sbx command -v herdr":                 {Stdout: "/home/agent/.local/bin/herdr\n"},
+					"sbx exec main-sbx sh -lc command -v herdr":          {Stdout: "/home/agent/.local/bin/herdr\n"},
 					"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
 					"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
 					"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
@@ -347,7 +347,7 @@ func TestDockerSandboxStartMainRebuildsStoppedSandboxLocalHerdrMain(t *testing.T
 			"sbx stop main-sbx":       {Stdout: "Sandbox 'main-sbx' stopped\n"},
 			"sbx rm --force main-sbx": {Stdout: "Sandbox 'main-sbx' removed\n"},
 			"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
-			"sbx exec main-sbx command -v herdr":                 {Stdout: "/home/agent/.local/bin/herdr\n"},
+			"sbx exec main-sbx sh -lc command -v herdr":          {Stdout: "/home/agent/.local/bin/herdr\n"},
 			"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
 			"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
 			"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
@@ -366,7 +366,7 @@ func TestDockerSandboxStartMainRebuildsStoppedSandboxLocalHerdrMain(t *testing.T
 		"sbx stop main-sbx",
 		"sbx rm --force main-sbx",
 		"sbx create --name main-sbx claude /work/project",
-		"sbx exec main-sbx command -v herdr",
+		"sbx exec main-sbx sh -lc command -v herdr",
 	}, "\n")
 	if !strings.Contains(got, want) {
 		t.Fatalf("expected stopped main sandbox rebuild before Herdr setup, got:\n%s", got)
@@ -406,7 +406,7 @@ func TestDockerSandboxStartMainStopsSandboxLocalHerdrWhenClaudeStartFails(t *tes
 		results: map[string]CommandResult{
 			"sbx ls": {Stdout: "No sandboxes found.\n"},
 			"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
-			"sbx exec main-sbx command -v herdr":                 {Stdout: "/home/agent/.local/bin/herdr\n"},
+			"sbx exec main-sbx sh -lc command -v herdr":          {Stdout: "/home/agent/.local/bin/herdr\n"},
 			"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
 			"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
 			"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
@@ -455,17 +455,20 @@ func TestDockerSandboxStartMainInstallsMissingSandboxLocalHerdrWhenConfigured(t 
 		path:  "/tmp/sbx",
 		calls: &calls,
 		results: map[string]CommandResult{
-			"sbx create --name main-sbx claude /work/project":                       {Stdout: "created\n"},
-			"sbx exec main-sbx command -v herdr":                                    {},
-			"sbx exec main-sbx sh -lc curl -fsSL https://herdr.dev/install.sh | sh": {Stdout: "installed\n"},
-			"sbx exec main-sbx herdr --version":                                     {Stdout: "herdr 0.7.1\n"},
-			"sbx exec main-sbx herdr integration install claude":                    {Stdout: "installed\n"},
-			"sbx exec main-sbx herdr server":                                        {Stdout: "server started\n"},
-			"sbx exec main-sbx herdr status server --json":                          {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
+			"sbx create --name main-sbx claude /work/project":                                                               {Stdout: "created\n"},
+			"sbx exec main-sbx sh -lc command -v herdr":                                                                     {},
+			"sbx exec main-sbx sh -lc test -x /home/agent/.local/bin/herdr":                                                 {Stderr: "missing\n"},
+			"sbx exec main-sbx sh -lc curl -fsSL https://herdr.dev/install.sh | sh":                                         {Stdout: "installed\n"},
+			"sbx exec -u root main-sbx sh -lc ln -sf /home/agent/.local/bin/herdr /usr/local/bin/herdr && command -v herdr": {Stdout: "/usr/local/bin/herdr\n"},
+			"sbx exec main-sbx herdr --version":                                                                             {Stdout: "herdr 0.7.1\n"},
+			"sbx exec main-sbx herdr integration install claude":                                                            {Stdout: "installed\n"},
+			"sbx exec main-sbx herdr server":                                                                                {Stdout: "server started\n"},
+			"sbx exec main-sbx herdr status server --json":                                                                  {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
 			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stdout: "claude started\n"},
 		},
 		errors: map[string]error{
-			"sbx exec main-sbx command -v herdr": errors.New("exit status 127"),
+			"sbx exec main-sbx sh -lc command -v herdr":                     errors.New("exit status 127"),
+			"sbx exec main-sbx sh -lc test -x /home/agent/.local/bin/herdr": errors.New("exit status 1"),
 		},
 	}
 	cfg := herdrConfig()
@@ -475,6 +478,38 @@ func TestDockerSandboxStartMainInstallsMissingSandboxLocalHerdrWhenConfigured(t 
 	}
 	if !runner.saw("sbx exec main-sbx sh -lc curl -fsSL https://herdr.dev/install.sh | sh") {
 		t.Fatalf("expected missing Herdr install command, got %#v", runner.keys())
+	}
+}
+
+func TestDockerSandboxStartMainExposesInstalledSandboxLocalHerdrOnPath(t *testing.T) {
+	calls := []string{}
+	runner := stubRunner{
+		path:  "/tmp/sbx",
+		calls: &calls,
+		results: map[string]CommandResult{
+			"sbx create --name main-sbx claude /work/project":                                                               {Stdout: "created\n"},
+			"sbx exec main-sbx sh -lc command -v herdr":                                                                     {},
+			"sbx exec main-sbx sh -lc test -x /home/agent/.local/bin/herdr":                                                 {Stdout: ""},
+			"sbx exec -u root main-sbx sh -lc ln -sf /home/agent/.local/bin/herdr /usr/local/bin/herdr && command -v herdr": {Stdout: "/usr/local/bin/herdr\n"},
+			"sbx exec main-sbx herdr --version":                                                                             {Stdout: "herdr 0.7.1\n"},
+			"sbx exec main-sbx herdr integration install claude":                                                            {Stdout: "installed\n"},
+			"sbx exec main-sbx herdr server":                                                                                {Stdout: "server started\n"},
+			"sbx exec main-sbx herdr status server --json":                                                                  {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
+			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stdout: "claude started\n"},
+		},
+		errors: map[string]error{
+			"sbx exec main-sbx sh -lc command -v herdr": errors.New("exit status 127"),
+		},
+	}
+
+	if _, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).StartMain(context.Background(), NewStartPlan(herdrConfig())); err != nil {
+		t.Fatalf("expected installed sandbox-local Herdr startup to succeed: %v", err)
+	}
+	if runner.saw("sbx exec main-sbx sh -lc curl -fsSL https://herdr.dev/install.sh | sh") {
+		t.Fatalf("expected local Herdr binary to be reused without reinstall, got:\n%s", strings.Join(runner.keys(), "\n"))
+	}
+	if !runner.saw("sbx exec -u root main-sbx sh -lc ln -sf /home/agent/.local/bin/herdr /usr/local/bin/herdr && command -v herdr") {
+		t.Fatalf("expected local Herdr binary to be exposed on PATH, got:\n%s", strings.Join(runner.keys(), "\n"))
 	}
 }
 
@@ -582,6 +617,30 @@ func TestDockerSandboxCleanupMainStopsSandboxLocalHerdrBeforeSandbox(t *testing.
 	}
 	if got := strings.Join(runner.keys(), "\n"); !strings.Contains(got, "sbx exec main-sbx herdr server stop\nsbx stop main-sbx") {
 		t.Fatalf("expected Herdr cleanup before sandbox stop, got:\n%s", got)
+	}
+}
+
+func TestDockerSandboxCleanupMainBoundsSandboxLocalHerdrStop(t *testing.T) {
+	previousTimeout := sandboxLocalHerdrCleanupTimeout
+	sandboxLocalHerdrCleanupTimeout = time.Nanosecond
+	t.Cleanup(func() {
+		sandboxLocalHerdrCleanupTimeout = previousTimeout
+	})
+
+	runner := &herdrStopTimeoutRunner{}
+	cfg := herdrConfig()
+	cfg.Cleanup.StopMainSandbox = true
+
+	err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CleanupMain(context.Background(), cfg)
+
+	if err == nil || !strings.Contains(err.Error(), "stop sandbox-local Herdr server") {
+		t.Fatalf("expected bounded Herdr stop diagnostic, got %v", err)
+	}
+	if !runner.herdrStopHadDeadline {
+		t.Fatalf("Herdr stop did not receive a bounded context")
+	}
+	if !runner.sawSandboxStop {
+		t.Fatalf("expected sandbox stop to continue after Herdr stop timeout")
 	}
 }
 
@@ -818,6 +877,30 @@ func (r *timeoutCleanupRunner) Run(ctx context.Context, name string, args ...str
 	}
 }
 
+type herdrStopTimeoutRunner struct {
+	herdrStopHadDeadline bool
+	sawSandboxStop       bool
+}
+
+func (r *herdrStopTimeoutRunner) LookPath(file string) (string, error) {
+	return file, nil
+}
+
+func (r *herdrStopTimeoutRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
+	key := strings.Join(append([]string{name}, args...), " ")
+	switch key {
+	case "sbx exec main-sbx herdr server stop":
+		_, r.herdrStopHadDeadline = ctx.Deadline()
+		<-ctx.Done()
+		return CommandResult{}, ctx.Err()
+	case "sbx stop main-sbx":
+		r.sawSandboxStop = true
+		return CommandResult{Stdout: "stopped\n"}, nil
+	default:
+		return CommandResult{}, fmt.Errorf("unexpected command %q", key)
+	}
+}
+
 type stubRunner struct {
 	path        string
 	lookPathErr error
@@ -908,8 +991,10 @@ func (r *herdrInstallTimeoutRunner) Run(ctx context.Context, name string, args .
 		return CommandResult{Stdout: "No sandboxes found.\n"}, nil
 	case "sbx create --name main-sbx claude /work/project":
 		return CommandResult{Stdout: "created\n"}, nil
-	case "sbx exec main-sbx command -v herdr":
+	case "sbx exec main-sbx sh -lc command -v herdr":
 		return CommandResult{}, errors.New("exit status 127")
+	case "sbx exec main-sbx sh -lc test -x /home/agent/.local/bin/herdr":
+		return CommandResult{}, errors.New("exit status 1")
 	case "sbx exec main-sbx sh -lc curl -fsSL https://herdr.dev/install.sh | sh":
 		_, r.installHadDeadline = ctx.Deadline()
 		if !r.installHadDeadline {
@@ -945,8 +1030,10 @@ func (r *herdrInstallAttemptRunner) Run(ctx context.Context, name string, args .
 		return CommandResult{Stdout: "No sandboxes found.\n"}, nil
 	case "sbx create --name main-sbx claude /work/project":
 		return CommandResult{Stdout: "created\n"}, nil
-	case "sbx exec main-sbx command -v herdr":
+	case "sbx exec main-sbx sh -lc command -v herdr":
 		return CommandResult{}, errors.New("exit status 127")
+	case "sbx exec main-sbx sh -lc test -x /home/agent/.local/bin/herdr":
+		return CommandResult{}, errors.New("exit status 1")
 	case "sbx exec main-sbx sh -lc curl -fsSL https://herdr.dev/install.sh | sh":
 		index := r.installCalls
 		r.installCalls++
@@ -958,6 +1045,8 @@ func (r *herdrInstallAttemptRunner) Run(ctx context.Context, name string, args .
 			err = r.installErrors[index]
 		}
 		return r.installResults[index], err
+	case "sbx exec -u root main-sbx sh -lc ln -sf /home/agent/.local/bin/herdr /usr/local/bin/herdr && command -v herdr":
+		return CommandResult{Stdout: "/usr/local/bin/herdr\n"}, nil
 	case "sbx exec main-sbx herdr --version":
 		return CommandResult{Stdout: "herdr 0.7.1\n"}, nil
 	case "sbx exec main-sbx herdr integration install claude":
