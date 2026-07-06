@@ -63,9 +63,33 @@ type StartPlan struct {
 	Timezone     string
 	Locale       string
 	Environment  map[string]string
+	Supervision  SupervisionPlan
+}
+
+type SupervisionPlan struct {
+	Mode  string
+	Herdr HerdrPlan
+}
+
+type HerdrPlan struct {
+	InstallIfMissing bool
+	SocketPath       string
+	PaneID           string
 }
 
 func NewStartPlan(cfg config.Config) StartPlan {
+	mode := cfg.Sandbox.Supervision.Mode
+	if mode == "" {
+		mode = "direct-claude"
+	}
+	var herdr HerdrPlan
+	if cfg.Sandbox.Supervision.Herdr != nil {
+		herdr = HerdrPlan{
+			InstallIfMissing: cfg.Sandbox.Supervision.Herdr.InstallIfMissing != nil && *cfg.Sandbox.Supervision.Herdr.InstallIfMissing,
+			SocketPath:       strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.SocketPath),
+			PaneID:           strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.PaneID),
+		}
+	}
 	return StartPlan{
 		SandboxName:  cfg.Sandbox.MainName,
 		Agent:        cfg.Sandbox.Agent,
@@ -77,6 +101,10 @@ func NewStartPlan(cfg config.Config) StartPlan {
 			"TZ":     cfg.Environment.Timezone,
 			"LANG":   cfg.Environment.Locale,
 			"LC_ALL": cfg.Environment.Locale,
+		},
+		Supervision: SupervisionPlan{
+			Mode:  mode,
+			Herdr: herdr,
 		},
 	}
 }
@@ -230,21 +258,31 @@ func (b DockerSandbox) CleanupMain(ctx context.Context, cfg config.Config) error
 	runner := b.runner()
 	binary := b.binary()
 	mainName := cfg.Sandbox.MainName
+	var cleanupErr error
+
+	if cfg.Sandbox.Supervision.Mode == "sandbox-local-herdr" {
+		if result, err := runner.Run(ctx, binary, "exec", mainName, "herdr", "server", "stop"); err != nil && !isBenignHerdrCleanup(result) {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stop sandbox-local Herdr server in %q failed: %s", mainName, commandText(result, err)))
+		}
+	}
 
 	if cfg.Cleanup.StopMainSandbox {
 		if result, err := runner.Run(ctx, binary, "stop", mainName); err != nil && !isNotFoundCleanup(result) {
-			return fmt.Errorf("stop main sandbox %q failed: %s", mainName, commandText(result, err))
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stop main sandbox %q failed: %s", mainName, commandText(result, err)))
 		}
 	}
 	if cfg.Cleanup.RemoveMainSandbox {
 		if result, err := runner.Run(ctx, binary, "rm", "--force", mainName); err != nil && !isNotFoundCleanup(result) {
-			return fmt.Errorf("remove main sandbox %q failed: %s", mainName, commandText(result, err))
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove main sandbox %q failed: %s", mainName, commandText(result, err)))
 		}
 	}
-	return nil
+	return cleanupErr
 }
 
 func (b DockerSandbox) StartMain(ctx context.Context, plan StartPlan) (StartResult, error) {
+	if plan.Supervision.Mode == "sandbox-local-herdr" {
+		return b.startSandboxLocalHerdr(ctx, plan)
+	}
 	args := startMainArgs(plan)
 	result, err := b.runner().Run(ctx, b.binary(), args...)
 	start := StartResult{
@@ -261,7 +299,121 @@ func (b DockerSandbox) StartMain(ctx context.Context, plan StartPlan) (StartResu
 }
 
 func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, stdin io.Reader, stdout, stderr io.Writer) (StartResult, <-chan error, error) {
-	args := startMainArgs(plan)
+	start := StartResult{
+		SandboxName: plan.SandboxName,
+		Agent:       plan.Agent,
+		Workspace:   plan.Workspace,
+		Timezone:    plan.Timezone,
+		Locale:      plan.Locale,
+	}
+	if plan.Supervision.Mode == "sandbox-local-herdr" {
+		wait, err := b.startSandboxLocalHerdrAttached(ctx, plan, stdin, stdout, stderr)
+		if err != nil {
+			b.cleanupStartedMain(context.Background(), plan)
+			return start, nil, err
+		}
+		return start, wait, nil
+	}
+
+	wait, err := b.startAttachedCommand(ctx, startMainArgs(plan), "start main sandbox", stdin, stdout, stderr)
+	if err != nil {
+		return start, nil, err
+	}
+	return start, wait, nil
+}
+
+func startMainArgs(plan StartPlan) []string {
+	args := []string{"run", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
+	if plan.UseCloneMode {
+		args = []string{"run", "--clone", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
+	}
+	return args
+}
+
+func (b DockerSandbox) startSandboxLocalHerdr(ctx context.Context, plan StartPlan) (StartResult, error) {
+	start := StartResult{
+		SandboxName: plan.SandboxName,
+		Agent:       plan.Agent,
+		Workspace:   plan.Workspace,
+		Timezone:    plan.Timezone,
+		Locale:      plan.Locale,
+	}
+	if err := b.prepareSandboxLocalHerdr(ctx, plan); err != nil {
+		b.cleanupStartedMain(context.Background(), plan)
+		return start, err
+	}
+	for _, args := range [][]string{
+		{"exec", plan.SandboxName, "herdr", "server"},
+		herdrClaudeArgs(plan),
+	} {
+		result, err := b.runner().Run(ctx, b.binary(), args...)
+		if err != nil {
+			b.cleanupStartedMain(context.Background(), plan)
+			return start, fmt.Errorf("start main sandbox: %s", commandText(result, err))
+		}
+	}
+	return start, nil
+}
+
+func (b DockerSandbox) startSandboxLocalHerdrAttached(ctx context.Context, plan StartPlan, stdin io.Reader, stdout, stderr io.Writer) (<-chan error, error) {
+	if err := b.prepareSandboxLocalHerdr(ctx, plan); err != nil {
+		return nil, err
+	}
+	herdrWait, err := b.startAttachedCommand(ctx, []string{"exec", plan.SandboxName, "herdr", "server"}, "start sandbox-local Herdr server", nil, stdout, stderr)
+	if err != nil {
+		return nil, err
+	}
+	claudeWait, err := b.startAttachedCommand(ctx, herdrClaudeArgs(plan), "start main sandbox", stdin, stdout, stderr)
+	if err != nil {
+		b.stopSandboxLocalHerdr(context.Background(), plan.SandboxName)
+		return nil, err
+	}
+	return combineHerdrAndClaudeWait(herdrWait, claudeWait), nil
+}
+
+func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartPlan) error {
+	runner := b.runner()
+	binary := b.binary()
+	if result, err := runner.Run(ctx, binary, createMainArgs(plan)...); err != nil {
+		return fmt.Errorf("create main sandbox: %s", commandText(result, err))
+	}
+	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "command", "-v", "herdr"); err != nil {
+		if !plan.Supervision.Herdr.InstallIfMissing {
+			return fmt.Errorf("sandbox-local Herdr unavailable: %s", commandText(result, err))
+		}
+		if install, installErr := runner.Run(ctx, binary, "exec", plan.SandboxName, "sh", "-lc", "curl -fsSL https://herdr.dev/install.sh | sh"); installErr != nil {
+			return fmt.Errorf("install sandbox-local Herdr: %s", commandText(install, installErr))
+		}
+	}
+	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "herdr", "--version"); err != nil {
+		return fmt.Errorf("verify sandbox-local Herdr: %s", commandText(result, err))
+	}
+	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "herdr", "integration", "install", "claude"); err != nil {
+		return fmt.Errorf("install Claude Herdr integration: %s", commandText(result, err))
+	}
+	return nil
+}
+
+func createMainArgs(plan StartPlan) []string {
+	args := []string{"create", "--name", plan.SandboxName, "claude", plan.Workspace}
+	if plan.UseCloneMode {
+		args = []string{"create", "--clone", "--name", plan.SandboxName, "claude", plan.Workspace}
+	}
+	return args
+}
+
+func herdrClaudeArgs(plan StartPlan) []string {
+	return []string{
+		"exec",
+		"-e", "HERDR_ENV=1",
+		"-e", "HERDR_SOCKET_PATH=" + plan.Supervision.Herdr.SocketPath,
+		"-e", "HERDR_PANE_ID=" + plan.Supervision.Herdr.PaneID,
+		plan.SandboxName,
+		plan.Agent,
+	}
+}
+
+func (b DockerSandbox) startAttachedCommand(ctx context.Context, args []string, label string, stdin io.Reader, stdout, stderr io.Writer) (<-chan error, error) {
 	cmd := exec.CommandContext(ctx, b.binary(), args...)
 	out := new(strings.Builder)
 	errOut := new(strings.Builder)
@@ -292,16 +444,8 @@ func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, st
 		}
 	}
 	cmd.Env = sbxProcessEnv()
-
-	start := StartResult{
-		SandboxName: plan.SandboxName,
-		Agent:       plan.Agent,
-		Workspace:   plan.Workspace,
-		Timezone:    plan.Timezone,
-		Locale:      plan.Locale,
-	}
 	if err := cmd.Start(); err != nil {
-		return start, nil, fmt.Errorf("start main sandbox: %w", err)
+		return nil, fmt.Errorf("%s: %w", label, err)
 	}
 
 	wait := make(chan error, 1)
@@ -309,7 +453,7 @@ func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, st
 		err := cmd.Wait()
 		if err != nil {
 			result := CommandResult{ExitCode: exitCode(err), Stdout: out.String(), Stderr: errOut.String()}
-			wait <- fmt.Errorf("start main sandbox: %s", commandText(result, err))
+			wait <- fmt.Errorf("%s: %s", label, commandText(result, err))
 			return
 		}
 		wait <- nil
@@ -318,22 +462,40 @@ func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, st
 	select {
 	case err := <-wait:
 		if err != nil {
-			return start, nil, err
+			return nil, err
 		}
 		done := make(chan error, 1)
 		done <- nil
-		return start, done, nil
+		return done, nil
 	case <-time.After(100 * time.Millisecond):
-		return start, wait, nil
+		return wait, nil
 	}
 }
 
-func startMainArgs(plan StartPlan) []string {
-	args := []string{"run", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
-	if plan.UseCloneMode {
-		args = []string{"run", "--clone", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
-	}
-	return args
+func combineHerdrAndClaudeWait(herdrWait, claudeWait <-chan error) <-chan error {
+	wait := make(chan error, 1)
+	go func() {
+		select {
+		case err := <-claudeWait:
+			wait <- err
+		case err := <-herdrWait:
+			if err != nil {
+				wait <- err
+				return
+			}
+			wait <- fmt.Errorf("sandbox-local Herdr server exited before Claude")
+		}
+	}()
+	return wait
+}
+
+func (b DockerSandbox) cleanupStartedMain(ctx context.Context, plan StartPlan) {
+	b.stopSandboxLocalHerdr(ctx, plan.SandboxName)
+	_, _ = b.runner().Run(ctx, b.binary(), "stop", plan.SandboxName)
+}
+
+func (b DockerSandbox) stopSandboxLocalHerdr(ctx context.Context, sandboxName string) {
+	_, _ = b.runner().Run(ctx, b.binary(), "exec", sandboxName, "herdr", "server", "stop")
 }
 
 func (b DockerSandbox) finishProbe(ctx context.Context, cfg config.Config, result ProbeResult, err error) (ProbeResult, error) {
@@ -482,6 +644,14 @@ func parseEnv(output string) map[string]string {
 func isNotFoundCleanup(result CommandResult) bool {
 	text := strings.ToLower(result.Stdout + "\n" + result.Stderr)
 	return strings.Contains(text, "not found") || strings.Contains(text, "no such sandbox")
+}
+
+func isBenignHerdrCleanup(result CommandResult) bool {
+	text := strings.ToLower(result.Stdout + "\n" + result.Stderr)
+	return strings.Contains(text, "not found") ||
+		strings.Contains(text, "no such sandbox") ||
+		strings.Contains(text, "not running") ||
+		strings.Contains(text, "command not found")
 }
 
 func commandText(result CommandResult, err error) string {

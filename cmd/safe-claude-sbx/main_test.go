@@ -79,6 +79,90 @@ func TestLaunchDoesNotPassHostSensitiveEnvironmentToMainSandboxCommand(t *testin
 	}
 }
 
+func TestLaunchStartsSandboxLocalHerdrAfterAllPreflightsPass(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:          "203.0.113.10",
+		LogPath:           logPath,
+		LogRunEnvironment: true,
+	})
+
+	cmd := exec.Command("go", "run", ".", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"HERDR_ENV=1",
+		"HERDR_SOCKET_PATH=/tmp/host-herdr.sock",
+		"HERDR_PANE_ID=host-pane",
+		"HERDR_WORKSPACE_ID=host-workspace",
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("launch failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "sandbox inspection ok") || !strings.Contains(string(output), "sandbox started: claude-sbx") {
+		t.Fatalf("expected launch success after existing safety checks, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	for _, want := range []string{
+		"create --name claude-sbx claude .",
+		"exec claude-sbx command -v herdr",
+		"exec claude-sbx herdr --version",
+		"exec claude-sbx herdr integration install claude",
+		"exec claude-sbx herdr server",
+		"exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude claude-sbx claude",
+	} {
+		if !containsLogLine(log, want) {
+			t.Fatalf("expected Herdr startup command %q, got:\n%s", want, log)
+		}
+	}
+	for _, forbidden := range []string{"/tmp/host-herdr.sock", "host-pane", "host-workspace"} {
+		if strings.Contains(log, forbidden) {
+			t.Fatalf("Herdr startup leaked host Herdr value %q:\n%s", forbidden, log)
+		}
+	}
+}
+
+func TestLaunchFailsClosedAndCleansMainSandboxWhenHerdrSetupFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:      "203.0.113.10",
+		LogPath:       logPath,
+		FailHerdrHook: true,
+	})
+
+	cmd := exec.Command("go", "run", ".", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("launch unexpectedly succeeded after Herdr hook failure:\n%s", output)
+	}
+	if !strings.Contains(string(output), "install Claude Herdr integration") {
+		t.Fatalf("expected Herdr hook failure in output, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	if !containsLogLine(log, "stop claude-sbx") {
+		t.Fatalf("expected main sandbox cleanup after Herdr setup failure, got:\n%s", log)
+	}
+}
+
 func TestLaunchWatchdogStopsMainSandboxWhenRouteEventChangesDefaultRoute(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "203.0.113.10")
@@ -849,6 +933,21 @@ cleanup:
 `, appHome, expectedIP, hostCheckURL, timeoutSeconds)
 }
 
+func withSandboxLocalHerdr(body string) string {
+	return strings.Replace(
+		body,
+		`agent: "claude"`,
+		`agent: "claude"
+  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: true
+      socket_path: "/home/agent/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"`,
+		1,
+	)
+}
+
 func TestDoctorRejectsMissingRequiredObjectPath(t *testing.T) {
 	configPath := writeTestConfig(t, `
 network:
@@ -1029,6 +1128,8 @@ type fakeSBXOptions struct {
 	FailCreate        bool
 	FailCurl          bool
 	FailRun           bool
+	FailHerdrHook     bool
+	FailHerdrServer   bool
 	BlockRun          bool
 }
 
@@ -1056,14 +1157,16 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	if opts.LogPath != "" {
 		logSnippet = fmt.Sprintf("printf '%%s\\n' \"$*\" >> %q", opts.LogPath)
 	}
-	logRunEnvironmentSnippet := ":"
+	logEnvironmentSnippet := ":"
 	if opts.LogPath != "" && opts.LogRunEnvironment {
-		logRunEnvironmentSnippet = fmt.Sprintf("env | grep -E '^(OPENAI_API_KEY|SSH_AUTH_SOCK|SSH_AUTH_SOCK_GATEWAY|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|HERDR_ENV|HERDR_PANE_ID|HERDR_SOCKET_PATH|HERDR_TAB_ID|HERDR_WORKSPACE_ID)=' >> %q || true", opts.LogPath)
+		logEnvironmentSnippet = fmt.Sprintf("env | grep -E '^(OPENAI_API_KEY|SSH_AUTH_SOCK|SSH_AUTH_SOCK_GATEWAY|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|http_proxy|https_proxy|all_proxy|no_proxy|HERDR_ENV|HERDR_PANE_ID|HERDR_SOCKET_PATH|HERDR_TAB_ID|HERDR_WORKSPACE_ID)=' >> %q || true", opts.LogPath)
 	}
 	stopFile := filepath.Join(dir, "main-stopped")
+	herdrStopFile := filepath.Join(dir, "herdr-stopped")
 
 	script := fmt.Sprintf(`#!/bin/sh
 set -eu
+%s
 %s
 case "$1" in
   version)
@@ -1103,6 +1206,45 @@ case "$1" in
       *" locale")
         printf 'LANG=en_US.UTF-8\nLC_ALL=C.UTF-8\n'
         ;;
+      *" command -v herdr")
+        printf '/home/agent/.local/bin/herdr\n'
+        ;;
+      *" herdr --version")
+        printf 'herdr 0.7.1\n'
+        ;;
+      *" herdr integration install claude")
+        if [ %q = "true" ]; then
+          printf 'hook install failed\n' >&2
+          exit 1
+        fi
+        printf 'installed\n'
+        ;;
+      *" herdr server stop")
+        touch %q
+        printf 'server stopped\n'
+        ;;
+      *" herdr server")
+        if [ %q = "true" ]; then
+          printf 'server failed\n' >&2
+          exit 1
+        fi
+        printf 'server started\n'
+        while [ ! -f %q ]; do
+          sleep 0.05
+        done
+        ;;
+      *"HERDR_ENV=1"*" claude")
+        if [ %q = "true" ]; then
+          printf 'run failed\n' >&2
+          exit 1
+        fi
+        printf 'main sandbox started\n'
+        if [ %q = "true" ]; then
+          while [ ! -f %q ]; do
+            sleep 0.05
+          done
+        fi
+        ;;
       *)
         printf 'unknown exec: %%s\n' "$*" >&2
         exit 1
@@ -1110,7 +1252,6 @@ case "$1" in
     esac
     ;;
   run)
-    %s
     if [ %q = "true" ]; then
       printf 'run failed\n' >&2
       exit 1
@@ -1140,7 +1281,26 @@ case "$1" in
     exit 1
     ;;
 esac
-`, logSnippet, version, shellBool(opts.FailCreate), shellBool(opts.FailCurl), egressIP, envOutput, mountOutput, logRunEnvironmentSnippet, shellBool(opts.FailRun), shellBool(opts.BlockRun), stopFile, shellBool(opts.BlockRun), stopFile)
+`, logSnippet,
+		logEnvironmentSnippet,
+		version,
+		shellBool(opts.FailCreate),
+		shellBool(opts.FailCurl),
+		egressIP,
+		envOutput,
+		mountOutput,
+		shellBool(opts.FailHerdrHook),
+		herdrStopFile,
+		shellBool(opts.FailHerdrServer),
+		herdrStopFile,
+		shellBool(opts.FailRun),
+		shellBool(opts.BlockRun),
+		stopFile,
+		shellBool(opts.FailRun),
+		shellBool(opts.BlockRun),
+		stopFile,
+		shellBool(opts.BlockRun),
+		stopFile)
 
 	path := filepath.Join(dir, "sbx")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
