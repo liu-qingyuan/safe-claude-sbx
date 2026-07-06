@@ -85,7 +85,10 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
     Clash config, and Keychain paths recursively, and fails before backend
     commands run.
 - `environment`
-  - `timezone`: Sandbox timezone.
+  - `timezone`: Sandbox timezone as an IANA timezone name. The example uses
+    `America/Chicago`; do not configure a fixed offset such as `UTC-5`,
+    because Chicago observes daylight saving time and shifts to `UTC-6` in
+    winter.
   - `locale`: Sandbox `LANG` and `LC_ALL`.
   - `allow_ssh_agent_forwarding`: Whether Docker Sandbox's forwarded SSH agent
     environment family, including `SSH_AUTH_SOCK` and
@@ -125,13 +128,15 @@ top-level `HERDR_*` config are rejected without printing raw socket or pane
 values.
 
 After the Docker Sandbox probe runs, `doctor` validates the sandbox observation
-before printing `sandbox inspection ok`. It rejects visible sensitive mounts,
-raw token or credential-like env values such as `OPENAI_API_KEY`, unexpected
-SSH agent forwarding env such as `SSH_AUTH_SOCK` and
-`SSH_AUTH_SOCK_GATEWAY`, host proxy values such as `127.0.0.1:7897`, and
-unknown proxy targets. Docker-managed credential placeholders are allowed.
-These errors name the policy object and env variable but do not print captured
-secret values.
+before printing `sandbox inspection ok`. Timezone and locale validation use
+sandbox-internal `TZ`, `date`, and `locale` observations; host or daemon log
+timestamps are not accepted as proof of sandbox runtime settings. The same
+inspection rejects visible sensitive mounts, raw token or credential-like env
+values such as `OPENAI_API_KEY`, unexpected SSH agent forwarding env such as
+`SSH_AUTH_SOCK` and `SSH_AUTH_SOCK_GATEWAY`, host proxy values such as
+`127.0.0.1:7897`, and unknown proxy targets. Docker-managed credential
+placeholders are allowed. These errors name the policy object and env variable
+but do not print captured secret values.
 
 Legacy flat fields such as `expected_egress_ip`, `sandbox_name`,
 `workspace_mount`, `timezone`, and `cleanup.stop_on_exit` are not accepted by the

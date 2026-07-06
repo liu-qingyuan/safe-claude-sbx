@@ -30,7 +30,7 @@ workspace:
     - "/Library/Keychains"
 
 environment:
-  timezone: "America/Los_Angeles"
+  timezone: "America/Chicago"
   locale: "en_US.UTF-8"
   allow_ssh_agent_forwarding: false
   forbidden_env_vars:

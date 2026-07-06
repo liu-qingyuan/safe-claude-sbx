@@ -106,7 +106,7 @@ workspace:
     - "~/.config/clash"
     - "~/Library/Keychains"
 environment:
-  timezone: "America/Los_Angeles"
+  timezone: "America/Chicago"
   locale: "en_US.UTF-8"
   forbidden_env_vars:
     - HTTP_PROXY

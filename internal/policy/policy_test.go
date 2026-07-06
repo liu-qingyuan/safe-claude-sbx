@@ -60,12 +60,12 @@ func TestValidateInspectionAllowsDockerManagedProxyAndRuntimeEnv(t *testing.T) {
 			HomeDir:        "/Users/alice",
 			WorkingDir:     "/Users/alice/work/safe-claude-sbx",
 		},
-		Timezone: "America/Los_Angeles",
+		Timezone: "America/Chicago",
 		Locale:   "en_US.UTF-8",
 	}, InspectionObservation{
 		Environment: map[string]string{
 			"PATH":        "/usr/bin",
-			"TZ":          "America/Los_Angeles",
+			"TZ":          "America/Chicago",
 			"LANG":        "en_US.UTF-8",
 			"LC_ALL":      "C.UTF-8",
 			"HTTP_PROXY":  "http://gateway.docker.internal:3128",
@@ -90,7 +90,7 @@ func TestValidateInspectionAllowsDockerManagedCredentialPlaceholders(t *testing.
 			HomeDir:        "/Users/alice",
 			WorkingDir:     "/Users/alice/work/safe-claude-sbx",
 		},
-		Timezone: "America/Los_Angeles",
+		Timezone: "America/Chicago",
 		Locale:   "en_US.UTF-8",
 	}, InspectionObservation{
 		Environment: map[string]string{
@@ -116,7 +116,7 @@ func TestValidateInspectionFailsClosedForForbiddenEnvWithoutLeakingValue(t *test
 			HomeDir:        "/Users/alice",
 			WorkingDir:     "/Users/alice/work/safe-claude-sbx",
 		},
-		Timezone: "America/Los_Angeles",
+		Timezone: "America/Chicago",
 		Locale:   "en_US.UTF-8",
 	}, InspectionObservation{
 		Environment: map[string]string{
@@ -161,7 +161,7 @@ func TestValidateInspectionRejectsHostHerdrEnvWithoutLeakingValue(t *testing.T) 
 					HomeDir:        "/Users/alice",
 					WorkingDir:     "/Users/alice/work/safe-claude-sbx",
 				},
-				Timezone: "America/Los_Angeles",
+				Timezone: "America/Chicago",
 				Locale:   "en_US.UTF-8",
 			}, InspectionObservation{
 				Environment: map[string]string{
@@ -193,7 +193,7 @@ func TestValidateInspectionAllowsConfiguredSandboxLocalHerdrRuntimeEnv(t *testin
 			HomeDir:        "/Users/alice",
 			WorkingDir:     "/Users/alice/work/safe-claude-sbx",
 		},
-		Timezone: "America/Los_Angeles",
+		Timezone: "America/Chicago",
 		Locale:   "en_US.UTF-8",
 		HerdrRuntime: HerdrRuntimePolicy{
 			Enabled:    true,
@@ -275,7 +275,7 @@ func TestValidateInspectionRejectsUnexpectedHerdrRuntimeEnvWithoutLeakingValue(t
 					HomeDir:        "/Users/alice",
 					WorkingDir:     "/Users/alice/work/safe-claude-sbx",
 				},
-				Timezone: "America/Los_Angeles",
+				Timezone: "America/Chicago",
 				Locale:   "en_US.UTF-8",
 				HerdrRuntime: HerdrRuntimePolicy{
 					Enabled:    true,
@@ -322,7 +322,7 @@ func TestValidateInspectionAllowsSSHAgentForwardingOnlyWhenConfigured(t *testing
 			HomeDir:        "/Users/alice",
 			WorkingDir:     "/Users/alice/work/safe-claude-sbx",
 		},
-		Timezone: "America/Los_Angeles",
+		Timezone: "America/Chicago",
 		Locale:   "en_US.UTF-8",
 	}
 
@@ -376,7 +376,7 @@ func TestValidateInspectionRejectsUnexpectedSSHAgentForwardingShapes(t *testing.
 					HomeDir:        "/Users/alice",
 					WorkingDir:     "/Users/alice/work/safe-claude-sbx",
 				},
-				Timezone:                "America/Los_Angeles",
+				Timezone:                "America/Chicago",
 				Locale:                  "en_US.UTF-8",
 				AllowSSHAgentForwarding: true,
 			}, InspectionObservation{
@@ -419,7 +419,7 @@ func TestValidateInspectionRejectsHostAndUnknownProxyTargets(t *testing.T) {
 					HomeDir:        "/Users/alice",
 					WorkingDir:     "/Users/alice/work/safe-claude-sbx",
 				},
-				Timezone: "America/Los_Angeles",
+				Timezone: "America/Chicago",
 				Locale:   "en_US.UTF-8",
 			}, InspectionObservation{
 				Environment: map[string]string{
@@ -451,7 +451,7 @@ func TestValidateInspectionRejectsSensitiveMountObservation(t *testing.T) {
 			HomeDir:        "/Users/alice",
 			WorkingDir:     "/Users/alice/work/safe-claude-sbx",
 		},
-		Timezone: "America/Los_Angeles",
+		Timezone: "America/Chicago",
 		Locale:   "en_US.UTF-8",
 	}, InspectionObservation{
 		Environment:      map[string]string{"PATH": "/usr/bin"},

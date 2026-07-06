@@ -903,7 +903,7 @@ workspace:
     - "~"
     - "~/.ssh"
 environment:
-  timezone: "America/Los_Angeles"
+  timezone: "America/Chicago"
   locale: "en_US.UTF-8"
   forbidden_env_vars:
     - HTTP_PROXY
@@ -948,7 +948,7 @@ workspace:
     - "~"
     - "~/.ssh"
 environment:
-  timezone: "America/Los_Angeles"
+  timezone: "America/Chicago"
   locale: "en_US.UTF-8"
   forbidden_env_vars:
     - HTTP_PROXY
@@ -999,7 +999,7 @@ workspace:
   forbidden_paths:
     - "~"
 environment:
-  timezone: "America/Los_Angeles"
+  timezone: "America/Chicago"
   locale: "en_US.UTF-8"
   forbidden_env_vars:
     - HTTP_PROXY
@@ -1075,7 +1075,7 @@ workspace:
     - "~"
     - "~/.ssh"
 environment:
-  timezone: "America/Los_Angeles"
+  timezone: "America/Chicago"
   locale: "en_US.UTF-8"
   forbidden_env_vars:
     - HTTP_PROXY
@@ -1120,7 +1120,7 @@ workspace:
   forbidden_paths:
     - "~"
 environment:
-  timezone: "America/Los_Angeles"
+  timezone: "America/Chicago"
   locale: "en_US.UTF-8"
   forbidden_env_vars:
     - HTTP_PROXY
@@ -1180,7 +1180,7 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	}
 	envOutput := opts.EnvOutput
 	if envOutput == "" {
-		envOutput = "PATH=/usr/bin\nTZ=America/Los_Angeles\nLANG=en_US.UTF-8\nLC_ALL=C.UTF-8\nHTTP_PROXY=http://gateway.docker.internal:3128\nHTTPS_PROXY=http://gateway.docker.internal:3128\nNO_PROXY=localhost,127.0.0.1,gateway.docker.internal\n"
+		envOutput = "PATH=/usr/bin\nTZ=America/Chicago\nLANG=en_US.UTF-8\nLC_ALL=C.UTF-8\nHTTP_PROXY=http://gateway.docker.internal:3128\nHTTPS_PROXY=http://gateway.docker.internal:3128\nNO_PROXY=localhost,127.0.0.1,gateway.docker.internal\n"
 	}
 	mountOutput := opts.MountOutput
 	if mountOutput == "" {

@@ -278,13 +278,18 @@ such as a template, kit, profile, secret, or agent argument.
 Observed `sbx exec` environment injection:
 
 ```bash
-sbx exec -e TZ=America/Los_Angeles -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 <probe-name> env
+sbx exec -e TZ=America/Chicago -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 <probe-name> env
 ```
 
 Inside that exec command, `TZ` and `LANG` reflected the injected values.
 `LC_ALL=en_US.UTF-8` was coerced to `LC_ALL=C.UTF-8` by the probe environment.
 This confirms per-command exec environment injection, not main-agent launch
 environment injection.
+
+Timezone configuration should use an IANA timezone name such as
+`America/Chicago`, matching the current Claude egress region. Do not configure a
+fixed offset such as `UTC-5`: in July 2026 Chicago observes daylight saving time
+and displays `UTC-5`, but it shifts to `UTC-6` in winter.
 
 ### Clean Environment Research
 
