@@ -321,7 +321,9 @@ func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, st
 	if plan.Supervision.Mode == "sandbox-local-herdr" {
 		wait, err := b.startSandboxLocalHerdrAttached(ctx, plan, stdin, stdout, stderr)
 		if err != nil {
-			b.cleanupStartedMain(context.Background(), plan)
+			if shouldCleanupStartedMain(err) {
+				b.cleanupStartedMain(context.Background(), plan)
+			}
 			return start, nil, err
 		}
 		return start, wait, nil
@@ -351,7 +353,9 @@ func (b DockerSandbox) startSandboxLocalHerdr(ctx context.Context, plan StartPla
 		Locale:      plan.Locale,
 	}
 	if err := b.prepareSandboxLocalHerdr(ctx, plan); err != nil {
-		b.cleanupStartedMain(context.Background(), plan)
+		if shouldCleanupStartedMain(err) {
+			b.cleanupStartedMain(context.Background(), plan)
+		}
 		return start, err
 	}
 	for _, args := range [][]string{
@@ -386,8 +390,8 @@ func (b DockerSandbox) startSandboxLocalHerdrAttached(ctx context.Context, plan 
 func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartPlan) error {
 	runner := b.runner()
 	binary := b.binary()
-	if result, err := runner.Run(ctx, binary, createMainArgs(plan)...); err != nil {
-		return fmt.Errorf("create main sandbox: %s", commandText(result, err))
+	if err := b.ensureFreshMainSandbox(ctx, plan); err != nil {
+		return err
 	}
 	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "command", "-v", "herdr"); err != nil {
 		if !plan.Supervision.Herdr.InstallIfMissing {
@@ -404,6 +408,83 @@ func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartP
 		return fmt.Errorf("install Claude Herdr integration: %s", commandText(result, err))
 	}
 	return nil
+}
+
+func (b DockerSandbox) ensureFreshMainSandbox(ctx context.Context, plan StartPlan) error {
+	runner := b.runner()
+	binary := b.binary()
+
+	state, err := b.inspectMainSandbox(ctx, plan.SandboxName)
+	if err != nil {
+		return preserveExistingMainError{err: err}
+	}
+	if state.Exists {
+		switch state.Status {
+		case "stopped":
+			if result, err := runner.Run(ctx, binary, "stop", plan.SandboxName); err != nil && !isNotFoundCleanup(result) {
+				return preserveExistingMainError{err: fmt.Errorf("prepare existing main sandbox: stop %q: %s", plan.SandboxName, commandText(result, err))}
+			}
+			if result, err := runner.Run(ctx, binary, "rm", "--force", plan.SandboxName); err != nil && !isNotFoundCleanup(result) {
+				return preserveExistingMainError{err: fmt.Errorf("prepare existing main sandbox: remove %q: %s", plan.SandboxName, commandText(result, err))}
+			}
+		default:
+			return preserveExistingMainError{err: fmt.Errorf("prepare existing main sandbox: %q has unsafe status %q", plan.SandboxName, state.Status)}
+		}
+	}
+
+	if result, err := runner.Run(ctx, binary, createMainArgs(plan)...); err != nil {
+		return fmt.Errorf("create main sandbox: %s", commandText(result, err))
+	}
+	return nil
+}
+
+type mainSandboxState struct {
+	Exists bool
+	Status string
+}
+
+type preserveExistingMainError struct {
+	err error
+}
+
+func (e preserveExistingMainError) Error() string {
+	return e.err.Error()
+}
+
+func (e preserveExistingMainError) Unwrap() error {
+	return e.err
+}
+
+func shouldCleanupStartedMain(err error) bool {
+	if err == nil {
+		return false
+	}
+	var preserve preserveExistingMainError
+	return !errors.As(err, &preserve)
+}
+
+// ShouldCleanupMainAfterStartError reports whether a failed StartMainAttached
+// attempt created or started main sandbox state that the launcher should clean up.
+func ShouldCleanupMainAfterStartError(err error) bool {
+	return shouldCleanupStartedMain(err)
+}
+
+func (b DockerSandbox) inspectMainSandbox(ctx context.Context, sandboxName string) (mainSandboxState, error) {
+	result, err := b.runner().Run(ctx, b.binary(), "ls")
+	if err != nil {
+		return mainSandboxState{}, fmt.Errorf("inspect existing main sandbox: %s", commandText(result, err))
+	}
+	for _, line := range strings.Split(result.Stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != sandboxName {
+			continue
+		}
+		if len(fields) < 3 {
+			return mainSandboxState{Exists: true}, fmt.Errorf("inspect existing main sandbox: %q status unavailable", sandboxName)
+		}
+		return mainSandboxState{Exists: true, Status: strings.ToLower(fields[2])}, nil
+	}
+	return mainSandboxState{}, nil
 }
 
 func createMainArgs(plan StartPlan) []string {

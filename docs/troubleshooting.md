@@ -202,6 +202,13 @@ Checks:
 
 Expected behavior:
 
+- In `sandbox-local-herdr` mode, a stopped sandbox with the configured
+  `sandbox.main_name` is treated as stale startup state. The launcher stops it
+  idempotently, removes it, and creates a fresh `claude` template sandbox after
+  the usual preflight and probe inspection pass.
+- If the existing main sandbox is running or has an unrecognized status, startup
+  fails closed and reports the sandbox name and status. It does not stop or
+  remove that existing sandbox.
 - On successful attach/start, launcher cleanup stops the main sandbox when
   configured.
 - The launcher does not remove the main sandbox unless

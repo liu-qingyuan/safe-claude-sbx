@@ -127,8 +127,10 @@ func TestDockerSandboxProbeReturnsStructuredInspectionAndIdempotentCleanup(t *te
 }
 
 func TestDockerSandboxStartMainPassesMainSandboxContract(t *testing.T) {
+	calls := []string{}
 	runner := stubRunner{
-		path: "/tmp/sbx",
+		path:  "/tmp/sbx",
+		calls: &calls,
 		results: map[string]CommandResult{
 			"sbx run claude --name main-sbx /work/project": {Stdout: "started\n"},
 		},
@@ -148,6 +150,9 @@ func TestDockerSandboxStartMainPassesMainSandboxContract(t *testing.T) {
 	}
 	if plan.Environment["TZ"] != "UTC" || plan.Environment["LANG"] != "en_US.UTF-8" || plan.Environment["LC_ALL"] != "en_US.UTF-8" {
 		t.Fatalf("expected allowed startup environment, got %#v", plan.Environment)
+	}
+	if got := strings.Join(calls, "\n"); got != "sbx run claude --name main-sbx /work/project" {
+		t.Fatalf("direct mode should not inspect or rebuild main sandbox, got:\n%s", got)
 	}
 }
 
@@ -204,6 +209,107 @@ func TestDockerSandboxStartMainPreparesSandboxLocalHerdr(t *testing.T) {
 		if strings.Contains(key, "/tmp/host-herdr.sock") || strings.Contains(key, "host-pane") {
 			t.Fatalf("start command used host Herdr state: %s", key)
 		}
+	}
+	got := strings.Join(calls, "\n")
+	want := strings.Join([]string{
+		"sbx ls",
+		"sbx create --name main-sbx claude /work/project",
+		"sbx exec main-sbx command -v herdr",
+	}, "\n")
+	if !strings.Contains(got, want) {
+		t.Fatalf("expected first Herdr startup to inspect then create main sandbox, got:\n%s", got)
+	}
+}
+
+func TestDockerSandboxStartMainRebuildsStoppedSandboxLocalHerdrMain(t *testing.T) {
+	calls := []string{}
+	runner := stubRunner{
+		path:  "/tmp/sbx",
+		calls: &calls,
+		results: map[string]CommandResult{
+			"sbx ls":                  {Stdout: "SANDBOX    AGENT    STATUS    PORTS    WORKSPACE\nmain-sbx   claude   stopped            /work/project\n"},
+			"sbx stop main-sbx":       {Stdout: "Sandbox 'main-sbx' stopped\n"},
+			"sbx rm --force main-sbx": {Stdout: "Sandbox 'main-sbx' removed\n"},
+			"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
+			"sbx exec main-sbx command -v herdr":                 {Stdout: "/home/agent/.local/bin/herdr\n"},
+			"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
+			"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
+			"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
+			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stdout: "claude started\n"},
+		},
+	}
+
+	if _, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).StartMain(context.Background(), NewStartPlan(herdrConfig())); err != nil {
+		t.Fatalf("expected stopped main sandbox to be rebuilt safely: %v", err)
+	}
+
+	got := strings.Join(calls, "\n")
+	want := strings.Join([]string{
+		"sbx ls",
+		"sbx stop main-sbx",
+		"sbx rm --force main-sbx",
+		"sbx create --name main-sbx claude /work/project",
+		"sbx exec main-sbx command -v herdr",
+	}, "\n")
+	if !strings.Contains(got, want) {
+		t.Fatalf("expected stopped main sandbox rebuild before Herdr setup, got:\n%s", got)
+	}
+}
+
+func TestDockerSandboxStartMainRejectsUnsafeExistingSandboxWithoutStoppingIt(t *testing.T) {
+	calls := []string{}
+	runner := stubRunner{
+		path:  "/tmp/sbx",
+		calls: &calls,
+		results: map[string]CommandResult{
+			"sbx ls": {Stdout: "SANDBOX    AGENT    STATUS    PORTS    WORKSPACE\nmain-sbx   claude   running            /work/project\n"},
+		},
+	}
+
+	_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).StartMain(context.Background(), NewStartPlan(herdrConfig()))
+
+	if err == nil {
+		t.Fatalf("expected running existing main sandbox to fail closed")
+	}
+	if !strings.Contains(err.Error(), "unsafe status") || strings.Contains(err.Error(), "/work/project") {
+		t.Fatalf("expected actionable non-sensitive diagnostic, got %v", err)
+	}
+	for _, call := range calls {
+		if call == "sbx exec main-sbx herdr server stop" || call == "sbx stop main-sbx" || call == "sbx rm --force main-sbx" {
+			t.Fatalf("unsafe existing sandbox should not be cleaned up by startup path, got:\n%s", strings.Join(calls, "\n"))
+		}
+	}
+}
+
+func TestDockerSandboxStartMainStopsSandboxLocalHerdrWhenClaudeStartFails(t *testing.T) {
+	calls := []string{}
+	runner := stubRunner{
+		path:  "/tmp/sbx",
+		calls: &calls,
+		results: map[string]CommandResult{
+			"sbx ls": {Stdout: "No sandboxes found.\n"},
+			"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
+			"sbx exec main-sbx command -v herdr":                 {Stdout: "/home/agent/.local/bin/herdr\n"},
+			"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
+			"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
+			"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
+			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stderr: "claude failed\n"},
+			"sbx exec main-sbx herdr server stop": {Stdout: "stopped\n"},
+			"sbx stop main-sbx":                   {Stdout: "stopped\n"},
+		},
+		errors: map[string]error{
+			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": errors.New("exit status 1"),
+		},
+	}
+
+	_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).StartMain(context.Background(), NewStartPlan(herdrConfig()))
+
+	if err == nil {
+		t.Fatalf("expected Claude startup failure")
+	}
+	got := strings.Join(calls, "\n")
+	if !strings.Contains(got, "sbx exec main-sbx herdr server stop\nsbx stop main-sbx") {
+		t.Fatalf("expected Herdr server and main sandbox cleanup after Claude failure, got:\n%s", got)
 	}
 }
 

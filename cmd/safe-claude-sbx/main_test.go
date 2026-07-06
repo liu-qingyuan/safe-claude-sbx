@@ -131,6 +131,83 @@ func TestLaunchStartsSandboxLocalHerdrAfterAllPreflightsPass(t *testing.T) {
 	}
 }
 
+func TestLaunchRebuildsStoppedSandboxLocalHerdrMainAfterPreflights(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:           "203.0.113.10",
+		LogPath:            logPath,
+		ExistingMainStatus: "stopped",
+	})
+
+	cmd := exec.Command("go", "run", ".", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("launch failed with stopped existing main sandbox: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "sandbox inspection ok") || !strings.Contains(string(output), "sandbox started: claude-sbx") {
+		t.Fatalf("expected launch success after preflight and probe, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	assertLogLineOrder(t, log, []string{
+		"create --name claude-sbx-probe shell .",
+		"exec claude-sbx-probe curl -fsS https://api.ipify.org",
+		"rm --force claude-sbx-probe",
+		"ls",
+		"stop claude-sbx",
+		"rm --force claude-sbx",
+		"create --name claude-sbx claude .",
+		"exec claude-sbx command -v herdr",
+	})
+}
+
+func TestLaunchRejectsRunningSandboxLocalHerdrMainWithoutStoppingIt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:           "203.0.113.10",
+		LogPath:            logPath,
+		ExistingMainStatus: "running",
+	})
+
+	cmd := exec.Command("go", "run", ".", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("launch unexpectedly succeeded with running existing main sandbox:\n%s", output)
+	}
+	if !strings.Contains(string(output), `unsafe status "running"`) || strings.Contains(string(output), "/work/project") {
+		t.Fatalf("expected fail-closed non-sensitive diagnostic, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	for _, forbidden := range []string{
+		"exec claude-sbx herdr server stop",
+		"stop claude-sbx",
+		"rm --force claude-sbx",
+	} {
+		if containsLogLine(log, forbidden) {
+			t.Fatalf("running existing main sandbox should not be cleaned up by startup failure, got:\n%s", log)
+		}
+	}
+}
+
 func TestLaunchFailsClosedAndCleansMainSandboxWhenHerdrSetupFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "203.0.113.10")
@@ -1152,18 +1229,19 @@ func writeTestConfig(t *testing.T, body string) string {
 }
 
 type fakeSBXOptions struct {
-	EgressIP          string
-	VersionOutput     string
-	EnvOutput         string
-	MountOutput       string
-	LogPath           string
-	LogRunEnvironment bool
-	FailCreate        bool
-	FailCurl          bool
-	FailRun           bool
-	FailHerdrHook     bool
-	FailHerdrServer   bool
-	BlockRun          bool
+	EgressIP           string
+	VersionOutput      string
+	EnvOutput          string
+	MountOutput        string
+	LogPath            string
+	LogRunEnvironment  bool
+	FailCreate         bool
+	FailCurl           bool
+	FailRun            bool
+	FailHerdrHook      bool
+	FailHerdrServer    bool
+	BlockRun           bool
+	ExistingMainStatus string
 }
 
 func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
@@ -1206,7 +1284,12 @@ case "$1" in
     printf '%%s\n' %q
     ;;
   ls)
-    printf 'No sandboxes found.\n'
+    if [ -n %q ]; then
+      printf 'SANDBOX                       AGENT   STATUS    PORTS   WORKSPACE\n'
+      printf 'claude-sbx                     claude  %%s             .\n' %q
+    else
+      printf 'No sandboxes found.\n'
+    fi
     ;;
   create)
     if [ %q = "true" ]; then
@@ -1317,6 +1400,8 @@ esac
 `, logSnippet,
 		logEnvironmentSnippet,
 		version,
+		opts.ExistingMainStatus,
+		opts.ExistingMainStatus,
 		shellBool(opts.FailCreate),
 		shellBool(opts.FailCurl),
 		egressIP,
@@ -1456,6 +1541,21 @@ func containsLogLine(log, line string) bool {
 		}
 	}
 	return false
+}
+
+func assertLogLineOrder(t *testing.T, log string, want []string) {
+	t.Helper()
+
+	lines := strings.Split(log, "\n")
+	next := 0
+	for _, got := range lines {
+		if next < len(want) && got == want[next] {
+			next++
+		}
+	}
+	if next != len(want) {
+		t.Fatalf("expected log lines in order %q, got:\n%s", want, log)
+	}
 }
 
 func shellBool(value bool) string {

@@ -146,6 +146,18 @@ Confirmed help contract:
 - `--cpus`, `--memory`, `--template`, and `--kit` are available resource/image
   controls.
 
+For sandbox-local Herdr mode, the adapter inspects `sbx ls` before creating the
+named `claude` main sandbox. If the configured main sandbox name already exists
+with status `stopped`, startup treats it as stale local state: it stops the name
+idempotently, removes it with `sbx rm --force`, and then creates a fresh
+`claude` template sandbox. This startup recovery is separate from exit cleanup;
+normal cleanup still only removes the main sandbox when
+`cleanup.remove_main_sandbox` is `true`.
+
+If the configured main sandbox exists with any other status, the adapter fails
+closed with the sandbox name and status. It does not stop or remove that existing
+sandbox as part of startup failure cleanup.
+
 ### Run Or Attach Main Sandbox
 
 Use `sbx run` to attach Claude Code to a created or existing sandbox:

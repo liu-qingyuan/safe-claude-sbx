@@ -121,9 +121,11 @@ func runLaunch(configPath string, stdin io.Reader, stdout, stderr io.Writer) int
 
 	start, backendExit, err := sandbox.StartMainAttached(mainCtx, backend.NewStartPlan(cfg), stdin, stdout, stderr)
 	if err != nil {
-		if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
-			fmt.Fprintf(stderr, "sandbox start invalid: %v; cleanup main sandbox failed: %v\n", err, cleanupErr)
-			return 1
+		if backend.ShouldCleanupMainAfterStartError(err) {
+			if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
+				fmt.Fprintf(stderr, "sandbox start invalid: %v; cleanup main sandbox failed: %v\n", err, cleanupErr)
+				return 1
+			}
 		}
 		fmt.Fprintf(stderr, "sandbox start invalid: %v\n", err)
 		return 1
