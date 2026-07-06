@@ -192,7 +192,19 @@ func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResul
 		create = []string{"create", "--clone", "--name", probeName, "shell", cfg.Workspace.Mount}
 	}
 	if result, err := runner.Run(ctx, binary, create...); err != nil {
-		return b.finishProbe(ctx, cfg, ProbeResult{}, fmt.Errorf("create probe sandbox: %s", commandText(result, err)))
+		if cfg.Cleanup.RemoveProbeSandbox && isAlreadyExistsCreate(result) {
+			cleanupCtx, cancel := CleanupTimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+			cleanupDone := b.cleanupProbe(cleanupCtx, cfg)
+			cancel()
+			if !cleanupDone {
+				return ProbeResult{}, fmt.Errorf("create probe sandbox: %s; cleanup existing probe sandbox failed", commandText(result, err))
+			}
+			if retryResult, retryErr := runner.Run(ctx, binary, create...); retryErr != nil {
+				return b.finishProbe(ctx, cfg, ProbeResult{}, fmt.Errorf("create probe sandbox: %s", commandText(retryResult, retryErr)))
+			}
+		} else {
+			return b.finishProbe(ctx, cfg, ProbeResult{}, fmt.Errorf("create probe sandbox: %s", commandText(result, err)))
+		}
 	}
 
 	env, err := b.execProbe(ctx, probeName, "-e", "TZ="+cfg.Environment.Timezone, "-e", "LANG="+cfg.Environment.Locale, "-e", "LC_ALL="+cfg.Environment.Locale, "env")
@@ -935,6 +947,11 @@ func parseEnv(output string) map[string]string {
 func isNotFoundCleanup(result CommandResult) bool {
 	text := strings.ToLower(result.Stdout + "\n" + result.Stderr)
 	return strings.Contains(text, "not found") || strings.Contains(text, "no such sandbox")
+}
+
+func isAlreadyExistsCreate(result CommandResult) bool {
+	text := strings.ToLower(result.Stdout + "\n" + result.Stderr)
+	return strings.Contains(text, "already exists")
 }
 
 func isBenignHerdrCleanup(result CommandResult) bool {

@@ -127,6 +127,37 @@ func TestDockerSandboxProbeReturnsStructuredInspectionAndIdempotentCleanup(t *te
 	}
 }
 
+func TestDockerSandboxProbeRemovesStaleProbeSandboxAndRetriesCreate(t *testing.T) {
+	runner := &staleProbeCreateRunner{}
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).Probe(context.Background(), probeConfig())
+
+	if err != nil {
+		t.Fatalf("probe failed after stale probe cleanup: %v", err)
+	}
+	if !result.CleanupDone {
+		t.Fatalf("expected final probe cleanup to be marked done")
+	}
+	got := strings.Join(runner.calls, "\n")
+	want := strings.Join([]string{
+		"sbx create --name probe shell .",
+		"sbx stop probe",
+		"sbx rm --force probe",
+		"sbx create --name probe shell .",
+		"sbx exec -e TZ=UTC -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe env",
+		"sbx exec probe pwd",
+		"sbx exec probe mount",
+		"sbx exec -e TZ=UTC probe date",
+		"sbx exec -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe locale",
+		"sbx exec probe curl -fsS https://example.test/ip",
+		"sbx stop probe",
+		"sbx rm --force probe",
+	}, "\n")
+	if !strings.Contains(got, want) {
+		t.Fatalf("expected stale probe cleanup and create retry, got:\n%s", got)
+	}
+}
+
 func TestDockerSandboxStartMainPassesMainSandboxContract(t *testing.T) {
 	calls := []string{}
 	runner := stubRunner{
@@ -896,6 +927,46 @@ func (r *herdrStopTimeoutRunner) Run(ctx context.Context, name string, args ...s
 	case "sbx stop main-sbx":
 		r.sawSandboxStop = true
 		return CommandResult{Stdout: "stopped\n"}, nil
+	default:
+		return CommandResult{}, fmt.Errorf("unexpected command %q", key)
+	}
+}
+
+type staleProbeCreateRunner struct {
+	calls       []string
+	createCalls int
+}
+
+func (r *staleProbeCreateRunner) LookPath(file string) (string, error) {
+	return file, nil
+}
+
+func (r *staleProbeCreateRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
+	key := strings.Join(append([]string{name}, args...), " ")
+	r.calls = append(r.calls, key)
+	switch key {
+	case "sbx create --name probe shell .":
+		r.createCalls++
+		if r.createCalls == 1 {
+			return CommandResult{Stderr: "ERROR: sandbox 'probe' already exists\n"}, errors.New("exit status 1")
+		}
+		return CommandResult{Stdout: "created\n"}, nil
+	case "sbx exec -e TZ=UTC -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe env":
+		return CommandResult{Stdout: "PATH=/usr/bin\nHTTP_PROXY=http://gateway.docker.internal:3128\n"}, nil
+	case "sbx exec probe pwd":
+		return CommandResult{Stdout: "/workspace\n"}, nil
+	case "sbx exec probe mount":
+		return CommandResult{Stdout: "/dev/disk1 on /workspace type virtiofs\n"}, nil
+	case "sbx exec -e TZ=UTC probe date":
+		return CommandResult{Stdout: "Sun Jul 5 00:00:00 UTC 2026\n"}, nil
+	case "sbx exec -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe locale":
+		return CommandResult{Stdout: "LANG=en_US.UTF-8\n"}, nil
+	case "sbx exec probe curl -fsS https://example.test/ip":
+		return CommandResult{Stdout: "203.0.113.10\n"}, nil
+	case "sbx stop probe":
+		return CommandResult{Stdout: "stopped\n"}, nil
+	case "sbx rm --force probe":
+		return CommandResult{Stdout: "removed\n"}, nil
 	default:
 		return CommandResult{}, fmt.Errorf("unexpected command %q", key)
 	}
