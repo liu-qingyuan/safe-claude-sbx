@@ -253,26 +253,21 @@ func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResul
 	return b.finishProbe(ctx, cfg, result, nil)
 }
 
-func (b DockerSandbox) CheckSandboxEgress(ctx context.Context, cfg config.Config) (ProbeResult, error) {
+func (b DockerSandbox) CheckRuntimeEgress(ctx context.Context, cfg config.Config) (ProbeResult, error) {
 	egressCtx, cancel := egressTimeoutContext(ctx, cfg.Network.EgressIP.TimeoutSeconds)
 	defer cancel()
 
-	// Fast runtime egress uses the same policy-validated probe sandbox and
-	// workspace mount, but skips the slower env, mount, time, and locale checks.
-	if err := b.createProbe(egressCtx, cfg); err != nil {
-		return b.finishProbe(ctx, cfg, ProbeResult{}, err)
-	}
-
-	egressText, err := b.execProbe(egressCtx, cfg.Sandbox.ProbeName, "curl", "-fsS", cfg.Network.EgressIP.SandboxCheckURL)
+	egressText, err := b.execRuntimeMain(egressCtx, cfg, "curl", "-fsS", cfg.Network.EgressIP.SandboxCheckURL)
 	if err != nil {
-		return b.finishProbe(ctx, cfg, ProbeResult{}, err)
+		egress, classifyErr := runtimeEgressIndeterminate(cfg.Network.EgressIP, "runtime sandbox egress command failed against configured sandbox_check_url %q: %v", cfg.Network.EgressIP.SandboxCheckURL, err)
+		return ProbeResult{Egress: egress}, classifyErr
 	}
 	egress, err := compareSandboxEgress(cfg.Network.EgressIP, egressText)
 	result := ProbeResult{Egress: egress}
 	if err != nil {
-		return b.finishProbe(ctx, cfg, result, err)
+		return result, err
 	}
-	return b.finishProbe(ctx, cfg, result, nil)
+	return result, nil
 }
 
 func egressTimeoutContext(parent context.Context, seconds int) (context.Context, context.CancelFunc) {
@@ -902,6 +897,18 @@ func (b DockerSandbox) execProbe(ctx context.Context, probeName string, args ...
 	return result.Stdout, nil
 }
 
+func (b DockerSandbox) execRuntimeMain(ctx context.Context, cfg config.Config, args ...string) (string, error) {
+	command := append([]string{"exec", cfg.Sandbox.MainName}, args...)
+	result, err := b.runner().Run(ctx, b.binary(), command...)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(result.Stderr))
+		}
+		return "", fmt.Errorf("%s", commandText(result, err))
+	}
+	return result.Stdout, nil
+}
+
 func (b DockerSandbox) runner() Runner {
 	if b.Runner != nil {
 		return b.Runner
@@ -968,6 +975,10 @@ func sandboxEgressFail(policy config.EgressIP, kind network.EgressFailureKind, o
 		FailureReason: fmt.Sprintf(reason, args...),
 	}
 	return result, fmt.Errorf("%s: %s", kind, result.FailureReason)
+}
+
+func runtimeEgressIndeterminate(policy config.EgressIP, reason string, args ...any) (network.EgressResult, error) {
+	return sandboxEgressFail(policy, network.EgressFailureIndeterminate, "", reason, args...)
 }
 
 func parseEnv(output string) map[string]string {

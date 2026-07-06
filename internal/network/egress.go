@@ -19,6 +19,7 @@ const (
 	EgressFailureMismatch        EgressFailureKind = "host-egress-mismatch"
 	EgressFailureEndpointFailure EgressFailureKind = "endpoint-failure"
 	EgressFailureResponseParse   EgressFailureKind = "response-parse-failure"
+	EgressFailureIndeterminate   EgressFailureKind = "sandbox-egress-indeterminate"
 )
 
 type EgressResult struct {

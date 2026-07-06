@@ -158,72 +158,84 @@ func TestDockerSandboxProbeRemovesStaleProbeSandboxAndRetriesCreate(t *testing.T
 	}
 }
 
-func TestDockerSandboxCheckSandboxEgressSkipsDeepInspection(t *testing.T) {
+func TestDockerSandboxCheckRuntimeEgressUsesMainSandboxAndConfiguredURL(t *testing.T) {
 	calls := []string{}
 	runner := stubRunner{
 		path:  "/tmp/sbx",
 		calls: &calls,
 		results: map[string]CommandResult{
-			"sbx create --name probe shell .":                  {Stdout: "created\n"},
-			"sbx exec probe curl -fsS https://example.test/ip": {Stdout: "203.0.113.10\n"},
-			"sbx stop probe":       {Stderr: "sandbox not found\n"},
-			"sbx rm --force probe": {Stderr: "sandbox not found\n"},
-		},
-		errors: map[string]error{
-			"sbx stop probe":       errors.New("exit status 1"),
-			"sbx rm --force probe": errors.New("exit status 1"),
+			"sbx exec main-sbx curl -fsS https://example.test/ip": {Stdout: "203.0.113.10\n"},
 		},
 	}
+	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
 
-	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckSandboxEgress(context.Background(), probeConfig())
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckRuntimeEgress(context.Background(), cfg)
 
 	if err != nil {
-		t.Fatalf("sandbox egress check failed: %v", err)
+		t.Fatalf("runtime egress check failed: %v", err)
 	}
-	if !result.CleanupDone {
-		t.Fatal("expected fast egress check to clean up probe sandbox")
+	if result.CleanupDone {
+		t.Fatal("runtime egress check should not clean up a probe sandbox")
 	}
 	if !result.Egress.OK || result.Egress.ObservedIP != "203.0.113.10" {
 		t.Fatalf("expected matching sandbox egress, got %#v", result.Egress)
 	}
 	got := strings.Join(calls, "\n")
-	want := strings.Join([]string{
-		"sbx create --name probe shell .",
-		"sbx exec probe curl -fsS https://example.test/ip",
-		"sbx stop probe",
-		"sbx rm --force probe",
-	}, "\n")
-	if got != want {
-		t.Fatalf("fast egress check should skip deep inspection, got:\n%s", got)
+	if got != "sbx exec main-sbx curl -fsS https://example.test/ip" {
+		t.Fatalf("runtime egress check should only curl from main sandbox, got:\n%s", got)
 	}
 }
 
-func TestDockerSandboxCheckSandboxEgressUsesConfiguredTimeout(t *testing.T) {
+func TestDockerSandboxCheckRuntimeEgressUsesConfiguredTimeout(t *testing.T) {
 	runner := &deadlineRecordingRunner{
 		results: map[string]CommandResult{
-			"sbx create --name probe shell .":                  {Stdout: "created\n"},
-			"sbx exec probe curl -fsS https://example.test/ip": {Stdout: "203.0.113.10\n"},
-			"sbx stop probe":       {Stderr: "sandbox not found\n"},
-			"sbx rm --force probe": {Stderr: "sandbox not found\n"},
-		},
-		errors: map[string]error{
-			"sbx stop probe":       errors.New("exit status 1"),
-			"sbx rm --force probe": errors.New("exit status 1"),
+			"sbx exec main-sbx curl -fsS https://example.test/ip": {Stdout: "203.0.113.10\n"},
 		},
 	}
 	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
 	cfg.Network.EgressIP.TimeoutSeconds = 1
 
-	_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckSandboxEgress(context.Background(), cfg)
+	_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckRuntimeEgress(context.Background(), cfg)
 
 	if err != nil {
-		t.Fatalf("sandbox egress check failed: %v", err)
+		t.Fatalf("runtime egress check failed: %v", err)
 	}
-	if runner.fastDeadlineCount != 2 {
-		t.Fatalf("expected create and curl to use fast egress deadline, got %d", runner.fastDeadlineCount)
+	if runner.fastDeadlineCount != 1 {
+		t.Fatalf("expected main sandbox curl to use runtime egress deadline, got %d", runner.fastDeadlineCount)
 	}
-	if runner.cleanupDeadlineCount != 2 {
-		t.Fatalf("expected cleanup commands to use cleanup deadline, got %d", runner.cleanupDeadlineCount)
+	if runner.cleanupDeadlineCount != 0 {
+		t.Fatalf("runtime egress should not run probe cleanup, got %d cleanup commands", runner.cleanupDeadlineCount)
+	}
+}
+
+func TestDockerSandboxCheckRuntimeEgressClassifiesTimeoutAsIndeterminate(t *testing.T) {
+	runner := stubRunner{
+		path: "/tmp/sbx",
+		results: map[string]CommandResult{
+			"sbx exec main-sbx curl -fsS https://example.test/ip": {Stderr: "Get \"https://registry-1.docker.io/v2/\": net/http: request canceled while waiting for connection\n"},
+		},
+		errors: map[string]error{
+			"sbx exec main-sbx curl -fsS https://example.test/ip": context.DeadlineExceeded,
+		},
+	}
+	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckRuntimeEgress(context.Background(), cfg)
+
+	if err == nil {
+		t.Fatal("expected runtime egress timeout")
+	}
+	if result.Egress.OK {
+		t.Fatalf("runtime egress unexpectedly passed: %#v", result.Egress)
+	}
+	if result.Egress.FailureKind != "sandbox-egress-indeterminate" {
+		t.Fatalf("expected indeterminate failure kind, got %#v", result.Egress)
+	}
+	if strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("timeout should not be reported as IP mismatch: %v", err)
 	}
 }
 
@@ -1064,7 +1076,7 @@ func (r *deadlineRecordingRunner) Run(ctx context.Context, name string, args ...
 	key := strings.Join(append([]string{name}, args...), " ")
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
-		if strings.Contains(key, "create --name probe") || strings.Contains(key, "exec probe curl") {
+		if strings.Contains(key, "create --name probe") || strings.Contains(key, "exec probe curl") || strings.Contains(key, "exec main-sbx curl") {
 			if remaining > 0 && remaining <= 2*time.Second {
 				r.fastDeadlineCount++
 			}

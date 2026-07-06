@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 )
 
 func TestRuntimeCheckerFailsWhenDefaultRouteLeavesStartupTUN(t *testing.T) {
+	sandboxCalls := 0
 	checker := RuntimeChecker{
 		Config:              runtimeCheckConfig(),
 		StartupTUNInterface: "utun9",
@@ -23,7 +23,7 @@ func TestRuntimeCheckerFailsWhenDefaultRouteLeavesStartupTUN(t *testing.T) {
 		},
 		Sandbox: fakeProbeBackend{result: backend.ProbeResult{
 			Egress: network.EgressResult{OK: true, ObservedIP: "203.0.113.10", ExpectedIP: "203.0.113.10"},
-		}},
+		}, calls: &sandboxCalls},
 	}
 
 	result, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
@@ -35,6 +35,9 @@ func TestRuntimeCheckerFailsWhenDefaultRouteLeavesStartupTUN(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "default route changed from startup interface utun9 to en0") {
 		t.Fatalf("expected route change reason, got %v", err)
+	}
+	if sandboxCalls != 0 {
+		t.Fatalf("route mismatch should fail before sandbox egress checks, got %d calls", sandboxCalls)
 	}
 }
 
@@ -86,7 +89,7 @@ func TestRuntimeCheckerFailsWhenSandboxEgressMismatches(t *testing.T) {
 	}
 }
 
-func TestRuntimeCheckerFailsSandboxEgressBeforeDeepProbe(t *testing.T) {
+func TestRuntimeCheckerFailsSandboxEgressWithoutDeepProbe(t *testing.T) {
 	checker := RuntimeChecker{
 		Config:              runtimeCheckConfig(),
 		StartupTUNInterface: "utun9",
@@ -111,6 +114,9 @@ func TestRuntimeCheckerFailsSandboxEgressBeforeDeepProbe(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sandbox-egress-mismatch") {
 		t.Fatalf("expected sandbox egress mismatch reason, got %v", err)
+	}
+	if checker.Sandbox.(*fakeFastSandbox).probeCalled {
+		t.Fatal("runtime egress mismatch should not run startup deep probe")
 	}
 }
 
@@ -145,8 +151,27 @@ func TestRuntimeCheckerFailsWhenSandboxEgressResultIsNotOK(t *testing.T) {
 	}
 }
 
-func TestRuntimeCheckerUsesIsolatedProbeNamesForOverlappingChecks(t *testing.T) {
-	sandbox := newOverlappingProbeSandbox()
+func TestRuntimeCheckerRetriesIndeterminateRuntimeEgress(t *testing.T) {
+	sandbox := &retryRuntimeSandbox{
+		results: []runtimeAttempt{
+			{
+				result: backend.ProbeResult{Egress: network.EgressResult{
+					OK:            false,
+					ExpectedIP:    "203.0.113.10",
+					FailureKind:   "sandbox-egress-indeterminate",
+					FailureReason: "Docker registry auth failed: net/http timeout",
+				}},
+				err: errors.New("sandbox-egress-indeterminate: Docker registry auth failed: net/http timeout"),
+			},
+			{
+				result: backend.ProbeResult{Egress: network.EgressResult{
+					OK:         true,
+					ObservedIP: "203.0.113.10",
+					ExpectedIP: "203.0.113.10",
+				}},
+			},
+		},
+	}
 	checker := RuntimeChecker{
 		Config:              runtimeCheckConfig(),
 		StartupTUNInterface: "utun9",
@@ -157,37 +182,71 @@ func TestRuntimeCheckerUsesIsolatedProbeNamesForOverlappingChecks(t *testing.T) 
 		Sandbox: sandbox,
 	}
 
-	firstDone := make(chan error, 1)
-	go func() {
-		_, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
-		firstDone <- err
-	}()
-	firstName := sandbox.waitFirstProbe(t)
+	result, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
 
-	secondDone := make(chan error, 1)
-	go func() {
-		_, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
-		secondDone <- err
-	}()
+	if err != nil {
+		t.Fatalf("runtime check should retry transient egress failure: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("runtime check did not pass after retry: %#v", result)
+	}
+	if sandbox.calls != 2 {
+		t.Fatalf("expected one retry after indeterminate failure, got %d calls", sandbox.calls)
+	}
+	if sandbox.probeCalled {
+		t.Fatal("runtime egress retry should not run startup deep probe")
+	}
+}
 
-	var secondName string
-	select {
-	case err := <-secondDone:
-		t.Fatalf("second runtime check finished before isolated probe started: %v", err)
-	case secondName = <-sandbox.secondProbeStarted:
-	case <-time.After(time.Second):
-		t.Fatal("second runtime check did not reach isolated probe")
+func TestRuntimeCheckerFailsIndeterminateRuntimeEgressAfterRetryExhaustion(t *testing.T) {
+	sandbox := &retryRuntimeSandbox{
+		results: []runtimeAttempt{
+			{
+				result: backend.ProbeResult{Egress: network.EgressResult{
+					OK:            false,
+					ExpectedIP:    "203.0.113.10",
+					FailureKind:   "sandbox-egress-indeterminate",
+					FailureReason: "configured sandbox egress URL timed out",
+				}},
+				err: errors.New("sandbox-egress-indeterminate: configured sandbox egress URL timed out"),
+			},
+			{
+				result: backend.ProbeResult{Egress: network.EgressResult{
+					OK:            false,
+					ExpectedIP:    "203.0.113.10",
+					FailureKind:   "sandbox-egress-indeterminate",
+					FailureReason: "configured sandbox egress URL timed out",
+				}},
+				err: errors.New("sandbox-egress-indeterminate: configured sandbox egress URL timed out"),
+			},
+		},
 	}
-	if secondName == firstName {
-		t.Fatalf("overlapping runtime checks reused probe name %q", firstName)
+	checker := RuntimeChecker{
+		Config:              runtimeCheckConfig(),
+		StartupTUNInterface: "utun9",
+		RouteRunner: fakeRouteRunner{
+			routeInterface: "utun9",
+			interfaces:     map[string]bool{"utun9": true},
+		},
+		Sandbox: sandbox,
 	}
 
-	sandbox.release()
-	if err := waitRuntimeCheck(t, firstDone); err != nil {
-		t.Fatalf("first runtime check failed: %v", err)
+	result, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
+
+	if err == nil {
+		t.Fatal("expected runtime egress failure after retry exhaustion")
 	}
-	if err := waitRuntimeCheck(t, secondDone); err != nil {
-		t.Fatalf("second runtime check failed: %v", err)
+	if result.OK {
+		t.Fatal("runtime check unexpectedly passed")
+	}
+	if !strings.Contains(err.Error(), "indeterminate runtime egress check failed") {
+		t.Fatalf("expected indeterminate failure diagnostic, got %v", err)
+	}
+	if strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("indeterminate failure should not be reported as mismatch: %v", err)
+	}
+	if sandbox.calls != 2 {
+		t.Fatalf("expected bounded retry attempts, got %d", sandbox.calls)
 	}
 }
 
@@ -244,9 +303,13 @@ func (r fakeRouteRunner) Run(name string, args ...string) (string, error) {
 type fakeProbeBackend struct {
 	result backend.ProbeResult
 	err    error
+	calls  *int
 }
 
-func (b fakeProbeBackend) CheckSandboxEgress(context.Context, config.Config) (backend.ProbeResult, error) {
+func (b fakeProbeBackend) CheckRuntimeEgress(context.Context, config.Config) (backend.ProbeResult, error) {
+	if b.calls != nil {
+		(*b.calls)++
+	}
 	return b.result, b.err
 }
 
@@ -258,13 +321,15 @@ type fakeFastSandbox struct {
 	egressResult backend.ProbeResult
 	egressErr    error
 	probeDone    chan struct{}
+	probeCalled  bool
 }
 
-func (b *fakeFastSandbox) CheckSandboxEgress(context.Context, config.Config) (backend.ProbeResult, error) {
+func (b *fakeFastSandbox) CheckRuntimeEgress(context.Context, config.Config) (backend.ProbeResult, error) {
 	return b.egressResult, b.egressErr
 }
 
 func (b *fakeFastSandbox) Probe(ctx context.Context, _ config.Config) (backend.ProbeResult, error) {
+	b.probeCalled = true
 	select {
 	case <-ctx.Done():
 		return backend.ProbeResult{}, ctx.Err()
@@ -273,74 +338,30 @@ func (b *fakeFastSandbox) Probe(ctx context.Context, _ config.Config) (backend.P
 	}
 }
 
-type overlappingProbeSandbox struct {
-	mu                 sync.Mutex
-	active             map[string]bool
-	firstProbeStarted  chan string
-	secondProbeStarted chan string
-	releaseProbes      chan struct{}
+type runtimeAttempt struct {
+	result backend.ProbeResult
+	err    error
 }
 
-func newOverlappingProbeSandbox() *overlappingProbeSandbox {
-	return &overlappingProbeSandbox{
-		active:             map[string]bool{},
-		firstProbeStarted:  make(chan string, 1),
-		secondProbeStarted: make(chan string, 1),
-		releaseProbes:      make(chan struct{}),
-	}
+type retryRuntimeSandbox struct {
+	results     []runtimeAttempt
+	calls       int
+	probeCalled bool
 }
 
-func (b *overlappingProbeSandbox) CheckSandboxEgress(_ context.Context, cfg config.Config) (backend.ProbeResult, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.active[cfg.Sandbox.ProbeName] {
-		return backend.ProbeResult{}, errors.New("probe name collision")
+func (b *retryRuntimeSandbox) CheckRuntimeEgress(context.Context, config.Config) (backend.ProbeResult, error) {
+	index := b.calls
+	b.calls++
+	if index >= len(b.results) {
+		index = len(b.results) - 1
 	}
-	return backend.ProbeResult{
-		Egress: network.EgressResult{OK: true, ObservedIP: cfg.Network.EgressIP.ExpectedIP, ExpectedIP: cfg.Network.EgressIP.ExpectedIP},
-	}, nil
+	attempt := b.results[index]
+	return attempt.result, attempt.err
 }
 
-func (b *overlappingProbeSandbox) Probe(ctx context.Context, cfg config.Config) (backend.ProbeResult, error) {
-	b.mu.Lock()
-	name := cfg.Sandbox.ProbeName
-	if b.active[name] {
-		b.mu.Unlock()
-		return backend.ProbeResult{}, errors.New("probe name collision")
-	}
-	b.active[name] = true
-	activeCount := len(b.active)
-	b.mu.Unlock()
-
-	if activeCount == 1 {
-		b.firstProbeStarted <- name
-	} else {
-		b.secondProbeStarted <- name
-	}
-
-	select {
-	case <-ctx.Done():
-		return backend.ProbeResult{}, ctx.Err()
-	case <-b.releaseProbes:
-		return backend.ProbeResult{
-			Egress: network.EgressResult{OK: true, ObservedIP: cfg.Network.EgressIP.ExpectedIP, ExpectedIP: cfg.Network.EgressIP.ExpectedIP},
-		}, nil
-	}
-}
-
-func (b *overlappingProbeSandbox) waitFirstProbe(t *testing.T) string {
-	t.Helper()
-	select {
-	case name := <-b.firstProbeStarted:
-		return name
-	case <-time.After(time.Second):
-		t.Fatal("first runtime check did not reach deep probe")
-		return ""
-	}
-}
-
-func (b *overlappingProbeSandbox) release() {
-	close(b.releaseProbes)
+func (b *retryRuntimeSandbox) Probe(context.Context, config.Config) (backend.ProbeResult, error) {
+	b.probeCalled = true
+	return backend.ProbeResult{}, nil
 }
 
 func waitRuntimeCheck(t *testing.T, done <-chan error) error {

@@ -151,6 +151,42 @@ Expected behavior:
 - Runtime mismatch stops the main sandbox and removes the probe sandbox
   according to cleanup policy after a route event triggers validation.
 
+## Runtime sandbox egress indeterminate
+
+Typical output:
+
+```text
+watchdog stopped sandbox: route-monitor runtime check failed: indeterminate runtime egress check failed after 2 attempt(s): runtime sandbox egress command failed against configured sandbox_check_url ...
+```
+
+Meaning:
+
+- The watchdog could not prove the main sandbox egress IP from
+  `network.egress_ip.sandbox_check_url`, but it also did not observe a different
+  public IP.
+- Common causes include a curl timeout, Docker Sandbox gateway proxy failure,
+  Docker registry auth/token timeout in older probe-based paths, DNS/TLS
+  endpoint failure, or transient network loss.
+- This is distinct from `sandbox-egress-mismatch`, where the sandbox returned a
+  concrete observed IP that differs from the configured expected IP.
+
+Checks:
+
+- Run `sbx exec <main-name> curl -fsS <network.egress_ip.sandbox_check_url>`.
+- If Google is the only failing destination, also run
+  `sbx exec <main-name> curl -fsS https://www.google.com` and record it as
+  Google connectivity failure, not as the policy check.
+- Prefer a `sandbox_check_url` endpoint that returns only a plain IP and is
+  reliable from both host and Docker Sandbox.
+
+Expected behavior:
+
+- Runtime checks retry indeterminate failures once before failing closed.
+- If the configured sandbox check URL later returns the expected IP, the
+  watchdog keeps the main sandbox running even when Google connectivity fails.
+- Explicit TUN mismatch, TUN missing, or observed IP mismatch still fail closed
+  immediately.
+
 ## `sbx` is unavailable
 
 Typical output:

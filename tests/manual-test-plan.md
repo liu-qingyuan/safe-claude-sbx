@@ -652,3 +652,27 @@ Expected result:
 - The launcher does not fall back to direct Claude mode.
 - Cleanup stops the disposable main sandbox. The main sandbox remains listed as
   stopped unless `cleanup.remove_main_sandbox` is `true`.
+
+### Runtime Google connectivity failure is diagnostic only
+
+Steps:
+
+1. Start a disposable sandbox with a config whose
+   `network.egress_ip.sandbox_check_url` returns the expected public IP.
+2. In the running main sandbox, run
+   `sbx exec <main-name> curl -fsS https://www.google.com`.
+3. In the same sandbox, run
+   `sbx exec <main-name> curl -fsS <network.egress_ip.sandbox_check_url>`.
+4. Trigger a route event without changing away from the startup TUN interface.
+
+Expected result:
+
+- If Google fails but the configured sandbox check URL returns the expected IP,
+  record the result as `Google connectivity failed`; the watchdog should keep
+  the main sandbox running.
+- If the configured sandbox check URL times out and no observed IP mismatch is
+  returned, the watchdog reports `sandbox-egress-indeterminate`, retries once,
+  and only then fails closed if the result remains indeterminate.
+- If the configured sandbox check URL returns a different observed IP, the
+  watchdog reports `sandbox-egress-mismatch` and stops the main sandbox without
+  treating the result as a transient Google or proxy failure.

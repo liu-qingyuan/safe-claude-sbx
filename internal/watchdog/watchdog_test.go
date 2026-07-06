@@ -138,14 +138,14 @@ func TestSupervisorDebouncesRouteEvents(t *testing.T) {
 	}
 }
 
-func TestSupervisorFailsClosedOnRouteChangeWhileDeepProbeIsBlocked(t *testing.T) {
+func TestSupervisorFailsClosedOnRouteChangeWhileRuntimeEgressIsBlocked(t *testing.T) {
 	events := make(chan Event, 2)
 	cleanup := &recordingCleanup{}
 	routes := &switchingRouteRunner{
 		routeInterface: "utun9",
 		interfaces:     map[string]bool{"utun9": true},
 	}
-	probe := &blockingProbe{started: make(chan struct{})}
+	probe := &blockingRuntimeEgress{started: make(chan struct{})}
 	supervisor := Supervisor{
 		Events: events,
 		Check: RuntimeChecker{
@@ -166,7 +166,7 @@ func TestSupervisorFailsClosedOnRouteChangeWhileDeepProbeIsBlocked(t *testing.T)
 	select {
 	case <-probe.started:
 	case <-time.After(time.Second):
-		t.Fatal("deep probe did not start")
+		t.Fatal("runtime egress check did not start")
 	}
 
 	routes.setRouteInterface("en0")
@@ -293,19 +293,13 @@ func (r *switchingRouteRunner) Run(name string, args ...string) (string, error) 
 	return "", errors.New("unexpected command")
 }
 
-type blockingProbe struct {
+type blockingRuntimeEgress struct {
 	once    sync.Once
 	started chan struct{}
 	done    chan struct{}
 }
 
-func (p *blockingProbe) CheckSandboxEgress(ctx context.Context, cfg config.Config) (backend.ProbeResult, error) {
-	return backend.ProbeResult{
-		Egress: network.EgressResult{OK: true, ObservedIP: cfg.Network.EgressIP.ExpectedIP, ExpectedIP: cfg.Network.EgressIP.ExpectedIP},
-	}, nil
-}
-
-func (p *blockingProbe) Probe(ctx context.Context, cfg config.Config) (backend.ProbeResult, error) {
+func (p *blockingRuntimeEgress) CheckRuntimeEgress(ctx context.Context, cfg config.Config) (backend.ProbeResult, error) {
 	p.once.Do(func() {
 		p.done = make(chan struct{})
 		close(p.started)
@@ -320,7 +314,11 @@ func (p *blockingProbe) Probe(ctx context.Context, cfg config.Config) (backend.P
 	}
 }
 
-func (p *blockingProbe) release() {
+func (p *blockingRuntimeEgress) Probe(context.Context, config.Config) (backend.ProbeResult, error) {
+	return backend.ProbeResult{}, nil
+}
+
+func (p *blockingRuntimeEgress) release() {
 	if p.done != nil {
 		close(p.done)
 	}

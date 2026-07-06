@@ -3,7 +3,7 @@ package watchdog
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
+	"strings"
 
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/backend"
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/config"
@@ -11,8 +11,7 @@ import (
 )
 
 type SandboxRuntimeProbe interface {
-	CheckSandboxEgress(ctx context.Context, cfg config.Config) (backend.ProbeResult, error)
-	Probe(ctx context.Context, cfg config.Config) (backend.ProbeResult, error)
+	CheckRuntimeEgress(ctx context.Context, cfg config.Config) (backend.ProbeResult, error)
 }
 
 type RuntimeChecker struct {
@@ -22,7 +21,7 @@ type RuntimeChecker struct {
 	Sandbox             SandboxRuntimeProbe
 }
 
-var runtimeProbeSequence atomic.Uint64
+const runtimeEgressCheckAttempts = 2
 
 func (c RuntimeChecker) Check(ctx context.Context, event Event) (CheckResult, error) {
 	runner := c.RouteRunner
@@ -44,31 +43,64 @@ func (c RuntimeChecker) Check(ctx context.Context, event Event) (CheckResult, er
 	if c.Sandbox == nil {
 		return runtimeFail("sandbox probe unavailable")
 	}
-	runtimeConfig := c.runtimeProbeConfig()
-	egress, err := c.Sandbox.CheckSandboxEgress(ctx, runtimeConfig)
+	egress, err := c.checkRuntimeEgress(ctx)
 	if err != nil {
-		return runtimeFail("sandbox egress invalid: %v", err)
-	}
-	if !egress.Egress.OK {
-		return runtimeFail("sandbox egress invalid: %s", egress.Egress.FailureReason)
-	}
-	if _, err := c.Sandbox.Probe(ctx, runtimeConfig); err != nil {
-		return runtimeFail("sandbox inspection invalid: %v", err)
+		return CheckResult{OK: false, Reason: egress}, err
 	}
 	return CheckResult{OK: true}, nil
 }
 
-func (c RuntimeChecker) runtimeProbeConfig() config.Config {
-	cfg := c.Config
-	if cfg.Sandbox.ProbeName == "" {
-		return cfg
+func (c RuntimeChecker) checkRuntimeEgress(ctx context.Context) (string, error) {
+	var lastErr error
+	var lastResult backend.ProbeResult
+	for attempt := 1; attempt <= runtimeEgressCheckAttempts; attempt++ {
+		result, err := c.Sandbox.CheckRuntimeEgress(ctx, c.Config)
+		if err == nil && result.Egress.OK {
+			return "", nil
+		}
+		lastErr = err
+		lastResult = result
+		if isIndeterminateRuntimeEgress(result, err) && attempt < runtimeEgressCheckAttempts {
+			continue
+		}
+		break
 	}
-	sequence := runtimeProbeSequence.Add(1)
-	cfg.Sandbox.ProbeName = fmt.Sprintf("%s-runtime-%d", cfg.Sandbox.ProbeName, sequence)
-	return cfg
+	if isIndeterminateRuntimeEgress(lastResult, lastErr) {
+		return runtimeFailure("indeterminate runtime egress check failed after %d attempt(s): %s", runtimeEgressCheckAttempts, runtimeEgressDiagnostic(lastResult, lastErr))
+	}
+	if lastErr != nil {
+		return runtimeFailure("sandbox egress invalid: %v", lastErr)
+	}
+	return runtimeFailure("sandbox egress invalid: %s", lastResult.Egress.FailureReason)
+}
+
+func isIndeterminateRuntimeEgress(result backend.ProbeResult, err error) bool {
+	if result.Egress.FailureKind == network.EgressFailureIndeterminate {
+		return true
+	}
+	return err != nil && result.Egress.FailureKind == network.EgressFailureNone && containsFailureKind(err, network.EgressFailureIndeterminate)
+}
+
+func containsFailureKind(err error, kind network.EgressFailureKind) bool {
+	return err != nil && strings.Contains(err.Error(), string(kind))
+}
+
+func runtimeEgressDiagnostic(result backend.ProbeResult, err error) string {
+	if result.Egress.FailureReason != "" {
+		return result.Egress.FailureReason
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "unknown runtime egress failure"
 }
 
 func runtimeFail(format string, args ...any) (CheckResult, error) {
+	reason, err := runtimeFailure(format, args...)
+	return CheckResult{OK: false, Reason: reason}, err
+}
+
+func runtimeFailure(format string, args ...any) (string, error) {
 	reason := fmt.Sprintf(format, args...)
-	return CheckResult{OK: false, Reason: reason}, fmt.Errorf("%s", reason)
+	return reason, fmt.Errorf("%s", reason)
 }
