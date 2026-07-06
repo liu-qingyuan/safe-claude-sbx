@@ -30,11 +30,39 @@ This repository is implementing the Docker Sandbox / `sbx` MVP described in:
 - `docs/decision-maps/safe-claude-sbx.md`
 - `tests/manual-test-plan.md`
 
-## Planned CLI
+## Daily Commands
 
-```sh
-safe-claude-sbx --config config.yaml
+Validate the current network and sandbox policy before starting work:
+
+```bash
 safe-claude-sbx doctor --config config.yaml
+```
+
+Use sandbox-local Herdr as the daily entry point:
+
+```bash
+sbx exec -it claude-sbx herdr
+```
+
+Inside the Herdr TUI, start Claude with the sandbox-local shortcut:
+
+```bash
+cc
+```
+
+`cc` is a sandbox-local wrapper at `/usr/local/bin/cc`; it should not be
+installed on the host or read host Claude credentials.
+
+For plain Docker Sandbox usage without Herdr, start Claude directly:
+
+```bash
+sbx run claude --name claude-sbx .
+```
+
+For an existing sandbox, open Claude interactively:
+
+```bash
+sbx exec -it claude-sbx claude
 ```
 
 ## Configuration
