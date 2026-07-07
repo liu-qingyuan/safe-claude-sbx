@@ -443,13 +443,14 @@ Expected sandbox stop/cleanup behavior:
 - Failure occurs before any backend command.
 - No probe or main sandbox is created.
 
-## 15. Workspace parent and sibling visibility
+## 15. Workspace parent metadata and sibling visibility
 
 Prerequisites:
 
 - Complete scenario 2 with a disposable workspace under a disposable parent
   directory.
-- Put a harmless marker file at the workspace parent path named `CLAUDE.md`.
+- Optionally put a harmless marker file at the workspace parent path named
+  `CLAUDE.md` to confirm parent guidance metadata behavior.
 - Put a harmless marker file under a sibling directory, for example
   `<parent>/sibling-project/config.yaml`.
 - Do not use real secrets or real project configuration as marker contents.
@@ -458,7 +459,7 @@ Steps:
 
 1. Point `workspace.mount` at the disposable workspace.
 2. Run `safe-claude-sbx doctor --config config.yaml`.
-3. Remove the parent `CLAUDE.md` marker and rerun `doctor`.
+3. Confirm a parent `CLAUDE.md` marker alone does not fail `doctor`.
 4. Remove the sibling marker or switch to a backend/workspace strategy that
    preserves the required `workspace.use_clone_mode: true` isolation, then rerun
    `doctor`.
@@ -469,14 +470,14 @@ Steps:
 
 Expected CLI output:
 
-- When the parent guidance marker is readable, `doctor` fails with
-  `workspace.inspection.visibility.parent_guidance`.
+- Parent guidance visibility is treated as Docker Sandbox/Claude template
+  workspace metadata and does not fail by itself.
 - When the sibling marker is readable, `doctor` fails with
   `workspace.inspection.visibility.sibling`.
 - During launcher startup, a newly created Claude template sandbox should check
-  parent guidance visibility before Claude, Herdr, or `cc` attaches. If
-  visibility inspection reports a parent guidance file, startup fails closed
-  and stops the main sandbox without modifying the reported path.
+  sibling visibility before Claude, Herdr, or `cc` attaches. If visibility
+  inspection reports a sibling project file, startup fails closed and stops the
+  main sandbox without modifying the reported path.
 - The diagnostic may name the readable path, but it must not print marker file
   contents.
 - Once only the configured workspace is readable, inspection can continue to the

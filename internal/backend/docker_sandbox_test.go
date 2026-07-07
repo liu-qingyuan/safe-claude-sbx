@@ -246,47 +246,28 @@ func TestDockerSandboxCheckRuntimeEgressClassifiesTimeoutAsIndeterminate(t *test
 }
 
 func TestDockerSandboxCheckMainWorkspaceVisibilityFailsClosed(t *testing.T) {
-	tests := []struct {
-		name       string
-		visibility CommandResult
-		wantError  string
-	}{
-		{
-			name:       "workspace parent guidance readable",
-			visibility: CommandResult{Stdout: "parent-guidance-readable=/Users/alice/work/CLAUDE.md\n"},
-			wantError:  "workspace.inspection.visibility.parent_guidance",
-		},
-		{
-			name:       "sibling project file readable",
-			visibility: CommandResult{Stdout: "sibling-readable=/Users/alice/work/other-project/config.yaml\n"},
-			wantError:  "workspace.inspection.visibility.sibling",
+	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
+	cfg.Workspace.Mount = "/Users/alice/work/safe-claude-sbx"
+	runner := stubRunner{
+		path: "/tmp/sbx",
+		results: map[string]CommandResult{
+			"sbx exec main-sbx sh -lc " + workspaceVisibilityScript(cfg.Workspace.Mount): {
+				Stdout: "sibling-readable=/Users/alice/work/other-project/config.yaml\n",
+			},
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := probeConfig()
-			cfg.Sandbox.MainName = "main-sbx"
-			cfg.Workspace.Mount = "/Users/alice/work/safe-claude-sbx"
-			runner := stubRunner{
-				path: "/tmp/sbx",
-				results: map[string]CommandResult{
-					"sbx exec main-sbx sh -lc " + workspaceVisibilityScript(cfg.Workspace.Mount): tt.visibility,
-				},
-			}
+	_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckMainWorkspaceVisibility(context.Background(), cfg)
 
-			_, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckMainWorkspaceVisibility(context.Background(), cfg)
-
-			if err == nil {
-				t.Fatalf("main sandbox visibility unexpectedly passed")
-			}
-			if !strings.Contains(err.Error(), "main sandbox inspection invalid") || !strings.Contains(err.Error(), tt.wantError) {
-				t.Fatalf("expected %q in main sandbox diagnostic, got %v", tt.wantError, err)
-			}
-			if strings.Contains(err.Error(), "secret") {
-				t.Fatalf("main sandbox visibility diagnostic leaked file contents: %v", err)
-			}
-		})
+	if err == nil {
+		t.Fatalf("main sandbox visibility unexpectedly passed")
+	}
+	if !strings.Contains(err.Error(), "main sandbox inspection invalid") || !strings.Contains(err.Error(), "workspace.inspection.visibility.sibling") {
+		t.Fatalf("expected sibling visibility diagnostic, got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("main sandbox visibility diagnostic leaked file contents: %v", err)
 	}
 }
 
@@ -306,7 +287,7 @@ func TestDockerSandboxCheckMainWorkspaceVisibilityAllowsConfiguredWorkspaceOnly(
 	if err != nil {
 		t.Fatalf("expected configured workspace-only visibility to pass: %v", err)
 	}
-	if visibility.ParentGuidancePath != "" || visibility.SiblingPath != "" {
+	if visibility.SiblingPath != "" {
 		t.Fatalf("expected empty visibility observation, got %#v", visibility)
 	}
 }
@@ -978,13 +959,6 @@ func TestDockerSandboxProbeFailsClosedForUnsafeInspection(t *testing.T) {
 			mounts:     "/dev/disk1 on /workspace type virtiofs\n/dev/disk2 on /host-ssh type virtiofs (rw,source=/Users/alice/.ssh)\n",
 			visibility: CommandResult{Stdout: "ok\n"},
 			wantError:  "workspace.inspection.mounts",
-		},
-		{
-			name:       "workspace parent guidance readable",
-			env:        "PATH=/usr/bin\nHTTP_PROXY=http://gateway.docker.internal:3128\n",
-			mounts:     "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)\n",
-			visibility: CommandResult{Stdout: "parent-guidance-readable=/Users/alice/work/CLAUDE.md\n"},
-			wantError:  "workspace.inspection.visibility.parent_guidance",
 		},
 		{
 			name:       "sibling project file readable",

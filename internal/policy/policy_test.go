@@ -469,55 +469,32 @@ func TestValidateInspectionRejectsSensitiveMountObservation(t *testing.T) {
 }
 
 func TestValidateInspectionRejectsWorkspaceVisibilityEscapeWithoutFileContents(t *testing.T) {
-	tests := []struct {
-		name       string
-		visibility WorkspaceVisibilityObservation
-		wantError  string
-	}{
-		{
-			name: "parent guidance",
-			visibility: WorkspaceVisibilityObservation{
-				ParentGuidancePath: "/Users/alice/work/CLAUDE.md",
-			},
-			wantError: "workspace.inspection.visibility.parent_guidance",
+	err := ValidateInspection(InspectionPolicy{
+		Workspace: WorkspacePolicy{
+			Mount:          ".",
+			ForbiddenPaths: []string{"~", "~/.ssh"},
+			HomeDir:        "/Users/alice",
+			WorkingDir:     "/Users/alice/work/safe-claude-sbx",
 		},
-		{
-			name: "sibling project file",
-			visibility: WorkspaceVisibilityObservation{
-				SiblingPath: "/Users/alice/work/other-project/config.yaml",
-			},
-			wantError: "workspace.inspection.visibility.sibling",
+		Timezone: "America/Chicago",
+		Locale:   "en_US.UTF-8",
+	}, InspectionObservation{
+		Environment:      map[string]string{"PATH": "/usr/bin"},
+		WorkingDirectory: "/workspace",
+		Mounts:           "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)",
+		Date:             "Sun Jul  5 12:00:00 PDT 2026",
+		Locale:           "LANG=en_US.UTF-8",
+		WorkspaceVisibility: WorkspaceVisibilityObservation{
+			SiblingPath: "/Users/alice/work/other-project/config.yaml",
 		},
+	})
+	if err == nil {
+		t.Fatalf("expected sibling workspace visibility escape to fail closed")
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateInspection(InspectionPolicy{
-				Workspace: WorkspacePolicy{
-					Mount:          ".",
-					ForbiddenPaths: []string{"~", "~/.ssh"},
-					HomeDir:        "/Users/alice",
-					WorkingDir:     "/Users/alice/work/safe-claude-sbx",
-				},
-				Timezone: "America/Chicago",
-				Locale:   "en_US.UTF-8",
-			}, InspectionObservation{
-				Environment:         map[string]string{"PATH": "/usr/bin"},
-				WorkingDirectory:    "/workspace",
-				Mounts:              "/dev/disk1 on /workspace type virtiofs (rw,source=/Users/alice/work/safe-claude-sbx)",
-				Date:                "Sun Jul  5 12:00:00 PDT 2026",
-				Locale:              "LANG=en_US.UTF-8",
-				WorkspaceVisibility: tt.visibility,
-			})
-			if err == nil {
-				t.Fatalf("expected workspace visibility escape to fail closed")
-			}
-			if !strings.Contains(err.Error(), tt.wantError) {
-				t.Fatalf("expected %q in error, got %v", tt.wantError, err)
-			}
-			if strings.Contains(err.Error(), "secret") {
-				t.Fatalf("policy error leaked file contents: %v", err)
-			}
-		})
+	if !strings.Contains(err.Error(), "workspace.inspection.visibility.sibling") {
+		t.Fatalf("expected sibling visibility error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("policy error leaked file contents: %v", err)
 	}
 }

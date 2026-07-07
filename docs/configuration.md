@@ -168,33 +168,25 @@ but do not print captured secret values.
 The probe and the configured main sandbox both check workspace visibility. The
 configured workspace is the only project tree expected to be readable by Herdr,
 Claude Code, and the `cc` process started inside Herdr because they share the
-same Docker Sandbox filesystem view. If either sandbox can read a parent
-`CLAUDE.md` guidance file or a file under a sibling project directory, `doctor`
-or launcher startup fails closed with `workspace.inspection.visibility.*`. The
-diagnostic names the readable non-workspace path but does not print file
-contents. Direct Docker Sandbox bind mount mode is rejected by configuration
-validation; `workspace.use_clone_mode: true` is required so new main sandboxes
-are created with clone mode before `sbx run --name` attaches. Real Docker
-Sandbox validation showed that the Claude template can still synthesize a
-readable parent `CLAUDE.md` inside a clone-mode sandbox, so new main sandbox
-startup treats any readable parent guidance file as unsafe and fails closed
-before attaching Claude, Herdr, or `cc`. If main sandbox visibility inspection
-finds a parent guidance file or sibling file, cleanup stops the main sandbox
-instead of entering the watchdog loop. During `safe-herdr`, an existing main
-sandbox is checked before the interactive Herdr TUI is attached; existing
-sandboxes are inspected but not modified.
+same Docker Sandbox filesystem view. Current Docker Sandbox behavior can expose
+the configured workspace and its parent path as host-style paths; a parent
+`CLAUDE.md` guidance file is therefore treated as Docker Sandbox/Claude template
+workspace metadata, not as a policy failure. If either sandbox can read a file
+under a sibling project directory, `doctor` or launcher startup fails closed
+with `workspace.inspection.visibility.sibling`. The diagnostic names the
+readable non-workspace path but does not print file contents. Direct Docker
+Sandbox bind mount mode is rejected by configuration validation;
+`workspace.use_clone_mode: true` is required so new main sandboxes are created
+with clone mode before `sbx run --name` attaches. During `safe-herdr`, an
+existing main sandbox is checked before the interactive Herdr TUI is attached;
+existing sandboxes are inspected but not modified.
 
 Docker Sandbox may still report the configured workspace path in `pwd`, `sbx`
-status output, or source-mount metadata. Treat that path string as residual
-backend metadata exposure; the enforced boundary is that parent guidance content
-and sibling project files are not readable by Claude, Herdr, or `cc`.
-
-For workflows that cannot use Docker Sandbox clone mode, use a disposable
-temporary workspace that contains only the project files needed for the session
-and has no parent guidance file, then point `workspace.mount` at that temporary
-workspace. Expect this launcher configuration to fail closed until a backend
-contract with equivalent non-mutating isolation exists. Do not depend on Herdr
-or `cc` to provide another filesystem isolation layer inside the same sandbox.
+status output, or source-mount metadata. Treat those path strings as expected
+backend metadata exposure. The enforced boundary is that unrelated sensitive
+paths and sibling project files are not readable by Claude, Herdr, or `cc`. Do
+not depend on Herdr or `cc` to provide another filesystem isolation layer inside
+the same sandbox.
 
 Legacy flat fields such as `expected_egress_ip`, `sandbox_name`,
 `workspace_mount`, `timezone`, and `cleanup.stop_on_exit` are not accepted by the

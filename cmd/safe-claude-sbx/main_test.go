@@ -100,7 +100,7 @@ func TestDoctorDoesNotMutateParentGuidanceDuringVisibilityPreflight(t *testing.T
 	assertNoParentGuidanceMutation(t, readFile(t, logPath))
 }
 
-func TestLaunchFailsClosedWhenMainSandboxWorkspaceVisibilityEscapes(t *testing.T) {
+func TestLaunchFailsClosedWhenMainSandboxCanReadSiblingProjectFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "203.0.113.10")
 	}))
@@ -112,7 +112,7 @@ func TestLaunchFailsClosedWhenMainSandboxWorkspaceVisibilityEscapes(t *testing.T
 	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
 		EgressIP:             "203.0.113.10",
 		LogPath:              logPath,
-		MainVisibilityOutput: "parent-guidance-readable=/Users/alice/work/CLAUDE.md\n",
+		MainVisibilityOutput: "sibling-readable=/Users/alice/work/other-project/config.yaml\n",
 	})
 
 	cmd := exec.Command("go", "run", ".", "--config", configPath)
@@ -123,11 +123,11 @@ func TestLaunchFailsClosedWhenMainSandboxWorkspaceVisibilityEscapes(t *testing.T
 	if err == nil {
 		t.Fatalf("launch unexpectedly succeeded with escaping main sandbox visibility:\n%s\nsbx log:\n%s", output, readFile(t, logPath))
 	}
-	if !strings.Contains(string(output), "main sandbox inspection invalid") || !strings.Contains(string(output), "workspace.inspection.visibility.parent_guidance") {
+	if !strings.Contains(string(output), "main sandbox inspection invalid") || !strings.Contains(string(output), "workspace.inspection.visibility.sibling") {
 		t.Fatalf("expected main sandbox visibility diagnostic, got:\n%s", output)
 	}
-	if strings.Contains(string(output), "TOP_SECRET_PARENT_GUIDANCE") {
-		t.Fatalf("launch leaked parent guidance contents:\n%s", output)
+	if strings.Contains(string(output), "TOP_SECRET_SIBLING_CONFIG") {
+		t.Fatalf("launch leaked sibling file contents:\n%s", output)
 	}
 	log := readFile(t, logPath)
 	createIndex := strings.Index(log, "create --clone --name claude-sbx claude .")
@@ -307,7 +307,7 @@ func TestSafeHerdrChecksMainWorkspaceVisibilityBeforeTUIAttach(t *testing.T) {
 		EgressIP:             "203.0.113.10",
 		LogPath:              logPath,
 		ExistingMainStatus:   "running",
-		MainVisibilityOutput: "parent-guidance-readable=/Users/alice/work/CLAUDE.md\n",
+		MainVisibilityOutput: "sibling-readable=/Users/alice/work/other-project/config.yaml\n",
 	})
 
 	cmd := exec.Command("go", "run", "../safe-herdr", "--config", configPath)
@@ -318,7 +318,7 @@ func TestSafeHerdrChecksMainWorkspaceVisibilityBeforeTUIAttach(t *testing.T) {
 	if err == nil {
 		t.Fatalf("safe-herdr unexpectedly attached TUI with unsafe main sandbox visibility:\n%s", output)
 	}
-	if !strings.Contains(string(output), "main sandbox inspection invalid") || !strings.Contains(string(output), "workspace.inspection.visibility.parent_guidance") {
+	if !strings.Contains(string(output), "main sandbox inspection invalid") || !strings.Contains(string(output), "workspace.inspection.visibility.sibling") {
 		t.Fatalf("expected main sandbox visibility diagnostic, got:\n%s", output)
 	}
 	log := readFile(t, logPath)
@@ -1193,14 +1193,6 @@ func TestDoctorFailsClosedForUnsafeSandboxInspection(t *testing.T) {
 			},
 			wantError: "workspace.inspection.mounts",
 			notLeak:   home + "/.ssh",
-		},
-		{
-			name: "workspace parent guidance readable",
-			fake: fakeSBXOptions{
-				VisibilityOutput: "parent-guidance-readable=/Users/alice/work/CLAUDE.md\n",
-			},
-			wantError: "workspace.inspection.visibility.parent_guidance",
-			notLeak:   "TOP_SECRET_PARENT_GUIDANCE",
 		},
 		{
 			name: "sibling project file readable",

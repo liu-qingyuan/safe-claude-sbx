@@ -368,8 +368,6 @@ func parseWorkspaceVisibility(output string) (policy.WorkspaceVisibilityObservat
 			return policy.WorkspaceVisibilityObservation{}, fmt.Errorf("workspace visibility inspection: unexpected output")
 		}
 		switch key {
-		case "parent-guidance-readable":
-			observation.ParentGuidancePath = strings.TrimSpace(value)
 		case "sibling-readable":
 			observation.SiblingPath = strings.TrimSpace(value)
 		default:
@@ -384,10 +382,8 @@ func workspaceVisibilityScript(workspace string) string {
 		"workspace=" + shellQuote(workspace),
 		`parent=${workspace%/*}`,
 		`base=${workspace##*/}`,
-		`reported=0`,
-		`if [ "$parent" != "/" ] && [ -r "$parent/CLAUDE.md" ]; then printf 'parent-guidance-readable=%s\n' "$parent/CLAUDE.md"; reported=1; fi`,
-		`if [ "$parent" != "/" ] && [ -d "$parent" ]; then sibling=$(find "$parent" -mindepth 2 -maxdepth 3 -type f -readable ! -path "$workspace/*" ! -path "$parent/$base/*" -print -quit 2>/dev/null || true); if [ -n "$sibling" ]; then printf 'sibling-readable=%s\n' "$sibling"; reported=1; fi; fi`,
-		`if [ "$reported" -eq 0 ]; then printf 'ok\n'; fi`,
+		`if [ "$parent" != "/" ] && [ -d "$parent" ]; then sibling=$(find "$parent" -mindepth 2 -maxdepth 3 -type f -readable ! -path "$workspace/*" ! -path "$parent/$base/*" -print -quit 2>/dev/null || true); if [ -n "$sibling" ]; then printf 'sibling-readable=%s\n' "$sibling"; exit 0; fi; fi`,
+		`printf 'ok\n'`,
 	}, "\n")
 }
 

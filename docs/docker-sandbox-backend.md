@@ -160,10 +160,10 @@ If the configured main sandbox exists with any other status, the adapter fails
 closed with the sandbox name and status. It does not stop or remove that existing
 sandbox as part of startup failure cleanup.
 
-After creating a fresh clone-mode main sandbox, the adapter validates workspace
-visibility without modifying any parent guidance path. If the Claude template
-synthesizes a readable parent `CLAUDE.md` above the configured workspace,
-startup fails closed before Claude, Herdr, or `cc` attaches.
+After creating a fresh clone-mode main sandbox, the adapter validates sibling
+project visibility without modifying parent guidance paths. Docker Sandbox can
+expose the configured workspace and parent guidance path as host-style metadata;
+that alone is not a policy failure.
 
 ### Run Or Attach Main Sandbox
 
@@ -182,7 +182,7 @@ Confirmed help contract:
 - Additional workspace paths are accepted, with `:ro` for read-only mounts.
 - `--clone`, `--profile`, `--cpus`, `--memory`, `--template`, and `--kit` are
   supported for new sandbox creation. The launcher creates new main sandboxes
-  with `sbx create --clone`, validates workspace visibility without modifying
+  with `sbx create --clone`, validates sibling visibility without modifying
   parent guidance paths, and then attaches with `sbx run --name`.
 - Help text mentions `--detached (-d)`, but the observed flag list did not show
   it. Do not depend on detached `run` until verified after login.
@@ -344,19 +344,19 @@ Current launcher behavior:
   SSH forwarding environment such as `SSH_AUTH_SOCK` and
   `SSH_AUTH_SOCK_GATEWAY` is allowed only when
   `environment.allow_ssh_agent_forwarding` is explicitly `true`.
-- The probe and the configured main sandbox perform workspace visibility read
-  checks without reading file contents. They fail closed if the sandbox can read
-  the configured workspace parent's `CLAUDE.md` file or a readable file under a
-  sibling project directory. Diagnostics report the readable path only. Direct
-  launcher startup creates the main sandbox first, checks visibility without
-  modifying parent guidance paths, and only then attaches Claude Code or starts
-  sandbox-local Herdr. Failures stop the main sandbox and do not enter runtime
-  watchdog supervision. `safe-herdr` checks the existing main sandbox before
-  attaching the interactive Herdr TUI.
+- The probe and the configured main sandbox perform sibling project read checks
+  without reading file contents. They fail closed if the sandbox can read a file
+  under a sibling project directory. Diagnostics report the readable path only.
+  Direct launcher startup creates the main sandbox first, checks visibility
+  without modifying parent guidance paths, and only then attaches Claude Code or
+  starts sandbox-local Herdr. Failures stop the main sandbox and do not enter
+  runtime watchdog supervision. `safe-herdr` checks the existing main sandbox
+  before attaching the interactive Herdr TUI.
 - Docker Sandbox can still expose the configured workspace path as metadata in
-  `pwd`, `sbx ls`, create output, or source-mount descriptions. Current policy
-  treats this as residual backend path metadata and enforces that non-workspace
-  guidance contents and sibling project files are not readable.
+  `pwd`, `sbx ls`, create output, source-mount descriptions, or parent guidance
+  handling. Current policy treats this as expected backend path metadata and
+  enforces that sibling project files and unrelated sensitive paths are not
+  readable.
 - If a future Docker Sandbox version documents a create/run clean-env,
   allowlist, profile, template, or kit contract, the backend adapter should use
   that official mechanism and keep the inspection step as verification.

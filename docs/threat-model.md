@@ -7,8 +7,8 @@
 - Continuing to run after sandbox egress IP no longer matches policy.
 - Accidentally exposing explicit proxy environment variables inside the sandbox.
 - Accidentally mounting host-sensitive paths into the sandbox.
-- Accidentally allowing the sandbox to read workspace parent guidance files or
-  sibling project files during preflight inspection.
+- Accidentally allowing the sandbox to read sibling project files or configured
+  host-sensitive paths during preflight inspection.
 
 ## Not Protected Against
 

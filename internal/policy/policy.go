@@ -42,8 +42,7 @@ type InspectionObservation struct {
 }
 
 type WorkspaceVisibilityObservation struct {
-	ParentGuidancePath string
-	SiblingPath        string
+	SiblingPath string
 }
 
 func ValidateWorkspaceMount(policy WorkspacePolicy) error {
@@ -117,9 +116,6 @@ func validateMountObservation(policy WorkspacePolicy, mounts string) error {
 }
 
 func validateWorkspaceVisibility(observation WorkspaceVisibilityObservation) error {
-	if strings.TrimSpace(observation.ParentGuidancePath) != "" {
-		return fmt.Errorf("workspace.inspection.visibility.parent_guidance: non-workspace path readable: %s", strings.TrimSpace(observation.ParentGuidancePath))
-	}
 	if strings.TrimSpace(observation.SiblingPath) != "" {
 		return fmt.Errorf("workspace.inspection.visibility.sibling: non-workspace path readable: %s", strings.TrimSpace(observation.SiblingPath))
 	}

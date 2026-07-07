@@ -298,7 +298,6 @@ Typical output:
 ```text
 configuration invalid: workspace.mount: path is forbidden by workspace policy
 sandbox probe invalid: sandbox inspection invalid: workspace.inspection.mounts: forbidden host path visible
-sandbox probe invalid: sandbox inspection invalid: workspace.inspection.visibility.parent_guidance: non-workspace path readable: /Users/alice/work/CLAUDE.md
 sandbox probe invalid: sandbox inspection invalid: workspace.inspection.visibility.sibling: non-workspace path readable: /Users/alice/work/other-project/config.yaml
 ```
 
@@ -308,9 +307,11 @@ Meaning:
   inspection exposed a forbidden host path.
 - Forbidden paths include Home, SSH, Claude config, Clash config, Keychain, and
   any extra paths configured under `workspace.forbidden_paths`.
-- The sandbox can read outside the configured workspace, such as a parent
-  `CLAUDE.md` guidance file or a sibling project file. Herdr TUI and `cc` share
-  that same sandbox filesystem view.
+- The sandbox can read a sibling project file outside the configured workspace.
+  Herdr TUI and `cc` share that same sandbox filesystem view.
+- A parent `CLAUDE.md` may be visible through Docker Sandbox/Claude template
+  workspace guidance handling. That is expected workspace metadata, not a policy
+  failure by itself.
 
 Checks:
 
@@ -319,13 +320,12 @@ Checks:
   commands run.
 - Do not mount home directories or credential/config directories.
 - Keep `workspace.use_clone_mode: true`; Docker Sandbox bind mount mode is
-  rejected because it can expose parent guidance or sibling files. New
-  clone-mode main sandbox startup checks workspace visibility before attaching
-  Claude, Herdr, or `cc`; if visibility inspection reports a parent or sibling
-  file, startup fails closed without modifying the reported path. If clone mode
-  is not viable for a workflow, copy only
-  the required project files to a disposable temporary workspace and mount that
-  path with a backend contract that provides equivalent isolation.
+  rejected because it can expose wider host paths. New clone-mode main sandbox
+  startup checks sibling visibility before attaching Claude, Herdr, or `cc`; if
+  visibility inspection reports a sibling file, startup fails closed without
+  modifying the reported path. If clone mode is not viable for a workflow, copy
+  only the required project files to a disposable temporary workspace and mount
+  that path with a backend contract that provides equivalent isolation.
 - Do not paste the readable file contents into issues or logs; the diagnostic
   path is enough to debug the mount boundary.
 
