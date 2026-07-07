@@ -84,8 +84,8 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
   - `agent`: Agent command to run, normally `claude`.
   - `supervision.mode`: Agent startup supervision mode. Supported values are
     `direct-claude` and `sandbox-local-herdr`. If omitted, the launcher uses
-    `direct-claude`, preserving the current `sbx run --clone claude` startup
-    path.
+    `direct-claude`, creating the main sandbox first, validating workspace
+    visibility, and only then attaching Claude Code.
   - `supervision.herdr`: Required only when `supervision.mode` is
     `sandbox-local-herdr`. This object declares sandbox-local Herdr startup
     inputs, not host Herdr state.
@@ -173,12 +173,21 @@ same Docker Sandbox filesystem view. If either sandbox can read a parent
 or launcher startup fails closed with `workspace.inspection.visibility.*`. The
 diagnostic names the readable non-workspace path but does not print file
 contents. Direct Docker Sandbox bind mount mode is rejected by configuration
-validation; `workspace.use_clone_mode: true` is required so `sbx create` and
-`sbx run` use `--clone`. During direct launcher startup, a main sandbox
-visibility failure happens after the main sandbox is started; cleanup then
-stops the main sandbox instead of entering the watchdog loop. During
-`safe-herdr`, the existing main sandbox is checked before the interactive Herdr
-TUI is attached.
+validation; `workspace.use_clone_mode: true` is required so new main sandboxes
+are created with clone mode before `sbx run --name` attaches. Real Docker
+Sandbox validation showed that the Claude template can still synthesize a
+readable parent `CLAUDE.md` inside a clone-mode sandbox, so new main sandbox
+startup removes that sandbox-local parent guidance file before attaching Claude,
+Herdr, or `cc`. If the subsequent main sandbox visibility inspection still
+finds a parent guidance file or sibling file, cleanup stops the main sandbox
+instead of entering the watchdog loop. During `safe-herdr`, an existing main
+sandbox is checked before the interactive Herdr TUI is attached; existing
+sandboxes are not modified by the parent guidance cleanup path.
+
+Docker Sandbox may still report the configured workspace path in `pwd`, `sbx`
+status output, or source-mount metadata. Treat that path string as residual
+backend metadata exposure; the enforced boundary is that parent guidance content
+and sibling project files are not readable by Claude, Herdr, or `cc`.
 
 For workflows that cannot use Docker Sandbox clone mode, use a disposable
 temporary workspace that contains only the project files needed for the session

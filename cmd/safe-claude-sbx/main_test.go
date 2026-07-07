@@ -35,8 +35,43 @@ func TestLaunchStartsMainSandboxAfterAllPreflightsPass(t *testing.T) {
 		t.Fatalf("expected launch success output, got:\n%s", output)
 	}
 	log := readFile(t, logPath)
-	if !strings.Contains(log, "run --clone claude --name claude-sbx .") {
-		t.Fatalf("expected main sandbox run command, got:\n%s", log)
+	createIndex := strings.Index(log, "create --clone --name claude-sbx claude .")
+	visibilityIndex := strings.Index(log, "exec claude-sbx sh -lc workspace=")
+	runIndex := strings.Index(log, "run --name claude-sbx")
+	if createIndex < 0 || visibilityIndex < 0 || runIndex < 0 || !(createIndex < visibilityIndex && visibilityIndex < runIndex) {
+		t.Fatalf("expected create, main visibility preparation, then attach, got:\n%s", log)
+	}
+}
+
+func TestLaunchStripsClaudeTemplateParentGuidanceBeforeAgentAttach(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validLaunchConfig(t, server.URL, "203.0.113.10", 10))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:              "203.0.113.10",
+		LogPath:               logPath,
+		RequireStripBeforeRun: true,
+	})
+
+	cmd := exec.Command("go", "run", ".", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("launch failed before stripping generated parent guidance:\n%v\n%s\nsbx log:\n%s", err, output, readFile(t, logPath))
+	}
+	log := readFile(t, logPath)
+	createIndex := strings.Index(log, "create --clone --name claude-sbx claude .")
+	visibilityIndex := strings.Index(log, "exec claude-sbx sh -lc workspace=")
+	runIndex := strings.Index(log, "run --name claude-sbx")
+	if createIndex < 0 || visibilityIndex < 0 || runIndex < 0 || !(createIndex < visibilityIndex && visibilityIndex < runIndex) {
+		t.Fatalf("expected generated parent guidance to be stripped and checked before attach, got:\n%s", log)
 	}
 }
 
@@ -70,11 +105,14 @@ func TestLaunchFailsClosedWhenMainSandboxWorkspaceVisibilityEscapes(t *testing.T
 		t.Fatalf("launch leaked parent guidance contents:\n%s", output)
 	}
 	log := readFile(t, logPath)
-	runIndex := strings.Index(log, "run --clone claude --name claude-sbx .")
+	createIndex := strings.Index(log, "create --clone --name claude-sbx claude .")
 	visibilityIndex := strings.Index(log, "exec claude-sbx sh -lc workspace=")
 	stopIndex := strings.LastIndex(log, "\nstop claude-sbx\n")
-	if runIndex < 0 || visibilityIndex < 0 || stopIndex < 0 || !(runIndex < visibilityIndex && visibilityIndex < stopIndex) {
-		t.Fatalf("expected main sandbox run, visibility inspection, then cleanup stop, got:\n%s", log)
+	if createIndex < 0 || visibilityIndex < 0 || stopIndex < 0 || !(createIndex < visibilityIndex && visibilityIndex < stopIndex) {
+		t.Fatalf("expected main sandbox create, visibility inspection, then cleanup stop, got:\n%s", log)
+	}
+	if containsLogLine(log, "run --name claude-sbx") {
+		t.Fatalf("agent should not attach after unsafe main visibility, got:\n%s", log)
 	}
 }
 
@@ -1614,6 +1652,7 @@ type fakeSBXOptions struct {
 	BlockRun              bool
 	ExistingMainStatus    string
 	ExistingMainWorkspace string
+	RequireStripBeforeRun bool
 }
 
 func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
@@ -1658,6 +1697,7 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	}
 	stopFile := filepath.Join(dir, "main-stopped")
 	herdrStopFile := filepath.Join(dir, "herdr-stopped")
+	stripFile := filepath.Join(dir, "parent-guidance-stripped")
 
 	script := fmt.Sprintf(`#!/bin/sh
 set -eu
@@ -1690,6 +1730,10 @@ case "$1" in
           exit 1
         fi
         printf '%%s\n' %q
+        ;;
+      *"rm -f -- "*"/CLAUDE.md"*)
+        touch %q
+        printf 'ok\n'
         ;;
       *" claude-sbx sh -lc workspace="*)
         printf '%%b' %q
@@ -1762,6 +1806,10 @@ case "$1" in
         fi
         ;;
       *"HERDR_ENV=1"*" claude")
+        if [ %q = "true" ] && [ ! -f %q ]; then
+          printf 'agent saw generated parent guidance before strip\n' >&2
+          exit 1
+        fi
         if [ %q = "true" ]; then
           printf 'run failed\n' >&2
           exit 1
@@ -1780,6 +1828,10 @@ case "$1" in
     esac
     ;;
   run)
+    if [ %q = "true" ] && [ ! -f %q ]; then
+      printf 'agent saw generated parent guidance before strip\n' >&2
+      exit 1
+    fi
     if [ %q = "true" ]; then
       printf 'run failed\n' >&2
       exit 1
@@ -1818,6 +1870,7 @@ esac
 		shellBool(opts.FailCreate),
 		shellBool(opts.FailCurl),
 		egressIP,
+		stripFile,
 		mainVisibilityOutput,
 		visibilityOutput,
 		envOutput,
@@ -1830,9 +1883,13 @@ esac
 		shellBool(opts.FailHerdrTUI),
 		shellBool(opts.BlockRun),
 		stopFile,
+		shellBool(opts.RequireStripBeforeRun),
+		stripFile,
 		shellBool(opts.FailRun),
 		shellBool(opts.BlockRun),
 		stopFile,
+		shellBool(opts.RequireStripBeforeRun),
+		stripFile,
 		shellBool(opts.FailRun),
 		shellBool(opts.BlockRun),
 		stopFile,

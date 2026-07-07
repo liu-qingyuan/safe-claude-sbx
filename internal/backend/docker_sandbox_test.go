@@ -314,11 +314,9 @@ func TestDockerSandboxCheckMainWorkspaceVisibilityAllowsConfiguredWorkspaceOnly(
 func TestDockerSandboxStartMainPassesMainSandboxContract(t *testing.T) {
 	calls := []string{}
 	runner := stubRunner{
-		path:  "/tmp/sbx",
-		calls: &calls,
-		results: map[string]CommandResult{
-			"sbx run --clone claude --name main-sbx /work/project": {Stdout: "started\n"},
-		},
+		path:    "/tmp/sbx",
+		calls:   &calls,
+		results: map[string]CommandResult{},
 	}
 	cfg := probeConfig()
 	cfg.Sandbox.MainName = "main-sbx"
@@ -336,8 +334,15 @@ func TestDockerSandboxStartMainPassesMainSandboxContract(t *testing.T) {
 	if plan.Environment["TZ"] != "UTC" || plan.Environment["LANG"] != "en_US.UTF-8" || plan.Environment["LC_ALL"] != "en_US.UTF-8" {
 		t.Fatalf("expected allowed startup environment, got %#v", plan.Environment)
 	}
-	if got := strings.Join(calls, "\n"); got != "sbx run --clone claude --name main-sbx /work/project" {
-		t.Fatalf("direct mode should not inspect or rebuild main sandbox, got:\n%s", got)
+	want := strings.Join([]string{
+		"sbx ls",
+		"sbx create --clone --name main-sbx claude /work/project",
+		"sbx exec main-sbx sh -lc " + stripParentGuidanceScript("/work/project"),
+		"sbx exec main-sbx sh -lc " + workspaceVisibilityScript("/work/project"),
+		"sbx run --name main-sbx",
+	}, "\n")
+	if got := strings.Join(calls, "\n"); got != want {
+		t.Fatalf("direct mode should create, sanitize, inspect, then attach main sandbox, got:\n%s", got)
 	}
 }
 
@@ -400,6 +405,8 @@ func TestDockerSandboxStartMainPreparesSandboxLocalHerdr(t *testing.T) {
 	want := strings.Join([]string{
 		"sbx ls",
 		"sbx create --clone --name main-sbx claude /work/project",
+		"sbx exec main-sbx sh -lc " + stripParentGuidanceScript("/work/project"),
+		"sbx exec main-sbx sh -lc " + workspaceVisibilityScript("/work/project"),
 		"sbx exec main-sbx sh -lc command -v herdr",
 		"sbx exec main-sbx herdr --version",
 		"sbx exec main-sbx herdr integration install claude",
@@ -550,6 +557,8 @@ func TestDockerSandboxStartMainRebuildsStoppedSandboxLocalHerdrMain(t *testing.T
 		"sbx stop main-sbx",
 		"sbx rm --force main-sbx",
 		"sbx create --clone --name main-sbx claude /work/project",
+		"sbx exec main-sbx sh -lc " + stripParentGuidanceScript("/work/project"),
+		"sbx exec main-sbx sh -lc " + workspaceVisibilityScript("/work/project"),
 		"sbx exec main-sbx sh -lc command -v herdr",
 	}, "\n")
 	if !strings.Contains(got, want) {
@@ -883,13 +892,34 @@ func TestDockerSandboxStartMainAttachedConnectsStdin(t *testing.T) {
 	fakeSBX := filepath.Join(dir, "sbx")
 	script := fmt.Sprintf(`#!/bin/sh
 set -eu
-if [ "$1" != "run" ]; then
-  printf 'unexpected command: %%s\n' "$*" >&2
-  exit 1
-fi
-IFS= read -r line
-printf '%%s' "$line" > %q
-printf 'main sandbox started\n'
+case "$1" in
+  ls)
+    printf 'No sandboxes found.\n'
+    ;;
+  create)
+    printf 'created\n'
+    ;;
+  exec)
+    case "$*" in
+      *" sh -lc workspace="*)
+        printf 'ok\n'
+        ;;
+      *)
+        printf 'unexpected exec: %%s\n' "$*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  run)
+    IFS= read -r line
+    printf '%%s' "$line" > %q
+    printf 'main sandbox started\n'
+    ;;
+  *)
+    printf 'unexpected command: %%s\n' "$*" >&2
+    exit 1
+    ;;
+esac
 `, stdinPath)
 	if err := os.WriteFile(fakeSBX, []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake sbx: %v", err)
@@ -1352,6 +1382,9 @@ func (r *herdrInstallTimeoutRunner) LookPath(file string) (string, error) {
 func (r *herdrInstallTimeoutRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
 	key := strings.Join(append([]string{name}, args...), " ")
 	r.calls = append(r.calls, key)
+	if isMainWorkspacePreparationCommand(key) {
+		return CommandResult{Stdout: "ok\n"}, nil
+	}
 	switch key {
 	case "sbx ls":
 		return CommandResult{Stdout: "No sandboxes found.\n"}, nil
@@ -1391,6 +1424,9 @@ func (r *herdrInstallAttemptRunner) LookPath(file string) (string, error) {
 func (r *herdrInstallAttemptRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
 	key := strings.Join(append([]string{name}, args...), " ")
 	r.calls = append(r.calls, key)
+	if isMainWorkspacePreparationCommand(key) {
+		return CommandResult{Stdout: "ok\n"}, nil
+	}
 	switch key {
 	case "sbx ls":
 		return CommandResult{Stdout: "No sandboxes found.\n"}, nil
@@ -1430,4 +1466,8 @@ func (r *herdrInstallAttemptRunner) Run(ctx context.Context, name string, args .
 	default:
 		return CommandResult{}, fmt.Errorf("unexpected command %q", key)
 	}
+}
+
+func isMainWorkspacePreparationCommand(key string) bool {
+	return strings.HasPrefix(key, "sbx exec main-sbx sh -lc workspace=")
 }

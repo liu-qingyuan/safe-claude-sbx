@@ -319,10 +319,13 @@ Checks:
   commands run.
 - Do not mount home directories or credential/config directories.
 - Keep `workspace.use_clone_mode: true`; Docker Sandbox bind mount mode is
-  rejected because it can expose parent guidance or sibling files. If clone mode
-  is not viable for a workflow, copy only the required project files to a
-  disposable temporary workspace and mount that path with a backend contract that
-  provides equivalent isolation.
+  rejected because it can expose parent guidance or sibling files. New
+  clone-mode main sandbox startup also removes the Claude template's
+  sandbox-local parent `CLAUDE.md` before attaching Claude, Herdr, or `cc`; if
+  visibility inspection still reports a parent or sibling file afterward,
+  startup fails closed. If clone mode is not viable for a workflow, copy only
+  the required project files to a disposable temporary workspace and mount that
+  path with a backend contract that provides equivalent isolation.
 - Do not paste the readable file contents into issues or logs; the diagnostic
   path is enough to debug the mount boundary.
 

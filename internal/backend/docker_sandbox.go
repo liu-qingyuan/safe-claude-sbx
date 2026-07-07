@@ -279,11 +279,19 @@ func (b DockerSandbox) CheckRuntimeEgress(ctx context.Context, cfg config.Config
 }
 
 func (b DockerSandbox) CheckMainWorkspaceVisibility(ctx context.Context, cfg config.Config) (policy.WorkspaceVisibilityObservation, error) {
-	workspace, err := resolveWorkspaceVisibilityPath(cfg.Workspace.Mount)
+	visibility, err := b.checkMainWorkspaceVisibility(ctx, cfg.Sandbox.MainName, cfg.Workspace.Mount)
+	if err != nil {
+		return visibility, err
+	}
+	return visibility, nil
+}
+
+func (b DockerSandbox) checkMainWorkspaceVisibility(ctx context.Context, sandboxName, workspaceMount string) (policy.WorkspaceVisibilityObservation, error) {
+	workspace, err := resolveWorkspaceVisibilityPath(workspaceMount)
 	if err != nil {
 		return policy.WorkspaceVisibilityObservation{}, fmt.Errorf("main sandbox workspace visibility inspection: resolve workspace mount: %w", err)
 	}
-	output, err := b.execRuntimeMain(ctx, cfg, "sh", "-lc", workspaceVisibilityScript(workspace))
+	output, err := b.execMain(ctx, sandboxName, "sh", "-lc", workspaceVisibilityScript(workspace))
 	if err != nil {
 		return policy.WorkspaceVisibilityObservation{}, fmt.Errorf("main sandbox workspace visibility inspection: %w", err)
 	}
@@ -295,6 +303,20 @@ func (b DockerSandbox) CheckMainWorkspaceVisibility(ctx context.Context, cfg con
 		return visibility, fmt.Errorf("main sandbox inspection invalid: %w", err)
 	}
 	return visibility, nil
+}
+
+func (b DockerSandbox) stripMainParentGuidance(ctx context.Context, plan StartPlan) error {
+	if !plan.UseCloneMode {
+		return fmt.Errorf("main sandbox parent guidance cleanup requires clone mode")
+	}
+	workspace, err := resolveWorkspaceVisibilityPath(plan.Workspace)
+	if err != nil {
+		return fmt.Errorf("main sandbox parent guidance cleanup: resolve workspace mount: %w", err)
+	}
+	if _, err := b.execMain(ctx, plan.SandboxName, "sh", "-lc", stripParentGuidanceScript(workspace)); err != nil {
+		return fmt.Errorf("main sandbox parent guidance cleanup: %w", err)
+	}
+	return nil
 }
 
 func egressTimeoutContext(parent context.Context, seconds int) (context.Context, context.CancelFunc) {
@@ -383,6 +405,15 @@ func workspaceVisibilityScript(workspace string) string {
 	}, "\n")
 }
 
+func stripParentGuidanceScript(workspace string) string {
+	return strings.Join([]string{
+		"workspace=" + shellQuote(workspace),
+		`parent=${workspace%/*}`,
+		`if [ "$parent" != "/" ] && [ -e "$parent/CLAUDE.md" ]; then rm -f -- "$parent/CLAUDE.md"; fi`,
+		`printf 'ok\n'`,
+	}, "\n")
+}
+
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
@@ -424,8 +455,6 @@ func (b DockerSandbox) StartMain(ctx context.Context, plan StartPlan) (StartResu
 	if plan.Supervision.Mode == "sandbox-local-herdr" {
 		return b.startSandboxLocalHerdr(ctx, plan)
 	}
-	args := startMainArgs(plan)
-	result, err := b.runner().Run(ctx, b.binary(), args...)
 	start := StartResult{
 		SandboxName: plan.SandboxName,
 		Agent:       plan.Agent,
@@ -433,6 +462,10 @@ func (b DockerSandbox) StartMain(ctx context.Context, plan StartPlan) (StartResu
 		Timezone:    plan.Timezone,
 		Locale:      plan.Locale,
 	}
+	if err := b.prepareFreshMainSandbox(ctx, plan); err != nil {
+		return start, err
+	}
+	result, err := b.runner().Run(ctx, b.binary(), attachMainArgs(plan)...)
 	if err != nil {
 		return start, fmt.Errorf("start main sandbox: %s", commandText(result, err))
 	}
@@ -458,7 +491,10 @@ func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, st
 		return start, wait, nil
 	}
 
-	wait, err := b.startAttachedCommand(ctx, startMainArgs(plan), "start main sandbox", stdin, stdout, stderr)
+	if err := b.prepareFreshMainSandbox(ctx, plan); err != nil {
+		return start, nil, err
+	}
+	wait, err := b.startAttachedCommand(ctx, attachMainArgs(plan), "start main sandbox", stdin, stdout, stderr)
 	if err != nil {
 		return start, nil, err
 	}
@@ -501,12 +537,8 @@ func (b DockerSandbox) AttachHerdrTUI(ctx context.Context, plan StartPlan, stdin
 	return wait, nil
 }
 
-func startMainArgs(plan StartPlan) []string {
-	args := []string{"run", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
-	if plan.UseCloneMode {
-		args = []string{"run", "--clone", plan.Agent, "--name", plan.SandboxName, plan.Workspace}
-	}
-	return args
+func attachMainArgs(plan StartPlan) []string {
+	return []string{"run", "--name", plan.SandboxName}
 }
 
 func (b DockerSandbox) startSandboxLocalHerdr(ctx context.Context, plan StartPlan) (StartResult, error) {
@@ -565,11 +597,28 @@ func (b DockerSandbox) startSandboxLocalHerdrAttached(ctx context.Context, plan 
 }
 
 func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartPlan) error {
-	runner := b.runner()
-	binary := b.binary()
+	if err := b.prepareFreshMainSandbox(ctx, plan); err != nil {
+		return err
+	}
+	return b.setupSandboxLocalHerdr(ctx, plan)
+}
+
+func (b DockerSandbox) prepareFreshMainSandbox(ctx context.Context, plan StartPlan) error {
 	if err := b.ensureFreshMainSandbox(ctx, plan); err != nil {
 		return err
 	}
+	if err := b.stripMainParentGuidance(ctx, plan); err != nil {
+		return err
+	}
+	if _, err := b.checkMainWorkspaceVisibility(ctx, plan.SandboxName, plan.Workspace); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (b DockerSandbox) setupSandboxLocalHerdr(ctx context.Context, plan StartPlan) error {
+	runner := b.runner()
+	binary := b.binary()
 	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "sh", "-lc", "command -v herdr"); err != nil {
 		if !plan.Supervision.Herdr.InstallIfMissing {
 			return fmt.Errorf("sandbox-local Herdr unavailable: %s", commandText(result, err))
@@ -1003,7 +1052,11 @@ func (b DockerSandbox) execProbe(ctx context.Context, probeName string, args ...
 }
 
 func (b DockerSandbox) execRuntimeMain(ctx context.Context, cfg config.Config, args ...string) (string, error) {
-	command := append([]string{"exec", cfg.Sandbox.MainName}, args...)
+	return b.execMain(ctx, cfg.Sandbox.MainName, args...)
+}
+
+func (b DockerSandbox) execMain(ctx context.Context, sandboxName string, args ...string) (string, error) {
+	command := append([]string{"exec", sandboxName}, args...)
 	result, err := b.runner().Run(ctx, b.binary(), command...)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

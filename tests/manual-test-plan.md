@@ -279,9 +279,10 @@ Expected CLI output:
 
 - `doctor` should still validate backend availability, probe creation,
   sandbox egress, and sandbox inspection.
-- Launcher startup should either attach to or start the named sandbox according
-  to the observed `sbx run --clone claude --name <main-name> <workspace>`
-  behavior.
+- Launcher startup should create a fresh clone-mode main sandbox when needed,
+  strip the Claude template's sandbox-local parent `CLAUDE.md`, validate main
+  sandbox workspace visibility, and then attach with `sbx run --name
+  <main-name>`.
 - If `sbx run` rejects the existing sandbox state, the launcher should fail with
   `sandbox start invalid: start main sandbox: ...`.
 
@@ -473,6 +474,10 @@ Expected CLI output:
   `workspace.inspection.visibility.parent_guidance`.
 - When the sibling marker is readable, `doctor` fails with
   `workspace.inspection.visibility.sibling`.
+- During launcher startup, a newly created Claude template sandbox should remove
+  the sandbox-local parent guidance file before Claude, Herdr, or `cc` attaches.
+  If visibility inspection still reports a parent guidance file afterward,
+  startup fails closed and stops the main sandbox.
 - The diagnostic may name the readable path, but it must not print marker file
   contents.
 - Once only the configured workspace is readable, inspection can continue to the

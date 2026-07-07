@@ -160,12 +160,18 @@ If the configured main sandbox exists with any other status, the adapter fails
 closed with the sandbox name and status. It does not stop or remove that existing
 sandbox as part of startup failure cleanup.
 
+After creating a fresh clone-mode main sandbox, the adapter removes the
+sandbox-local parent `CLAUDE.md` file that the Claude template may synthesize
+above the configured workspace. This cleanup only runs for a main sandbox that
+the adapter just created with `--clone`; existing main sandboxes are inspected
+but not modified, so the launcher does not risk deleting a file that might come
+from a host bind mount.
+
 ### Run Or Attach Main Sandbox
 
 Use `sbx run` to attach Claude Code to a created or existing sandbox:
 
 ```bash
-sbx run --clone claude --name <main-name> <workspace> -- <agent-args>
 sbx run --name <main-name>
 ```
 
@@ -177,9 +183,9 @@ Confirmed help contract:
 - Agent arguments are passed after `--`.
 - Additional workspace paths are accepted, with `:ro` for read-only mounts.
 - `--clone`, `--profile`, `--cpus`, `--memory`, `--template`, and `--kit` are
-  supported. New main sandbox starts must use `--clone`; named reattach is only
-  used for an existing sandbox after the launcher validates its workspace and
-  visibility.
+  supported for new sandbox creation. The launcher creates new main sandboxes
+  with `sbx create --clone`, strips the sandbox-local parent guidance file,
+  validates workspace visibility, and then attaches with `sbx run --name`.
 - Help text mentions `--detached (-d)`, but the observed flag list did not show
   it. Do not depend on detached `run` until verified after login.
 
@@ -344,10 +350,15 @@ Current launcher behavior:
   checks without reading file contents. They fail closed if the sandbox can read
   the configured workspace parent's `CLAUDE.md` file or a readable file under a
   sibling project directory. Diagnostics report the readable path only. Direct
-  launcher startup runs the main sandbox check after `sbx run` or sandbox-local
-  Herdr startup; failures stop the main sandbox and do not enter runtime
-  watchdog supervision. `safe-herdr` checks the existing main sandbox before
-  attaching the interactive Herdr TUI.
+  launcher startup creates the main sandbox first, removes the Claude template's
+  sandbox-local parent guidance file, checks visibility, and only then attaches
+  Claude Code or starts sandbox-local Herdr. Failures stop the main sandbox and
+  do not enter runtime watchdog supervision. `safe-herdr` checks the existing
+  main sandbox before attaching the interactive Herdr TUI.
+- Docker Sandbox can still expose the configured workspace path as metadata in
+  `pwd`, `sbx ls`, create output, or source-mount descriptions. Current policy
+  treats this as residual backend path metadata and enforces that non-workspace
+  guidance contents and sibling project files are not readable.
 - If a future Docker Sandbox version documents a create/run clean-env,
   allowlist, profile, template, or kit contract, the backend adapter should use
   that official mechanism and keep the inspection step as verification.
@@ -749,7 +760,9 @@ sequenceDiagram
     B->>S: sbx create --clone --name main claude workspace
     S->>D: Create main
     D-->>M: Main ready
-    B->>S: sbx run --clone claude --name main
+    B->>S: sbx exec main strip parent CLAUDE.md
+    B->>S: sbx exec main inspect workspace visibility
+    B->>S: sbx run --name main
     M-->>L: Agent session
     L->>B: Cleanup on exit or watchdog failure
     B->>S: sbx stop main
