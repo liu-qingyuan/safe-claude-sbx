@@ -43,7 +43,7 @@ func TestLaunchStartsMainSandboxAfterAllPreflightsPass(t *testing.T) {
 	}
 }
 
-func TestLaunchStripsClaudeTemplateParentGuidanceBeforeAgentAttach(t *testing.T) {
+func TestLaunchDoesNotMutateParentGuidanceBeforeAgentAttach(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "203.0.113.10")
 	}))
@@ -53,9 +53,8 @@ func TestLaunchStripsClaudeTemplateParentGuidanceBeforeAgentAttach(t *testing.T)
 	logPath := filepath.Join(t.TempDir(), "sbx.log")
 	fakeBin := writeFakeSystemCommands(t, "utun9", false)
 	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
-		EgressIP:              "203.0.113.10",
-		LogPath:               logPath,
-		RequireStripBeforeRun: true,
+		EgressIP: "203.0.113.10",
+		LogPath:  logPath,
 	})
 
 	cmd := exec.Command("go", "run", ".", "--config", configPath)
@@ -64,15 +63,41 @@ func TestLaunchStripsClaudeTemplateParentGuidanceBeforeAgentAttach(t *testing.T)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("launch failed before stripping generated parent guidance:\n%v\n%s\nsbx log:\n%s", err, output, readFile(t, logPath))
+		t.Fatalf("launch failed:\n%v\n%s\nsbx log:\n%s", err, output, readFile(t, logPath))
 	}
 	log := readFile(t, logPath)
 	createIndex := strings.Index(log, "create --clone --name claude-sbx claude .")
 	visibilityIndex := strings.Index(log, "exec claude-sbx sh -lc workspace=")
 	runIndex := strings.Index(log, "run --name claude-sbx")
 	if createIndex < 0 || visibilityIndex < 0 || runIndex < 0 || !(createIndex < visibilityIndex && visibilityIndex < runIndex) {
-		t.Fatalf("expected generated parent guidance to be stripped and checked before attach, got:\n%s", log)
+		t.Fatalf("expected create, visibility check, then attach, got:\n%s", log)
 	}
+	assertNoParentGuidanceMutation(t, log)
+}
+
+func TestDoctorDoesNotMutateParentGuidanceDuringVisibilityPreflight(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validLaunchConfig(t, server.URL, "203.0.113.10", 10))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP: "203.0.113.10",
+		LogPath:  logPath,
+	})
+
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("doctor failed:\n%v\n%s\nsbx log:\n%s", err, output, readFile(t, logPath))
+	}
+	assertNoParentGuidanceMutation(t, readFile(t, logPath))
 }
 
 func TestLaunchFailsClosedWhenMainSandboxWorkspaceVisibilityEscapes(t *testing.T) {
@@ -206,6 +231,7 @@ func TestLaunchStartsSandboxLocalHerdrAfterAllPreflightsPass(t *testing.T) {
 			t.Fatalf("Herdr startup leaked host Herdr value %q:\n%s", forbidden, log)
 		}
 	}
+	assertNoParentGuidanceMutation(t, log)
 }
 
 func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
@@ -265,6 +291,7 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 			t.Fatalf("safe-herdr leaked host Herdr value %q:\n%s", forbidden, log)
 		}
 	}
+	assertNoParentGuidanceMutation(t, log)
 }
 
 func TestSafeHerdrChecksMainWorkspaceVisibilityBeforeTUIAttach(t *testing.T) {
@@ -1652,7 +1679,6 @@ type fakeSBXOptions struct {
 	BlockRun              bool
 	ExistingMainStatus    string
 	ExistingMainWorkspace string
-	RequireStripBeforeRun bool
 }
 
 func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
@@ -1697,7 +1723,6 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	}
 	stopFile := filepath.Join(dir, "main-stopped")
 	herdrStopFile := filepath.Join(dir, "herdr-stopped")
-	stripFile := filepath.Join(dir, "parent-guidance-stripped")
 
 	script := fmt.Sprintf(`#!/bin/sh
 set -eu
@@ -1730,10 +1755,6 @@ case "$1" in
           exit 1
         fi
         printf '%%s\n' %q
-        ;;
-      *"rm -f -- "*"/CLAUDE.md"*)
-        touch %q
-        printf 'ok\n'
         ;;
       *" claude-sbx sh -lc workspace="*)
         printf '%%b' %q
@@ -1806,10 +1827,6 @@ case "$1" in
         fi
         ;;
       *"HERDR_ENV=1"*" claude")
-        if [ %q = "true" ] && [ ! -f %q ]; then
-          printf 'agent saw generated parent guidance before strip\n' >&2
-          exit 1
-        fi
         if [ %q = "true" ]; then
           printf 'run failed\n' >&2
           exit 1
@@ -1828,10 +1845,6 @@ case "$1" in
     esac
     ;;
   run)
-    if [ %q = "true" ] && [ ! -f %q ]; then
-      printf 'agent saw generated parent guidance before strip\n' >&2
-      exit 1
-    fi
     if [ %q = "true" ]; then
       printf 'run failed\n' >&2
       exit 1
@@ -1870,7 +1883,6 @@ esac
 		shellBool(opts.FailCreate),
 		shellBool(opts.FailCurl),
 		egressIP,
-		stripFile,
 		mainVisibilityOutput,
 		visibilityOutput,
 		envOutput,
@@ -1883,13 +1895,9 @@ esac
 		shellBool(opts.FailHerdrTUI),
 		shellBool(opts.BlockRun),
 		stopFile,
-		shellBool(opts.RequireStripBeforeRun),
-		stripFile,
 		shellBool(opts.FailRun),
 		shellBool(opts.BlockRun),
 		stopFile,
-		shellBool(opts.RequireStripBeforeRun),
-		stripFile,
 		shellBool(opts.FailRun),
 		shellBool(opts.BlockRun),
 		stopFile,
@@ -2017,6 +2025,21 @@ func containsLogLine(log, line string) bool {
 		}
 	}
 	return false
+}
+
+func assertNoParentGuidanceMutation(t *testing.T, log string) {
+	t.Helper()
+
+	for _, line := range strings.Split(log, "\n") {
+		if !strings.Contains(line, "CLAUDE.md") {
+			continue
+		}
+		for _, forbidden := range []string{"rm ", "mv ", "chmod ", "truncate ", "tee ", ">"} {
+			if strings.Contains(line, forbidden) {
+				t.Fatalf("command must not mutate parent guidance paths using %q:\n%s", forbidden, log)
+			}
+		}
+	}
 }
 
 func assertLogLineOrder(t *testing.T, log string, want []string) {

@@ -337,12 +337,11 @@ func TestDockerSandboxStartMainPassesMainSandboxContract(t *testing.T) {
 	want := strings.Join([]string{
 		"sbx ls",
 		"sbx create --clone --name main-sbx claude /work/project",
-		"sbx exec main-sbx sh -lc " + stripParentGuidanceScript("/work/project"),
 		"sbx exec main-sbx sh -lc " + workspaceVisibilityScript("/work/project"),
 		"sbx run --name main-sbx",
 	}, "\n")
 	if got := strings.Join(calls, "\n"); got != want {
-		t.Fatalf("direct mode should create, sanitize, inspect, then attach main sandbox, got:\n%s", got)
+		t.Fatalf("direct mode should create, inspect, then attach main sandbox, got:\n%s", got)
 	}
 }
 
@@ -405,7 +404,6 @@ func TestDockerSandboxStartMainPreparesSandboxLocalHerdr(t *testing.T) {
 	want := strings.Join([]string{
 		"sbx ls",
 		"sbx create --clone --name main-sbx claude /work/project",
-		"sbx exec main-sbx sh -lc " + stripParentGuidanceScript("/work/project"),
 		"sbx exec main-sbx sh -lc " + workspaceVisibilityScript("/work/project"),
 		"sbx exec main-sbx sh -lc command -v herdr",
 		"sbx exec main-sbx herdr --version",
@@ -557,7 +555,6 @@ func TestDockerSandboxStartMainRebuildsStoppedSandboxLocalHerdrMain(t *testing.T
 		"sbx stop main-sbx",
 		"sbx rm --force main-sbx",
 		"sbx create --clone --name main-sbx claude /work/project",
-		"sbx exec main-sbx sh -lc " + stripParentGuidanceScript("/work/project"),
 		"sbx exec main-sbx sh -lc " + workspaceVisibilityScript("/work/project"),
 		"sbx exec main-sbx sh -lc command -v herdr",
 	}, "\n")

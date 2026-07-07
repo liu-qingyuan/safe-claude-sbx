@@ -177,12 +177,12 @@ validation; `workspace.use_clone_mode: true` is required so new main sandboxes
 are created with clone mode before `sbx run --name` attaches. Real Docker
 Sandbox validation showed that the Claude template can still synthesize a
 readable parent `CLAUDE.md` inside a clone-mode sandbox, so new main sandbox
-startup removes that sandbox-local parent guidance file before attaching Claude,
-Herdr, or `cc`. If the subsequent main sandbox visibility inspection still
+startup treats any readable parent guidance file as unsafe and fails closed
+before attaching Claude, Herdr, or `cc`. If main sandbox visibility inspection
 finds a parent guidance file or sibling file, cleanup stops the main sandbox
 instead of entering the watchdog loop. During `safe-herdr`, an existing main
 sandbox is checked before the interactive Herdr TUI is attached; existing
-sandboxes are not modified by the parent guidance cleanup path.
+sandboxes are inspected but not modified.
 
 Docker Sandbox may still report the configured workspace path in `pwd`, `sbx`
 status output, or source-mount metadata. Treat that path string as residual
@@ -191,9 +191,10 @@ and sibling project files are not readable by Claude, Herdr, or `cc`.
 
 For workflows that cannot use Docker Sandbox clone mode, use a disposable
 temporary workspace that contains only the project files needed for the session
-and expect this launcher configuration to fail closed until a backend contract
-with equivalent isolation exists. Do not depend on Herdr or `cc` to provide
-another filesystem isolation layer inside the same sandbox.
+and has no parent guidance file, then point `workspace.mount` at that temporary
+workspace. Expect this launcher configuration to fail closed until a backend
+contract with equivalent non-mutating isolation exists. Do not depend on Herdr
+or `cc` to provide another filesystem isolation layer inside the same sandbox.
 
 Legacy flat fields such as `expected_egress_ip`, `sandbox_name`,
 `workspace_mount`, `timezone`, and `cleanup.stop_on_exit` are not accepted by the

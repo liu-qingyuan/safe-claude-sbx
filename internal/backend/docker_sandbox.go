@@ -305,20 +305,6 @@ func (b DockerSandbox) checkMainWorkspaceVisibility(ctx context.Context, sandbox
 	return visibility, nil
 }
 
-func (b DockerSandbox) stripMainParentGuidance(ctx context.Context, plan StartPlan) error {
-	if !plan.UseCloneMode {
-		return fmt.Errorf("main sandbox parent guidance cleanup requires clone mode")
-	}
-	workspace, err := resolveWorkspaceVisibilityPath(plan.Workspace)
-	if err != nil {
-		return fmt.Errorf("main sandbox parent guidance cleanup: resolve workspace mount: %w", err)
-	}
-	if _, err := b.execMain(ctx, plan.SandboxName, "sh", "-lc", stripParentGuidanceScript(workspace)); err != nil {
-		return fmt.Errorf("main sandbox parent guidance cleanup: %w", err)
-	}
-	return nil
-}
-
 func egressTimeoutContext(parent context.Context, seconds int) (context.Context, context.CancelFunc) {
 	if seconds <= 0 {
 		seconds = 30
@@ -402,15 +388,6 @@ func workspaceVisibilityScript(workspace string) string {
 		`if [ "$parent" != "/" ] && [ -r "$parent/CLAUDE.md" ]; then printf 'parent-guidance-readable=%s\n' "$parent/CLAUDE.md"; reported=1; fi`,
 		`if [ "$parent" != "/" ] && [ -d "$parent" ]; then sibling=$(find "$parent" -mindepth 2 -maxdepth 3 -type f -readable ! -path "$workspace/*" ! -path "$parent/$base/*" -print -quit 2>/dev/null || true); if [ -n "$sibling" ]; then printf 'sibling-readable=%s\n' "$sibling"; reported=1; fi; fi`,
 		`if [ "$reported" -eq 0 ]; then printf 'ok\n'; fi`,
-	}, "\n")
-}
-
-func stripParentGuidanceScript(workspace string) string {
-	return strings.Join([]string{
-		"workspace=" + shellQuote(workspace),
-		`parent=${workspace%/*}`,
-		`if [ "$parent" != "/" ] && [ -e "$parent/CLAUDE.md" ]; then rm -f -- "$parent/CLAUDE.md"; fi`,
-		`printf 'ok\n'`,
 	}, "\n")
 }
 
@@ -605,9 +582,6 @@ func (b DockerSandbox) prepareSandboxLocalHerdr(ctx context.Context, plan StartP
 
 func (b DockerSandbox) prepareFreshMainSandbox(ctx context.Context, plan StartPlan) error {
 	if err := b.ensureFreshMainSandbox(ctx, plan); err != nil {
-		return err
-	}
-	if err := b.stripMainParentGuidance(ctx, plan); err != nil {
 		return err
 	}
 	if _, err := b.checkMainWorkspaceVisibility(ctx, plan.SandboxName, plan.Workspace); err != nil {
