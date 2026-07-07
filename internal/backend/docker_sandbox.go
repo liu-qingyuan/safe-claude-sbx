@@ -26,9 +26,6 @@ const (
 	AvailabilityIncompatible AvailabilityKind = "version-incompatible"
 )
 
-const sandboxLocalHerdrInstallAttempts = 2
-const sandboxLocalHerdrPath = "/home/agent/.local/bin/herdr"
-
 var sandboxLocalHerdrCleanupTimeout = 5 * time.Second
 
 type Availability struct {
@@ -66,6 +63,7 @@ type StartResult struct {
 type StartPlan struct {
 	SandboxName  string
 	Agent        string
+	Template     string
 	Workspace    string
 	UseCloneMode bool
 	Timezone     string
@@ -84,8 +82,6 @@ type HerdrPlan struct {
 	SocketPath       string
 	PaneID           string
 	ReadinessTimeout time.Duration
-	InstallTimeout   time.Duration
-	InstallAttempts  int
 }
 
 func NewStartPlan(cfg config.Config) StartPlan {
@@ -100,13 +96,12 @@ func NewStartPlan(cfg config.Config) StartPlan {
 			SocketPath:       strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.SocketPath),
 			PaneID:           strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.PaneID),
 			ReadinessTimeout: time.Duration(cfg.Network.EgressIP.TimeoutSeconds) * time.Second,
-			InstallTimeout:   time.Duration(cfg.Network.EgressIP.TimeoutSeconds) * time.Second,
-			InstallAttempts:  sandboxLocalHerdrInstallAttempts,
 		}
 	}
 	return StartPlan{
 		SandboxName:  cfg.Sandbox.MainName,
 		Agent:        cfg.Sandbox.Agent,
+		Template:     strings.TrimSpace(cfg.Sandbox.Template),
 		Workspace:    cfg.Workspace.Mount,
 		UseCloneMode: cfg.Workspace.UseCloneMode,
 		Timezone:     cfg.Environment.Timezone,
@@ -499,7 +494,20 @@ func (b DockerSandbox) PrepareHerdrTUI(ctx context.Context, plan StartPlan) erro
 	if plan.Supervision.Mode != "sandbox-local-herdr" {
 		return fmt.Errorf("start Herdr TUI: sandbox-local-herdr supervision required")
 	}
-	return b.requireExistingSandboxLocalHerdr(ctx, plan)
+	state, err := b.inspectMainSandbox(ctx, plan.SandboxName)
+	if err != nil {
+		return preserveExistingMainError{err: err}
+	}
+	if !state.Exists || state.Status == "stopped" {
+		return b.prepareSandboxLocalHerdr(ctx, plan)
+	}
+	if state.Workspace != "" && state.Workspace != plan.Workspace {
+		return preserveExistingMainError{err: fmt.Errorf("attach existing Herdr TUI: main sandbox %q workspace mismatch: configured %q, observed %q", plan.SandboxName, plan.Workspace, state.Workspace)}
+	}
+	if err := b.setupSandboxLocalHerdr(ctx, plan); err != nil {
+		return preserveExistingMainError{err: err}
+	}
+	return nil
 }
 
 func (b DockerSandbox) AttachHerdrTUI(ctx context.Context, plan StartPlan, stdin io.Reader, stdout, stderr io.Writer) (<-chan error, error) {
@@ -589,13 +597,8 @@ func (b DockerSandbox) prepareFreshMainSandbox(ctx context.Context, plan StartPl
 func (b DockerSandbox) setupSandboxLocalHerdr(ctx context.Context, plan StartPlan) error {
 	runner := b.runner()
 	binary := b.binary()
-	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "sh", "-lc", "command -v herdr"); err != nil {
-		if !plan.Supervision.Herdr.InstallIfMissing {
-			return fmt.Errorf("sandbox-local Herdr unavailable: %s", commandText(result, err))
-		}
-		if err := b.ensureSandboxLocalHerdrOnPath(ctx, plan); err != nil {
-			return err
-		}
+	if err := requireTemplateCommand(ctx, runner, binary, plan.SandboxName, "herdr", "sandbox-local Herdr"); err != nil {
+		return err
 	}
 	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "herdr", "--version"); err != nil {
 		return fmt.Errorf("verify sandbox-local Herdr: %s", commandText(result, err))
@@ -603,87 +606,21 @@ func (b DockerSandbox) setupSandboxLocalHerdr(ctx context.Context, plan StartPla
 	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "herdr", "integration", "install", "claude"); err != nil {
 		return fmt.Errorf("install Claude Herdr integration: %s", commandText(result, err))
 	}
-	return nil
-}
-
-func (b DockerSandbox) requireExistingSandboxLocalHerdr(ctx context.Context, plan StartPlan) error {
-	state, err := b.inspectMainSandbox(ctx, plan.SandboxName)
-	if err != nil {
-		return preserveExistingMainError{err: err}
+	if err := requireTemplateCommand(ctx, runner, binary, plan.SandboxName, "cc", "sandbox-local cc"); err != nil {
+		return err
 	}
-	if !state.Exists {
-		return preserveExistingMainError{err: fmt.Errorf("attach existing Herdr TUI: main sandbox %q not found", plan.SandboxName)}
-	}
-	if state.Workspace != "" && state.Workspace != plan.Workspace {
-		return preserveExistingMainError{err: fmt.Errorf("attach existing Herdr TUI: main sandbox %q workspace mismatch: configured %q, observed %q", plan.SandboxName, plan.Workspace, state.Workspace)}
-	}
-
-	result, err := b.runner().Run(ctx, b.binary(), "exec", plan.SandboxName, "sh", "-lc", "command -v herdr")
-	if err != nil {
-		return preserveExistingMainError{err: fmt.Errorf("sandbox-local Herdr unavailable in existing main sandbox %q: %s", plan.SandboxName, commandText(result, err))}
-	}
-	if strings.TrimSpace(result.Stdout) == "" {
-		return preserveExistingMainError{err: fmt.Errorf("sandbox-local Herdr unavailable in existing main sandbox %q: command -v herdr returned empty output", plan.SandboxName)}
+	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "cc", "--version"); err != nil {
+		return fmt.Errorf("verify sandbox-local cc: %s", commandText(result, err))
 	}
 	return nil
 }
 
-func (b DockerSandbox) ensureSandboxLocalHerdrOnPath(ctx context.Context, plan StartPlan) error {
-	runner := b.runner()
-	binary := b.binary()
-	if result, err := runner.Run(ctx, binary, "exec", plan.SandboxName, "sh", "-lc", "test -x "+sandboxLocalHerdrPath); err != nil {
-		if installErr := b.installSandboxLocalHerdr(ctx, plan); installErr != nil {
-			return installErr
-		}
-	} else if strings.TrimSpace(result.Stderr) != "" {
-		return fmt.Errorf("verify sandbox-local Herdr install path: %s", commandText(result, nil))
-	}
-
-	linkScript := "ln -sf " + sandboxLocalHerdrPath + " /usr/local/bin/herdr && command -v herdr"
-	result, err := runner.Run(ctx, binary, "exec", "-u", "root", plan.SandboxName, "sh", "-lc", linkScript)
-	if err != nil {
-		return fmt.Errorf("expose sandbox-local Herdr on PATH: %s", commandText(result, err))
+func requireTemplateCommand(ctx context.Context, runner Runner, binary, sandboxName, command, label string) error {
+	result, err := runner.Run(ctx, binary, "exec", sandboxName, "sh", "-lc", "command -v "+command)
+	if err != nil || strings.TrimSpace(result.Stdout) == "" {
+		return fmt.Errorf("%s unavailable in template sandbox %q: build/load/use the configured Docker Sandbox template with Herdr and /usr/local/bin/cc preinstalled", label, sandboxName)
 	}
 	return nil
-}
-
-func (b DockerSandbox) ensureSandboxLocalCC(ctx context.Context, plan StartPlan) error {
-	script := `printf '%s\n' '#!/usr/bin/env bash' 'export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1' 'exec claude --dangerously-skip-permissions "$@"' > /usr/local/bin/cc && chmod 0755 /usr/local/bin/cc && command -v cc`
-	result, err := b.runner().Run(ctx, b.binary(), "exec", "-u", "root", plan.SandboxName, "sh", "-lc", script)
-	if err != nil {
-		return fmt.Errorf("ensure sandbox-local cc: %s", commandText(result, err))
-	}
-	return nil
-}
-
-func (b DockerSandbox) installSandboxLocalHerdr(ctx context.Context, plan StartPlan) error {
-	timeout := plan.Supervision.Herdr.InstallTimeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	attempts := plan.Supervision.Herdr.InstallAttempts
-	if attempts <= 0 {
-		attempts = sandboxLocalHerdrInstallAttempts
-	}
-
-	var last string
-	for attempt := 1; attempt <= attempts; attempt++ {
-		installCtx, cancel := context.WithTimeout(ctx, timeout)
-		result, err := b.runner().Run(installCtx, b.binary(), "exec", plan.SandboxName, "sh", "-lc", "curl -fsSL https://herdr.dev/install.sh | sh")
-		cancel()
-		if err == nil {
-			return nil
-		}
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(installCtx.Err(), context.DeadlineExceeded) {
-			last = fmt.Sprintf("attempt %d/%d timed out after %s: %s", attempt, attempts, timeout, commandText(result, err))
-		} else {
-			last = fmt.Sprintf("attempt %d/%d failed: %s", attempt, attempts, commandText(result, err))
-		}
-		if ctx.Err() != nil {
-			break
-		}
-	}
-	return fmt.Errorf("install sandbox-local Herdr failed after %d attempt(s); last error: %s", attempts, last)
 }
 
 type herdrServerStatus struct {
@@ -832,10 +769,15 @@ func (b DockerSandbox) inspectMainSandbox(ctx context.Context, sandboxName strin
 }
 
 func createMainArgs(plan StartPlan) []string {
-	args := []string{"create", "--name", plan.SandboxName, "claude", plan.Workspace}
+	args := []string{"create"}
 	if plan.UseCloneMode {
-		args = []string{"create", "--clone", "--name", plan.SandboxName, "claude", plan.Workspace}
+		args = append(args, "--clone")
 	}
+	args = append(args, "--name", plan.SandboxName)
+	if plan.Template != "" {
+		args = append(args, "--template", plan.Template)
+	}
+	args = append(args, "claude", plan.Workspace)
 	return args
 }
 

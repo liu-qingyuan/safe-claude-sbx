@@ -133,6 +133,13 @@ attaching an agent:
 sbx create --name <main-name> claude <workspace>
 ```
 
+When `sandbox.template` is configured, the launcher creates the main sandbox
+with:
+
+```bash
+sbx create --name <main-name> --template <template> claude <workspace>
+```
+
 Confirmed help contract:
 
 - `sbx create [flags] AGENT PATH [PATH...]`
@@ -147,6 +154,10 @@ Confirmed help contract:
 - `--profile` assigns a governance profile.
 - `--cpus`, `--memory`, `--template`, and `--kit` are available resource/image
   controls.
+- In `sandbox-local-herdr` mode, `sandbox.template` is required. The template
+  must provide `herdr`, `herdr --version`, `herdr integration install claude`,
+  `/usr/local/bin/cc`, and `cc --version` without running the Herdr installer
+  during launcher startup.
 
 For sandbox-local Herdr mode, the adapter inspects `sbx ls` before creating the
 named `claude` main sandbox. If the configured main sandbox name already exists
@@ -164,6 +175,12 @@ After creating a fresh main sandbox, the adapter validates sibling project
 visibility without modifying parent guidance paths. Docker Sandbox can expose
 the configured workspace and parent guidance path as host-style metadata; that
 alone is not a policy failure.
+
+For the Herdr TUI entrypoint, `safe-herdr` creates the main sandbox from
+`sandbox.template` when it is missing or stopped, verifies template-provided
+Herdr and `cc`, validates main workspace visibility, and then attaches with
+`sbx exec -it <main-name> herdr`. It does not run
+`curl -fsSL https://herdr.dev/install.sh | sh` during startup.
 
 ### Run Or Attach Main Sandbox
 
@@ -369,41 +386,15 @@ log time, not proof that the sandbox main agent timezone is configured.
 ### Sandbox-Local Herdr Prototype
 
 Issue #15 validated the sandbox-local Herdr startup contract against a real
-Docker Sandbox `claude` template on 2026-07-06. This was prototype research
-only; it did not change the launcher behavior.
+Docker Sandbox `claude` template on 2026-07-06. That prototype proved that
+sandbox-local Herdr could run inside Docker Sandbox, but it also proved that
+installing Herdr in a running sandbox is not durable because normal launcher
+startup prepares fresh sandbox state.
 
-The prototype used a separate sandbox name so it would not mutate the normal
-`claude-sbx` sandbox:
-
-```bash
-sbx create --name safe-claude-sbx-herdr-prototype claude .
-sbx exec safe-claude-sbx-herdr-prototype env
-sbx exec safe-claude-sbx-herdr-prototype sh -lc 'ls -ld /home/agent /home/agent/.claude; command -v claude || true; command -v herdr || true'
-```
-
-Observed result:
-
-- `sbx create --name safe-claude-sbx-herdr-prototype claude .` created a real
-  Claude template sandbox with `/home/agent/.claude`.
-- `command -v claude` returned `/home/agent/.local/bin/claude`.
-- `command -v herdr` was initially empty, so the prototype installed Herdr
-  inside the sandbox rather than relying on a preexisting binary.
-- The sandbox environment did not contain host `HERDR_ENV`,
-  `HERDR_SOCKET_PATH`, or `HERDR_PANE_ID`.
-
-The repeatable installation command is:
-
-```bash
-sbx exec safe-claude-sbx-herdr-prototype sh -lc 'curl -fsSL https://herdr.dev/install.sh | sh'
-sbx exec safe-claude-sbx-herdr-prototype herdr --version
-```
-
-Observed result:
-
-- The installer detected `linux/aarch64`.
-- It downloaded Herdr `v0.7.1`.
-- It installed Herdr to `/home/agent/.local/bin/herdr`.
-- `herdr --version` returned `herdr 0.7.1`.
+The permanent path is the custom template in
+`sandbox/claude-herdr-template/`. Runtime launcher startup must verify
+template-provided Herdr and `cc`; it must not install Herdr in the running main
+sandbox.
 
 The Claude integration hook is repeatable:
 

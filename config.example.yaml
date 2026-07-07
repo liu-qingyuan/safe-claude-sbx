@@ -14,10 +14,11 @@ sandbox:
   main_name: "claude-sbx"
   probe_name: "claude-sbx-probe"
   agent: "claude"
+  template: "safe-claude-sbx-herdr:latest"
   supervision:
     mode: "sandbox-local-herdr"
     herdr:
-      install_if_missing: true
+      install_if_missing: false
       socket_path: "/home/agent/.config/herdr/herdr.sock"
       pane_id: "sandbox-claude"
 

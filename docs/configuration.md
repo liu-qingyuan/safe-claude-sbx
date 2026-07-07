@@ -12,20 +12,27 @@ safe-claude-sbx doctor --config config.yaml
 ```
 
 For the sandbox-local Herdr daily flow, update
-`network.egress_ip.expected_ip`, then start the TUI through the guarded
-entrypoint:
+`network.egress_ip.expected_ip`, build the Docker Sandbox template, then start
+the TUI through the guarded entrypoint:
+
+```bash
+docker build -t safe-claude-sbx-herdr:latest sandbox/claude-herdr-template
+docker image save safe-claude-sbx-herdr:latest -o safe-claude-sbx-herdr.tar
+sbx template load safe-claude-sbx-herdr.tar
+```
 
 ```bash
 safe-herdr --config config.yaml
 ```
 
-`safe-herdr` is an attach-only daily entrypoint. It requires the configured main
-sandbox to already exist for the configured workspace and to have Herdr available
-inside the sandbox; it does not install Herdr, install the Claude integration, or
+`safe-herdr` creates the configured main sandbox from `sandbox.template` when it
+is missing, verifies `herdr`, `herdr --version`,
+`herdr integration install claude`, `cc`, and `cc --version` inside the sandbox,
+then attaches the Herdr TUI. It does not download Herdr during startup or
 rewrite `/usr/local/bin/cc`.
 
-Inside the Herdr TUI, run `cc` to start Claude. The `cc` command is created only
-inside the Docker Sandbox when needed.
+Inside the Herdr TUI, run `cc` to start Claude. The `cc` command is baked into
+the Docker Sandbox template at `/usr/local/bin/cc`.
 
 ## Supervision Examples
 
@@ -52,10 +59,11 @@ sandbox:
   main_name: "claude-sbx"
   probe_name: "claude-sbx-probe"
   agent: "claude"
+  template: "safe-claude-sbx-herdr:latest"
   supervision:
     mode: "sandbox-local-herdr"
     herdr:
-      install_if_missing: true
+      install_if_missing: false
       socket_path: "/home/agent/.config/herdr/herdr.sock"
       pane_id: "sandbox-claude"
 ```
@@ -82,6 +90,9 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
   - `main_name`: Main Docker Sandbox name.
   - `probe_name`: Temporary probe sandbox name.
   - `agent`: Agent command to run, normally `claude`.
+  - `template`: Optional Docker Sandbox template image for direct Claude mode.
+    Required for `sandbox-local-herdr`; the launcher passes it as
+    `sbx create --template <template>` when creating the main sandbox.
   - `supervision.mode`: Agent startup supervision mode. Supported values are
     `direct-claude` and `sandbox-local-herdr`. If omitted, the launcher uses
     `direct-claude`, creating the main sandbox first, validating workspace
@@ -89,14 +100,9 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
   - `supervision.herdr`: Required only when `supervision.mode` is
     `sandbox-local-herdr`. This object declares sandbox-local Herdr startup
     inputs, not host Herdr state.
-    - `install_if_missing`: Whether the `safe-claude-sbx` initialization/start
-      path may install Herdr inside the sandbox if the sandbox-local binary is
-      absent. When installation is enabled, the launcher first checks for
-      `/home/agent/.local/bin/herdr` with `command -v herdr`; an already
-      installed binary is reused without downloading. Missing Herdr is installed
-      inside the sandbox with two attempts, each bounded by
-      `network.egress_ip.timeout_seconds`. The `safe-herdr` daily entrypoint
-      does not use this install path.
+    - `install_if_missing`: Must be `false`. Runtime Herdr installation is
+      disabled; build/load/use a Docker Sandbox template that already contains
+      `herdr` and `/usr/local/bin/cc`.
     - `socket_path`: Sandbox-local Herdr socket path. It must point inside the
       sandbox user's home, such as `/home/agent/.config/herdr/herdr.sock`.
     - `pane_id`: Non-empty sandbox-local pane identity used by the Herdr
@@ -146,11 +152,11 @@ distinguish `host-egress-mismatch`, `endpoint-failure`, and
 `response-parse-failure`.
 
 Supervision config also fails closed. `sandbox.supervision.mode` must be either
-`direct-claude` or `sandbox-local-herdr`. Herdr mode requires the nested
-`sandbox.supervision.herdr` object, declared install behavior, a sandbox-home
-socket path, and a non-empty pane id. Host-looking Herdr socket paths and
-top-level `HERDR_*` config are rejected without printing raw socket or pane
-values.
+`direct-claude` or `sandbox-local-herdr`. Herdr mode requires
+`sandbox.template`, the nested `sandbox.supervision.herdr` object,
+`install_if_missing: false`, a sandbox-home socket path, and a non-empty pane
+id. Host-looking Herdr socket paths and top-level `HERDR_*` config are rejected
+without printing raw socket or pane values.
 
 After the Docker Sandbox probe runs, `doctor` validates the sandbox observation
 before printing `sandbox inspection ok`. Timezone and locale validation use
@@ -175,9 +181,9 @@ with `workspace.inspection.visibility.sibling`. The diagnostic names the
 readable non-workspace path but does not print file contents. The current
 default uses normal Docker Sandbox create mode, not `--clone`; set
 `workspace.use_clone_mode: true` only when you explicitly want Docker Sandbox's
-private clone behavior. During `safe-herdr`, an existing main sandbox is checked
-before the interactive Herdr TUI is attached; existing sandboxes are inspected
-but not modified.
+private clone behavior. During `safe-herdr`, a missing or stopped main sandbox
+is created from `sandbox.template`; an existing running main sandbox is
+inspected and must already contain valid template-provided Herdr and `cc`.
 
 Docker Sandbox may still report the configured workspace path in `pwd`, `sbx`
 status output, or source-mount metadata. Treat those path strings as expected

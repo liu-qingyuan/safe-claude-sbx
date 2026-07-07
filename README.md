@@ -35,6 +35,18 @@ This repository is implementing the Docker Sandbox / `sbx` MVP described in:
 Before starting work, update `network.egress_ip.expected_ip` in `config.yaml`
 for the current approved egress IP.
 
+Build the Docker Sandbox template that contains sandbox-local Herdr and
+`/usr/local/bin/cc`:
+
+```bash
+docker build -t safe-claude-sbx-herdr:latest sandbox/claude-herdr-template
+docker image save safe-claude-sbx-herdr:latest -o safe-claude-sbx-herdr.tar
+sbx template load safe-claude-sbx-herdr.tar
+```
+
+Set `sandbox.template: "safe-claude-sbx-herdr:latest"` and keep
+`sandbox.supervision.herdr.install_if_missing: false`.
+
 Validate the current network and sandbox policy:
 
 ```bash
@@ -47,10 +59,10 @@ Use the policy-gated sandbox-local Herdr TUI as the daily entry point:
 safe-herdr --config config.yaml
 ```
 
-`safe-herdr` expects the configured main sandbox to already contain the
-sandbox-local Herdr binary and Claude integration. It validates policy and then
-attaches with `sbx exec -it <main_name> herdr`; it does not download Herdr or
-rewrite sandbox-local wrappers.
+`safe-herdr` validates policy, creates the configured main sandbox from
+`sandbox.template` when needed, verifies `herdr` and `cc` inside that sandbox,
+and then attaches with `sbx exec -it <main_name> herdr`. It does not download
+Herdr during startup or rewrite sandbox-local wrappers.
 
 Inside the Herdr TUI, start Claude with the sandbox-local shortcut:
 

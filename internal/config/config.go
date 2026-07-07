@@ -45,6 +45,7 @@ type Sandbox struct {
 	MainName    string      `yaml:"main_name"`
 	ProbeName   string      `yaml:"probe_name"`
 	Agent       string      `yaml:"agent"`
+	Template    string      `yaml:"template"`
 	Supervision Supervision `yaml:"supervision"`
 }
 
@@ -215,6 +216,9 @@ func (c Config) Validate() error {
 	if err := c.Sandbox.Supervision.Validate(); err != nil {
 		return err
 	}
+	if c.Sandbox.Supervision.Mode == "sandbox-local-herdr" && strings.TrimSpace(c.Sandbox.Template) == "" {
+		return fmt.Errorf("missing required field sandbox.template for sandbox-local-herdr")
+	}
 	return nil
 }
 
@@ -248,6 +252,9 @@ func (s Supervision) Validate() error {
 func (h HerdrSupervision) Validate() error {
 	if h.InstallIfMissing == nil {
 		return fmt.Errorf("missing required field sandbox.supervision.herdr.install_if_missing")
+	}
+	if *h.InstallIfMissing {
+		return fmt.Errorf("invalid field sandbox.supervision.herdr.install_if_missing: runtime Herdr install is disabled; build and use a Docker Sandbox template with Herdr and cc preinstalled")
 	}
 	if strings.TrimSpace(h.SocketPath) == "" {
 		return fmt.Errorf("missing required field sandbox.supervision.herdr.socket_path")

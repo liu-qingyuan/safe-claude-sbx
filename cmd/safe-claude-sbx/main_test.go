@@ -214,10 +214,12 @@ func TestLaunchStartsSandboxLocalHerdrAfterAllPreflightsPass(t *testing.T) {
 	}
 	log := readFile(t, logPath)
 	for _, want := range []string{
-		"create --name claude-sbx claude .",
+		"create --name claude-sbx --template safe-claude-sbx-herdr:latest claude .",
 		"exec claude-sbx sh -lc command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
+		"exec claude-sbx sh -lc command -v cc",
+		"exec claude-sbx cc --version",
 		"exec claude-sbx herdr server",
 		"exec claude-sbx herdr status server --json",
 		"exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude claude-sbx claude",
@@ -274,16 +276,18 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 		"rm --force claude-sbx-probe",
 		"ls",
 		"exec claude-sbx sh -lc command -v herdr",
+		"exec claude-sbx herdr --version",
+		"exec claude-sbx herdr integration install claude",
+		"exec claude-sbx sh -lc command -v cc",
+		"exec claude-sbx cc --version",
 		"exec -it claude-sbx herdr",
 	})
 	for _, forbidden := range []string{
 		"create --name claude-sbx claude .",
 		"curl -fsSL https://herdr.dev/install.sh | sh",
-		"herdr integration install claude",
-		"command -v cc",
 	} {
 		if containsLogLine(log, forbidden) {
-			t.Fatalf("safe-herdr should attach without preparing main sandbox, got forbidden command %q:\n%s", forbidden, log)
+			t.Fatalf("safe-herdr should not create or download for existing main sandbox, got forbidden command %q:\n%s", forbidden, log)
 		}
 	}
 	for _, forbidden := range []string{"/tmp/host-herdr.sock", "host-pane", "host-workspace"} {
@@ -292,6 +296,49 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 		}
 	}
 	assertNoParentGuidanceMutation(t, log)
+}
+
+func TestSafeHerdrCreatesTemplateSandboxWhenMainSandboxIsMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP: "203.0.113.10",
+		LogPath:  logPath,
+	})
+
+	cmd := exec.Command("go", "run", "../safe-herdr", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("safe-herdr failed creating template sandbox: %v\n%s\nsbx log:\n%s", err, output, readOptionalFile(t, logPath))
+	}
+	if !strings.Contains(string(output), "Herdr TUI started: claude-sbx") {
+		t.Fatalf("expected Herdr TUI success, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	assertLogLineOrder(t, log, []string{
+		"create --name claude-sbx --template safe-claude-sbx-herdr:latest claude .",
+		"exec claude-sbx sh -lc command -v herdr",
+		"exec claude-sbx herdr --version",
+		"exec claude-sbx herdr integration install claude",
+		"exec claude-sbx sh -lc command -v cc",
+		"exec claude-sbx cc --version",
+		"exec -it claude-sbx herdr",
+	})
+	if !strings.Contains(log, "exec claude-sbx sh -lc workspace=") {
+		t.Fatalf("expected main workspace visibility check before Herdr TUI attach, got:\n%s", log)
+	}
+	if strings.Contains(log, "curl -fsSL https://herdr.dev/install.sh") {
+		t.Fatalf("safe-herdr must not download Herdr at startup, got:\n%s", log)
+	}
 }
 
 func TestSafeHerdrChecksMainWorkspaceVisibilityBeforeTUIAttach(t *testing.T) {
@@ -338,11 +385,6 @@ func TestSafeHerdrRequiresExistingSandboxLocalHerdr(t *testing.T) {
 		fakeSBX   fakeSBXOptions
 		wantError string
 	}{
-		{
-			name:      "main sandbox missing",
-			fakeSBX:   fakeSBXOptions{},
-			wantError: `main sandbox "claude-sbx" not found`,
-		},
 		{
 			name: "workspace mismatch",
 			fakeSBX: fakeSBXOptions{
@@ -398,8 +440,6 @@ func TestSafeHerdrRequiresExistingSandboxLocalHerdr(t *testing.T) {
 			for _, forbidden := range []string{
 				"create --name claude-sbx claude .",
 				"curl -fsSL https://herdr.dev/install.sh | sh",
-				"herdr integration install claude",
-				"command -v cc",
 				"exec claude-sbx herdr server stop",
 				"stop claude-sbx",
 				"rm --force claude-sbx",
@@ -553,10 +593,12 @@ func TestLaunchRebuildsStoppedSandboxLocalHerdrMainAfterPreflights(t *testing.T)
 		"ls",
 		"stop claude-sbx",
 		"rm --force claude-sbx",
-		"create --name claude-sbx claude .",
+		"create --name claude-sbx --template safe-claude-sbx-herdr:latest claude .",
 		"exec claude-sbx sh -lc command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
+		"exec claude-sbx sh -lc command -v cc",
+		"exec claude-sbx cc --version",
 		"exec claude-sbx herdr server",
 		"exec claude-sbx herdr status server --json",
 	})
@@ -838,10 +880,11 @@ func TestDoctorAcceptsSandboxLocalHerdrSupervisionConfig(t *testing.T) {
 		validConfig(server.URL, "203.0.113.10", 10),
 		`agent: "claude"`,
 		`agent: "claude"
+  template: "safe-claude-sbx-herdr:latest"
   supervision:
     mode: "sandbox-local-herdr"
     herdr:
-      install_if_missing: true
+      install_if_missing: false
       socket_path: "/home/agent/.config/herdr/herdr.sock"
       pane_id: "sandbox-claude"`,
 		1,
@@ -950,7 +993,7 @@ func TestDoctorRejectsInvalidSupervisionConfig(t *testing.T) {
 			supervision: `  supervision:
     mode: "sandbox-local-herdr"
     herdr:
-      install_if_missing: true
+      install_if_missing: false
       socket_path: "/Users/alice/.config/herdr/herdr.sock"
       pane_id: "sandbox-claude"`,
 			wantError: "sandbox.supervision.herdr.socket_path",
@@ -961,7 +1004,7 @@ func TestDoctorRejectsInvalidSupervisionConfig(t *testing.T) {
 			supervision: `  supervision:
     mode: "direct-claude"
     herdr:
-      install_if_missing: true
+      install_if_missing: false
       socket_path: "/Users/alice/.config/herdr/herdr.sock"
       pane_id: "sandbox-claude"`,
 			wantError: "sandbox.supervision.herdr.socket_path",
@@ -972,7 +1015,7 @@ func TestDoctorRejectsInvalidSupervisionConfig(t *testing.T) {
 			supervision: `  supervision:
     mode: "sandbox-local-herdr"
     herdr:
-      install_if_missing: true
+      install_if_missing: false
       socket_path: "/home/agent/../../Users/alice/.config/herdr/herdr.sock"
       pane_id: "sandbox-claude"`,
 			wantError: "sandbox.supervision.herdr.socket_path",
@@ -983,7 +1026,7 @@ func TestDoctorRejectsInvalidSupervisionConfig(t *testing.T) {
 			supervision: `  supervision:
     mode: "sandbox-local-herdr"
     herdr:
-      install_if_missing: true
+      install_if_missing: false
       socket_path: "/tmp/herdr.sock"
       pane_id: "sandbox-claude"`,
 			wantError: "sandbox.supervision.herdr.socket_path",
@@ -994,7 +1037,7 @@ func TestDoctorRejectsInvalidSupervisionConfig(t *testing.T) {
 			supervision: `  supervision:
     mode: "sandbox-local-herdr"
     herdr:
-      install_if_missing: true
+      install_if_missing: false
       socket_path: "/home/agent/.config/herdr/herdr.sock"
       pane_id: "   "`,
 			wantError: "sandbox.supervision.herdr.pane_id",
@@ -1448,10 +1491,11 @@ func withSandboxLocalHerdr(body string) string {
 		body,
 		`agent: "claude"`,
 		`agent: "claude"
+  template: "safe-claude-sbx-herdr:latest"
   supervision:
     mode: "sandbox-local-herdr"
     herdr:
-      install_if_missing: true
+      install_if_missing: false
       socket_path: "/home/agent/.config/herdr/herdr.sock"
       pane_id: "sandbox-claude"`,
 		1,
@@ -1644,6 +1688,7 @@ type fakeSBXOptions struct {
 	FailHerdrServer       bool
 	FailHerdrTUI          bool
 	MissingHerdr          bool
+	MissingCC             bool
 	BlockRun              bool
 	ExistingMainStatus    string
 	ExistingMainWorkspace string
@@ -1763,7 +1808,14 @@ case "$1" in
         printf 'installed\n'
         ;;
       *" command -v cc"*)
+        if [ %q = "true" ]; then
+          printf 'cc not found\n' >&2
+          exit 1
+        fi
         printf '/usr/local/bin/cc\n'
+        ;;
+      *" cc --version")
+        printf 'claude 1.0.0\n'
         ;;
       *" herdr status server --json")
         printf '{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}\n'
@@ -1857,6 +1909,7 @@ esac
 		mountOutput,
 		shellBool(opts.MissingHerdr),
 		shellBool(opts.FailHerdrHook),
+		shellBool(opts.MissingCC),
 		herdrStopFile,
 		shellBool(opts.FailHerdrServer),
 		herdrStopFile,

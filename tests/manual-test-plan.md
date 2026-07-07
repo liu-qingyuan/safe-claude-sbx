@@ -533,6 +533,14 @@ Expected sandbox stop/cleanup behavior:
 Prerequisites:
 
 - Complete scenario 2 with the default direct Claude config first.
+- Build the sandbox-local Herdr template:
+
+```bash
+docker build -t safe-claude-sbx-herdr:latest sandbox/claude-herdr-template
+docker image save safe-claude-sbx-herdr:latest -o safe-claude-sbx-herdr.tar
+sbx template load safe-claude-sbx-herdr.tar
+```
+
 - Copy `config.yaml` to `herdr-config.yaml`.
 - Keep all existing network, workspace, environment, watchdog, and cleanup
   policy from the working config.
@@ -544,10 +552,11 @@ sandbox:
   main_name: "claude-sbx"
   probe_name: "claude-sbx-probe"
   agent: "claude"
+  template: "safe-claude-sbx-herdr:latest"
   supervision:
     mode: "sandbox-local-herdr"
     herdr:
-      install_if_missing: true
+      install_if_missing: false
       socket_path: "/home/agent/.config/herdr/herdr.sock"
       pane_id: "sandbox-claude"
 ```
@@ -685,19 +694,18 @@ Expected result:
 Steps:
 
 1. Use a fresh disposable `sandbox.main_name`.
-2. Set `sandbox.supervision.herdr.install_if_missing: false`.
-3. Run `safe-claude-sbx --config herdr-config.yaml`.
-4. Run `sbx ls`.
+2. Point `sandbox.template` at a disposable template image that intentionally
+   does not contain Herdr or `/usr/local/bin/cc`.
+3. Keep `sandbox.supervision.herdr.install_if_missing: false`.
+4. Run `safe-claude-sbx --config herdr-config.yaml`.
+5. Run `sbx ls`.
 
 Expected result:
 
-- If the fresh Claude template does not already contain Herdr, startup fails
-  after `sandbox inspection ok` with `sandbox start invalid:` and a reason that
-  includes `sandbox-local Herdr unavailable`.
-- If a future Claude template includes Herdr by default, record that this
-  negative precondition is unavailable and instead validate a Herdr startup
-  failure by blocking the sandbox from reaching the Herdr installer endpoint
-  before step 3 with `install_if_missing: true`.
+- Startup fails after `sandbox inspection ok` with `sandbox start invalid:` and
+  a reason that includes `sandbox-local Herdr unavailable` or
+  `sandbox-local cc unavailable`.
+- The launcher does not run a Herdr installer in the running sandbox.
 - The launcher does not fall back to direct Claude mode.
 - Cleanup stops the disposable main sandbox. The main sandbox remains listed as
   stopped unless `cleanup.remove_main_sandbox` is `true`.

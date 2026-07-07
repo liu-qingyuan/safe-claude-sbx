@@ -48,6 +48,7 @@ func TestLoadAcceptsSandboxLocalHerdrSupervision(t *testing.T) {
 		validConfigYAML(),
 		`agent: "claude"`,
 		`agent: "claude"
+  template: "docker.io/example/safe-claude-sbx-herdr:latest"
   supervision:
     mode: "sandbox-local-herdr"
     herdr:
@@ -67,6 +68,52 @@ func TestLoadAcceptsSandboxLocalHerdrSupervision(t *testing.T) {
 	}
 	if cfg.Sandbox.Supervision.Herdr == nil || cfg.Sandbox.Supervision.Herdr.InstallIfMissing == nil || *cfg.Sandbox.Supervision.Herdr.InstallIfMissing {
 		t.Fatalf("expected explicit install_if_missing=false to be preserved, got %#v", cfg.Sandbox.Supervision.Herdr)
+	}
+	if cfg.Sandbox.Template != "docker.io/example/safe-claude-sbx-herdr:latest" {
+		t.Fatalf("expected sandbox template to load, got %q", cfg.Sandbox.Template)
+	}
+}
+
+func TestLoadRejectsSandboxLocalHerdrWithoutTemplate(t *testing.T) {
+	path := writeConfig(t, strings.Replace(
+		validConfigYAML(),
+		`agent: "claude"`,
+		`agent: "claude"
+  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: false
+      socket_path: "/home/agent/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"`,
+		1,
+	))
+
+	_, err := Load(path)
+
+	if err == nil || !strings.Contains(err.Error(), "sandbox.template") {
+		t.Fatalf("expected sandbox.template error, got %v", err)
+	}
+}
+
+func TestLoadRejectsSandboxLocalHerdrRuntimeInstall(t *testing.T) {
+	path := writeConfig(t, strings.Replace(
+		validConfigYAML(),
+		`agent: "claude"`,
+		`agent: "claude"
+  template: "docker.io/example/safe-claude-sbx-herdr:latest"
+  supervision:
+    mode: "sandbox-local-herdr"
+    herdr:
+      install_if_missing: true
+      socket_path: "/home/agent/.config/herdr/herdr.sock"
+      pane_id: "sandbox-claude"`,
+		1,
+	))
+
+	_, err := Load(path)
+
+	if err == nil || !strings.Contains(err.Error(), "install_if_missing") || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("expected runtime install disabled error, got %v", err)
 	}
 }
 
