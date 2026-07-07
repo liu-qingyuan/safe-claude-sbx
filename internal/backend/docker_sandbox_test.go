@@ -88,15 +88,15 @@ func TestDockerSandboxProbeReturnsStructuredInspectionAndIdempotentCleanup(t *te
 	runner := stubRunner{
 		path: "/tmp/sbx",
 		results: map[string]CommandResult{
-			"sbx create --clone --name probe shell .":                                {Stdout: "created\n"},
+			"sbx create --name probe shell .":                                        {Stdout: "created\n"},
 			"sbx exec -e TZ=UTC -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe env": {Stdout: "PATH=/usr/bin\nHTTP_PROXY=http://gateway.docker.internal:3128\n"},
-			"sbx exec probe pwd":            {Stdout: "/workspace\n"},
-			"sbx exec probe mount":          {Stdout: "/dev/disk1 on /workspace type virtiofs\n"},
-			"sbx exec -e TZ=UTC probe date": {Stdout: "Sun Jul 5 00:00:00 UTC 2026\n"},
-			"sbx exec -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe locale": {Stdout: "LANG=en_US.UTF-8\n"},
-			"sbx exec probe curl -fsS https://example.test/ip":                {Stdout: "203.0.113.10\n"},
-			"sbx stop probe":       {Stderr: "sandbox not found\n"},
-			"sbx rm --force probe": {Stderr: "sandbox not found\n"},
+			"sbx exec probe pwd":                                                     {Stdout: "/workspace\n"},
+			"sbx exec probe mount":                                                   {Stdout: "/dev/disk1 on /workspace type virtiofs\n"},
+			"sbx exec -e TZ=UTC probe date":                                          {Stdout: "Sun Jul 5 00:00:00 UTC 2026\n"},
+			"sbx exec -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe locale":        {Stdout: "LANG=en_US.UTF-8\n"},
+			"sbx exec probe curl -fsS https://example.test/ip":                       {Stdout: "203.0.113.10\n"},
+			"sbx stop probe":                                                         {Stderr: "sandbox not found\n"},
+			"sbx rm --force probe":                                                   {Stderr: "sandbox not found\n"},
 		},
 		errors: map[string]error{
 			"sbx stop probe":       errors.New("exit status 1"),
@@ -140,7 +140,7 @@ func TestDockerSandboxProbeRemovesStaleProbeSandboxAndRetriesCreate(t *testing.T
 	}
 	got := strings.Join(runner.calls, "\n")
 	for _, want := range []string{
-		"sbx create --clone --name probe shell .",
+		"sbx create --name probe shell .",
 		"sbx stop probe",
 		"sbx rm --force probe",
 		"sbx exec -e TZ=UTC -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe env",
@@ -317,7 +317,7 @@ func TestDockerSandboxStartMainPassesMainSandboxContract(t *testing.T) {
 	}
 	want := strings.Join([]string{
 		"sbx ls",
-		"sbx create --clone --name main-sbx claude /work/project",
+		"sbx create --name main-sbx claude /work/project",
 		"sbx exec main-sbx sh -lc " + workspaceVisibilityScript("/work/project"),
 		"sbx run --name main-sbx",
 	}, "\n")
@@ -345,12 +345,12 @@ func TestDockerSandboxStartMainPreparesSandboxLocalHerdr(t *testing.T) {
 		path:  "/tmp/sbx",
 		calls: &calls,
 		results: map[string]CommandResult{
-			"sbx create --clone --name main-sbx claude /work/project": {Stdout: "created\n"},
-			"sbx exec main-sbx sh -lc command -v herdr":               {Stdout: "/home/agent/.local/bin/herdr\n"},
-			"sbx exec main-sbx herdr --version":                       {Stdout: "herdr 0.7.1\n"},
-			"sbx exec main-sbx herdr integration install claude":      {Stdout: "installed\n"},
-			"sbx exec main-sbx herdr server":                          {Stdout: "server started\n"},
-			"sbx exec main-sbx herdr status server --json":            {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
+			"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
+			"sbx exec main-sbx sh -lc command -v herdr":          {Stdout: "/home/agent/.local/bin/herdr\n"},
+			"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
+			"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
+			"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
+			"sbx exec main-sbx herdr status server --json":       {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
 			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stdout: "claude started\n"},
 		},
 	}
@@ -384,7 +384,7 @@ func TestDockerSandboxStartMainPreparesSandboxLocalHerdr(t *testing.T) {
 	got := strings.Join(calls, "\n")
 	want := strings.Join([]string{
 		"sbx ls",
-		"sbx create --clone --name main-sbx claude /work/project",
+		"sbx create --name main-sbx claude /work/project",
 		"sbx exec main-sbx sh -lc " + workspaceVisibilityScript("/work/project"),
 		"sbx exec main-sbx sh -lc command -v herdr",
 		"sbx exec main-sbx herdr --version",
@@ -406,11 +406,11 @@ func TestDockerSandboxStartMainWaitsForSandboxLocalHerdrReadiness(t *testing.T) 
 			calls: &calls,
 			results: map[string]CommandResult{
 				"sbx ls": {Stdout: "No sandboxes found.\n"},
-				"sbx create --clone --name main-sbx claude /work/project": {Stdout: "created\n"},
-				"sbx exec main-sbx sh -lc command -v herdr":               {Stdout: "/home/agent/.local/bin/herdr\n"},
-				"sbx exec main-sbx herdr --version":                       {Stdout: "herdr 0.7.1\n"},
-				"sbx exec main-sbx herdr integration install claude":      {Stdout: "installed\n"},
-				"sbx exec main-sbx herdr server":                          {Stdout: "server started\n"},
+				"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
+				"sbx exec main-sbx sh -lc command -v herdr":          {Stdout: "/home/agent/.local/bin/herdr\n"},
+				"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
+				"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
+				"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
 				"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stdout: "claude started\n"},
 			},
 		},
@@ -473,14 +473,14 @@ func TestDockerSandboxStartMainFailsClosedWhenSandboxLocalHerdrReadinessFails(t 
 				calls: &calls,
 				results: map[string]CommandResult{
 					"sbx ls": {Stdout: "No sandboxes found.\n"},
-					"sbx create --clone --name main-sbx claude /work/project": {Stdout: "created\n"},
-					"sbx exec main-sbx sh -lc command -v herdr":               {Stdout: "/home/agent/.local/bin/herdr\n"},
-					"sbx exec main-sbx herdr --version":                       {Stdout: "herdr 0.7.1\n"},
-					"sbx exec main-sbx herdr integration install claude":      {Stdout: "installed\n"},
-					"sbx exec main-sbx herdr server":                          {Stdout: "server started\n"},
-					"sbx exec main-sbx herdr status server --json":            tt.status,
-					"sbx exec main-sbx herdr server stop":                     {Stdout: "stopped\n"},
-					"sbx stop main-sbx":                                       {Stdout: "stopped\n"},
+					"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
+					"sbx exec main-sbx sh -lc command -v herdr":          {Stdout: "/home/agent/.local/bin/herdr\n"},
+					"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
+					"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
+					"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
+					"sbx exec main-sbx herdr status server --json":       tt.status,
+					"sbx exec main-sbx herdr server stop":                {Stdout: "stopped\n"},
+					"sbx stop main-sbx":                                  {Stdout: "stopped\n"},
 				},
 				errors: map[string]error{
 					"sbx exec main-sbx herdr status server --json": tt.statusErr,
@@ -516,12 +516,12 @@ func TestDockerSandboxStartMainRebuildsStoppedSandboxLocalHerdrMain(t *testing.T
 			"sbx ls":                  {Stdout: "SANDBOX    AGENT    STATUS    PORTS    WORKSPACE\nmain-sbx   claude   stopped            /work/project\n"},
 			"sbx stop main-sbx":       {Stdout: "Sandbox 'main-sbx' stopped\n"},
 			"sbx rm --force main-sbx": {Stdout: "Sandbox 'main-sbx' removed\n"},
-			"sbx create --clone --name main-sbx claude /work/project": {Stdout: "created\n"},
-			"sbx exec main-sbx sh -lc command -v herdr":               {Stdout: "/home/agent/.local/bin/herdr\n"},
-			"sbx exec main-sbx herdr --version":                       {Stdout: "herdr 0.7.1\n"},
-			"sbx exec main-sbx herdr integration install claude":      {Stdout: "installed\n"},
-			"sbx exec main-sbx herdr server":                          {Stdout: "server started\n"},
-			"sbx exec main-sbx herdr status server --json":            {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
+			"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
+			"sbx exec main-sbx sh -lc command -v herdr":          {Stdout: "/home/agent/.local/bin/herdr\n"},
+			"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
+			"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
+			"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
+			"sbx exec main-sbx herdr status server --json":       {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
 			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stdout: "claude started\n"},
 		},
 	}
@@ -535,7 +535,7 @@ func TestDockerSandboxStartMainRebuildsStoppedSandboxLocalHerdrMain(t *testing.T
 		"sbx ls",
 		"sbx stop main-sbx",
 		"sbx rm --force main-sbx",
-		"sbx create --clone --name main-sbx claude /work/project",
+		"sbx create --name main-sbx claude /work/project",
 		"sbx exec main-sbx sh -lc " + workspaceVisibilityScript("/work/project"),
 		"sbx exec main-sbx sh -lc command -v herdr",
 	}, "\n")
@@ -576,11 +576,11 @@ func TestDockerSandboxStartMainStopsSandboxLocalHerdrWhenClaudeStartFails(t *tes
 		calls: &calls,
 		results: map[string]CommandResult{
 			"sbx ls": {Stdout: "No sandboxes found.\n"},
-			"sbx create --clone --name main-sbx claude /work/project": {Stdout: "created\n"},
-			"sbx exec main-sbx sh -lc command -v herdr":               {Stdout: "/home/agent/.local/bin/herdr\n"},
-			"sbx exec main-sbx herdr --version":                       {Stdout: "herdr 0.7.1\n"},
-			"sbx exec main-sbx herdr integration install claude":      {Stdout: "installed\n"},
-			"sbx exec main-sbx herdr server":                          {Stdout: "server started\n"},
+			"sbx create --name main-sbx claude /work/project":    {Stdout: "created\n"},
+			"sbx exec main-sbx sh -lc command -v herdr":          {Stdout: "/home/agent/.local/bin/herdr\n"},
+			"sbx exec main-sbx herdr --version":                  {Stdout: "herdr 0.7.1\n"},
+			"sbx exec main-sbx herdr integration install claude": {Stdout: "installed\n"},
+			"sbx exec main-sbx herdr server":                     {Stdout: "server started\n"},
 			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stderr: "claude failed\n"},
 			"sbx exec main-sbx herdr server stop": {Stdout: "stopped\n"},
 			"sbx stop main-sbx":                   {Stdout: "stopped\n"},
@@ -626,15 +626,15 @@ func TestDockerSandboxStartMainInstallsMissingSandboxLocalHerdrWhenConfigured(t 
 		path:  "/tmp/sbx",
 		calls: &calls,
 		results: map[string]CommandResult{
-			"sbx create --clone --name main-sbx claude /work/project":                                                                           {Stdout: "created\n"},
-			"sbx exec main-sbx sh -lc command -v herdr":                                                                                         {},
-			"sbx exec main-sbx sh -lc test -x /home/agent/.local/bin/herdr":                                                                     {Stderr: "missing\n"},
-			"sbx exec main-sbx sh -lc curl -fsSL https://herdr.dev/install.sh | sh":                                                             {Stdout: "installed\n"},
-			"sbx exec -u root main-sbx sh -lc ln -sf /home/agent/.local/bin/herdr /usr/local/bin/herdr && command -v herdr":                     {Stdout: "/usr/local/bin/herdr\n"},
-			"sbx exec main-sbx herdr --version":                                                                                                 {Stdout: "herdr 0.7.1\n"},
-			"sbx exec main-sbx herdr integration install claude":                                                                                {Stdout: "installed\n"},
-			"sbx exec main-sbx herdr server":                                                                                                    {Stdout: "server started\n"},
-			"sbx exec main-sbx herdr status server --json":                                                                                      {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
+			"sbx create --name main-sbx claude /work/project":                                                               {Stdout: "created\n"},
+			"sbx exec main-sbx sh -lc command -v herdr":                                                                     {},
+			"sbx exec main-sbx sh -lc test -x /home/agent/.local/bin/herdr":                                                 {Stderr: "missing\n"},
+			"sbx exec main-sbx sh -lc curl -fsSL https://herdr.dev/install.sh | sh":                                         {Stdout: "installed\n"},
+			"sbx exec -u root main-sbx sh -lc ln -sf /home/agent/.local/bin/herdr /usr/local/bin/herdr && command -v herdr": {Stdout: "/usr/local/bin/herdr\n"},
+			"sbx exec main-sbx herdr --version":                                                                             {Stdout: "herdr 0.7.1\n"},
+			"sbx exec main-sbx herdr integration install claude":                                                            {Stdout: "installed\n"},
+			"sbx exec main-sbx herdr server":                                                                                {Stdout: "server started\n"},
+			"sbx exec main-sbx herdr status server --json":                                                                  {Stdout: `{"running":true,"socket":"/home/agent/.config/herdr/herdr.sock"}` + "\n"},
 			"sbx exec -e HERDR_ENV=1 -e HERDR_SOCKET_PATH=/home/agent/.config/herdr/herdr.sock -e HERDR_PANE_ID=sandbox-claude main-sbx claude": {Stdout: "claude started\n"},
 		},
 		errors: map[string]error{
@@ -658,7 +658,7 @@ func TestDockerSandboxStartMainExposesInstalledSandboxLocalHerdrOnPath(t *testin
 		path:  "/tmp/sbx",
 		calls: &calls,
 		results: map[string]CommandResult{
-			"sbx create --clone --name main-sbx claude /work/project":                                                       {Stdout: "created\n"},
+			"sbx create --name main-sbx claude /work/project":                                                               {Stdout: "created\n"},
 			"sbx exec main-sbx sh -lc command -v herdr":                                                                     {},
 			"sbx exec main-sbx sh -lc test -x /home/agent/.local/bin/herdr":                                                 {Stdout: ""},
 			"sbx exec -u root main-sbx sh -lc ln -sf /home/agent/.local/bin/herdr /usr/local/bin/herdr && command -v herdr": {Stdout: "/usr/local/bin/herdr\n"},
@@ -1021,9 +1021,9 @@ func TestDockerSandboxProbeCleansUpWithIndependentContextAfterTimeout(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := timeoutCleanupRunner{
 		results: map[string]CommandResult{
-			"sbx create --clone --name probe shell .": {Stdout: "created\n"},
-			"sbx stop probe":       {Stderr: "sandbox not found\n"},
-			"sbx rm --force probe": {Stderr: "sandbox not found\n"},
+			"sbx create --name probe shell .": {Stdout: "created\n"},
+			"sbx stop probe":                  {Stderr: "sandbox not found\n"},
+			"sbx rm --force probe":            {Stderr: "sandbox not found\n"},
 		},
 		cancel: cancel,
 	}
@@ -1063,7 +1063,7 @@ func probeConfig() config.Config {
 		},
 		Workspace: config.Workspace{
 			Mount:          ".",
-			UseCloneMode:   true,
+			UseCloneMode:   false,
 			ForbiddenPaths: []string{"~", "~/.ssh", "~/.claude", "~/.config/clash", "~/Library/Keychains"},
 		},
 		Environment: config.Environment{
@@ -1097,9 +1097,9 @@ func probeRunner(env, mounts string) stubRunner {
 	return stubRunner{
 		path: "/tmp/sbx",
 		results: map[string]CommandResult{
-			"sbx create --clone --name probe shell .":                                 {Stdout: "created\n"},
-			"sbx create --clone --name probe shell /Users/alice/work/safe-claude-sbx": {Stdout: "created\n"},
-			"sbx exec -e TZ=UTC -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe env":  {Stdout: env},
+			"sbx create --name probe shell .":                                        {Stdout: "created\n"},
+			"sbx create --name probe shell /Users/alice/work/safe-claude-sbx":        {Stdout: "created\n"},
+			"sbx exec -e TZ=UTC -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 probe env": {Stdout: env},
 			"sbx exec probe pwd":            {Stdout: "/workspace\n"},
 			"sbx exec probe mount":          {Stdout: mounts},
 			"sbx exec -e TZ=UTC probe date": {Stdout: "Sun Jul 5 00:00:00 UTC 2026\n"},
@@ -1196,7 +1196,7 @@ func (r *staleProbeCreateRunner) Run(ctx context.Context, name string, args ...s
 		return CommandResult{Stdout: "ok\n"}, nil
 	}
 	switch key {
-	case "sbx create --clone --name probe shell .":
+	case "sbx create --name probe shell .":
 		r.createCalls++
 		if r.createCalls == 1 {
 			return CommandResult{Stderr: "ERROR: sandbox 'probe' already exists\n"}, errors.New("exit status 1")
@@ -1359,7 +1359,7 @@ func (r *herdrInstallTimeoutRunner) Run(ctx context.Context, name string, args .
 	switch key {
 	case "sbx ls":
 		return CommandResult{Stdout: "No sandboxes found.\n"}, nil
-	case "sbx create --clone --name main-sbx claude /work/project":
+	case "sbx create --name main-sbx claude /work/project":
 		return CommandResult{Stdout: "created\n"}, nil
 	case "sbx exec main-sbx sh -lc command -v herdr":
 		return CommandResult{}, errors.New("exit status 127")
@@ -1401,7 +1401,7 @@ func (r *herdrInstallAttemptRunner) Run(ctx context.Context, name string, args .
 	switch key {
 	case "sbx ls":
 		return CommandResult{Stdout: "No sandboxes found.\n"}, nil
-	case "sbx create --clone --name main-sbx claude /work/project":
+	case "sbx create --name main-sbx claude /work/project":
 		return CommandResult{Stdout: "created\n"}, nil
 	case "sbx exec main-sbx sh -lc command -v herdr":
 		return CommandResult{}, errors.New("exit status 127")

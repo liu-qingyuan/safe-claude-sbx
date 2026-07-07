@@ -279,9 +279,9 @@ Expected CLI output:
 
 - `doctor` should still validate backend availability, probe creation,
   sandbox egress, and sandbox inspection.
-- Launcher startup should create a fresh clone-mode main sandbox when needed,
-  validate main sandbox workspace visibility without modifying parent guidance
-  paths, and then attach with `sbx run --name <main-name>`.
+- Launcher startup should create a fresh main sandbox when needed, validate main
+  sandbox workspace visibility without modifying parent guidance paths, and then
+  attach with `sbx run --name <main-name>`.
 - If `sbx run` rejects the existing sandbox state, the launcher should fail with
   `sandbox start invalid: start main sandbox: ...`.
 
@@ -461,8 +461,7 @@ Steps:
 2. Run `safe-claude-sbx doctor --config config.yaml`.
 3. Confirm a parent `CLAUDE.md` marker alone does not fail `doctor`.
 4. Remove the sibling marker or switch to a backend/workspace strategy that
-   preserves the required `workspace.use_clone_mode: true` isolation, then rerun
-   `doctor`.
+   prevents sibling visibility, then rerun `doctor`.
 5. With markers restored, run `safe-claude-sbx --config config.yaml`.
 6. For sandbox-local Herdr, run `safe-herdr --config herdr-config.yaml` against
    a disposable existing main sandbox.

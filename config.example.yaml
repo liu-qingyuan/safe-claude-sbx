@@ -23,7 +23,7 @@ sandbox:
 
 workspace:
   mount: "."
-  use_clone_mode: true
+  use_clone_mode: false
   forbidden_paths:
     - "~"
     - "~/.ssh"

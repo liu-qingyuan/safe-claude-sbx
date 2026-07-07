@@ -209,9 +209,6 @@ func (c Config) Validate() error {
 	}); err != nil {
 		return err
 	}
-	if c.Sandbox.Backend == "docker-sandbox" && !c.Workspace.UseCloneMode {
-		return fmt.Errorf("invalid field workspace.use_clone_mode: docker-sandbox backend requires clone mode to avoid exposing workspace parent paths")
-	}
 	if len(c.Environment.ForbiddenEnvVars) == 0 {
 		return fmt.Errorf("missing required field environment.forbidden_env_vars")
 	}

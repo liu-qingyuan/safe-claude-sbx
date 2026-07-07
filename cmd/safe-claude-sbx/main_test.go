@@ -35,7 +35,7 @@ func TestLaunchStartsMainSandboxAfterAllPreflightsPass(t *testing.T) {
 		t.Fatalf("expected launch success output, got:\n%s", output)
 	}
 	log := readFile(t, logPath)
-	createIndex := strings.Index(log, "create --clone --name claude-sbx claude .")
+	createIndex := strings.Index(log, "create --name claude-sbx claude .")
 	visibilityIndex := strings.Index(log, "exec claude-sbx sh -lc workspace=")
 	runIndex := strings.Index(log, "run --name claude-sbx")
 	if createIndex < 0 || visibilityIndex < 0 || runIndex < 0 || !(createIndex < visibilityIndex && visibilityIndex < runIndex) {
@@ -66,7 +66,7 @@ func TestLaunchDoesNotMutateParentGuidanceBeforeAgentAttach(t *testing.T) {
 		t.Fatalf("launch failed:\n%v\n%s\nsbx log:\n%s", err, output, readFile(t, logPath))
 	}
 	log := readFile(t, logPath)
-	createIndex := strings.Index(log, "create --clone --name claude-sbx claude .")
+	createIndex := strings.Index(log, "create --name claude-sbx claude .")
 	visibilityIndex := strings.Index(log, "exec claude-sbx sh -lc workspace=")
 	runIndex := strings.Index(log, "run --name claude-sbx")
 	if createIndex < 0 || visibilityIndex < 0 || runIndex < 0 || !(createIndex < visibilityIndex && visibilityIndex < runIndex) {
@@ -130,7 +130,7 @@ func TestLaunchFailsClosedWhenMainSandboxCanReadSiblingProjectFile(t *testing.T)
 		t.Fatalf("launch leaked sibling file contents:\n%s", output)
 	}
 	log := readFile(t, logPath)
-	createIndex := strings.Index(log, "create --clone --name claude-sbx claude .")
+	createIndex := strings.Index(log, "create --name claude-sbx claude .")
 	visibilityIndex := strings.Index(log, "exec claude-sbx sh -lc workspace=")
 	stopIndex := strings.LastIndex(log, "\nstop claude-sbx\n")
 	if createIndex < 0 || visibilityIndex < 0 || stopIndex < 0 || !(createIndex < visibilityIndex && visibilityIndex < stopIndex) {
@@ -214,7 +214,7 @@ func TestLaunchStartsSandboxLocalHerdrAfterAllPreflightsPass(t *testing.T) {
 	}
 	log := readFile(t, logPath)
 	for _, want := range []string{
-		"create --clone --name claude-sbx claude .",
+		"create --name claude-sbx claude .",
 		"exec claude-sbx sh -lc command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
@@ -269,7 +269,7 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 	}
 	log := readFile(t, logPath)
 	assertLogLineOrder(t, log, []string{
-		"create --clone --name claude-sbx-probe shell .",
+		"create --name claude-sbx-probe shell .",
 		"exec claude-sbx-probe curl -fsS https://api.ipify.org",
 		"rm --force claude-sbx-probe",
 		"ls",
@@ -277,7 +277,7 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 		"exec -it claude-sbx herdr",
 	})
 	for _, forbidden := range []string{
-		"create --clone --name claude-sbx claude .",
+		"create --name claude-sbx claude .",
 		"curl -fsSL https://herdr.dev/install.sh | sh",
 		"herdr integration install claude",
 		"command -v cc",
@@ -396,7 +396,7 @@ func TestSafeHerdrRequiresExistingSandboxLocalHerdr(t *testing.T) {
 			}
 			log := readFile(t, logPath)
 			for _, forbidden := range []string{
-				"create --clone --name claude-sbx claude .",
+				"create --name claude-sbx claude .",
 				"curl -fsSL https://herdr.dev/install.sh | sh",
 				"herdr integration install claude",
 				"command -v cc",
@@ -547,13 +547,13 @@ func TestLaunchRebuildsStoppedSandboxLocalHerdrMainAfterPreflights(t *testing.T)
 	}
 	log := readFile(t, logPath)
 	assertLogLineOrder(t, log, []string{
-		"create --clone --name claude-sbx-probe shell .",
+		"create --name claude-sbx-probe shell .",
 		"exec claude-sbx-probe curl -fsS https://api.ipify.org",
 		"rm --force claude-sbx-probe",
 		"ls",
 		"stop claude-sbx",
 		"rm --force claude-sbx",
-		"create --clone --name claude-sbx claude .",
+		"create --name claude-sbx claude .",
 		"exec claude-sbx sh -lc command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
@@ -1375,7 +1375,7 @@ sandbox:
   agent: "claude"
 workspace:
   mount: "."
-  use_clone_mode: true
+  use_clone_mode: false
   forbidden_paths:
     - "~"
     - "~/.ssh"
@@ -1420,7 +1420,7 @@ sandbox:
   agent: "claude"
 workspace:
   mount: "."
-  use_clone_mode: true
+  use_clone_mode: false
   forbidden_paths:
     - "~"
     - "~/.ssh"
@@ -1456,30 +1456,6 @@ func withSandboxLocalHerdr(body string) string {
       pane_id: "sandbox-claude"`,
 		1,
 	)
-}
-
-func withoutCloneMode(body string) string {
-	return strings.Replace(body, `use_clone_mode: true`, `use_clone_mode: false`, 1)
-}
-
-func TestLaunchRejectsDockerSandboxBindMountWorkspaceMode(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "203.0.113.10")
-	}))
-	t.Cleanup(server.Close)
-
-	configPath := writeTestConfig(t, withoutCloneMode(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
-
-	cmd := exec.Command("go", "run", ".", "--config", configPath)
-	cmd.Dir = "."
-
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("launch unexpectedly accepted bind mount workspace mode:\n%s", output)
-	}
-	if !strings.Contains(string(output), "workspace.use_clone_mode") {
-		t.Fatalf("expected clone mode configuration error, got:\n%s", output)
-	}
 }
 
 func TestDoctorRejectsMissingRequiredObjectPath(t *testing.T) {

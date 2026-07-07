@@ -103,10 +103,8 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
       integration.
 - `workspace`
   - `mount`: Host project directory mounted into the sandbox.
-  - `use_clone_mode`: Must be `true` for the Docker Sandbox backend. The
-    launcher uses `sbx --clone` so the main sandbox receives a private
-    in-container workspace copy instead of a bind mount that can expose parent
-    paths.
+  - `use_clone_mode`: Optional. Defaults to `false` in the example config. When
+    `true`, the launcher adds `--clone` to Docker Sandbox create commands.
   - `forbidden_paths`: Host paths that must never be used as workspace mounts.
     The policy expands `~`, rejects sensitive paths such as SSH, Claude config,
     Clash config, and Keychain paths recursively, and fails before backend
@@ -174,12 +172,12 @@ the configured workspace and its parent path as host-style paths; a parent
 workspace metadata, not as a policy failure. If either sandbox can read a file
 under a sibling project directory, `doctor` or launcher startup fails closed
 with `workspace.inspection.visibility.sibling`. The diagnostic names the
-readable non-workspace path but does not print file contents. Direct Docker
-Sandbox bind mount mode is rejected by configuration validation;
-`workspace.use_clone_mode: true` is required so new main sandboxes are created
-with clone mode before `sbx run --name` attaches. During `safe-herdr`, an
-existing main sandbox is checked before the interactive Herdr TUI is attached;
-existing sandboxes are inspected but not modified.
+readable non-workspace path but does not print file contents. The current
+default uses normal Docker Sandbox create mode, not `--clone`; set
+`workspace.use_clone_mode: true` only when you explicitly want Docker Sandbox's
+private clone behavior. During `safe-herdr`, an existing main sandbox is checked
+before the interactive Herdr TUI is attached; existing sandboxes are inspected
+but not modified.
 
 Docker Sandbox may still report the configured workspace path in `pwd`, `sbx`
 status output, or source-mount metadata. Treat those path strings as expected

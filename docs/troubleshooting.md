@@ -319,13 +319,11 @@ Checks:
 - Check symlinks and relative paths; the policy resolves them before backend
   commands run.
 - Do not mount home directories or credential/config directories.
-- Keep `workspace.use_clone_mode: true`; Docker Sandbox bind mount mode is
-  rejected because it can expose wider host paths. New clone-mode main sandbox
+- The current default is `workspace.use_clone_mode: false`. New main sandbox
   startup checks sibling visibility before attaching Claude, Herdr, or `cc`; if
   visibility inspection reports a sibling file, startup fails closed without
-  modifying the reported path. If clone mode is not viable for a workflow, copy
-  only the required project files to a disposable temporary workspace and mount
-  that path with a backend contract that provides equivalent isolation.
+  modifying the reported path. Set `workspace.use_clone_mode: true` only when
+  you explicitly want Docker Sandbox's private clone behavior.
 - Do not paste the readable file contents into issues or logs; the diagnostic
   path is enough to debug the mount boundary.
 
