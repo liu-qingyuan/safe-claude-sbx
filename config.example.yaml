@@ -4,10 +4,10 @@ network:
     route_check_target: "1.1.1.1"
     tun_interface_prefix: "utun"
   egress_ip:
-    expected_ip: "203.0.113.10"
-    host_check_url: "https://api.ipify.org"
-    sandbox_check_url: "https://api.ipify.org"
-    timeout_seconds: 30
+    expected_ip: "34.68.40.236"
+    host_check_url: "https://ipv4.icanhazip.com"
+    sandbox_check_url: "https://ipv4.icanhazip.com"
+    timeout_seconds: 60
 
 sandbox:
   backend: "docker-sandbox"
