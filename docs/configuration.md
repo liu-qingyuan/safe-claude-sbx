@@ -11,9 +11,9 @@ checks that the host public egress IP matches `network.egress_ip.expected_ip`:
 safe-claude-sbx doctor --config config.yaml
 ```
 
-For the sandbox-local Herdr daily flow, update
-`network.egress_ip.expected_ip`, build the Docker Sandbox template, then start
-the TUI through the guarded entrypoint:
+For the sandbox-local Herdr daily flow, keep the default team egress IP
+`34.68.40.236` unless your approved route differs, build the Docker Sandbox
+template, then start the TUI through the guarded entrypoint:
 
 ```bash
 docker build -t safe-claude-sbx-herdr:latest sandbox/claude-herdr-template
@@ -78,7 +78,9 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
   - `route_check_target`: IP used by `route get` to inspect the outbound route.
   - `tun_interface_prefix`: Expected macOS TUN interface prefix, normally `utun`.
 - `network.egress_ip`
-  - `expected_ip`: Public IP that both host and sandbox must observe.
+  - `expected_ip`: Public IP that both host and sandbox must observe. The
+    example default is the team egress IP `34.68.40.236`; change it only when
+    the approved route uses a different public IP.
   - `host_check_url`: Endpoint the host uses to read its public IP.
   - `sandbox_check_url`: Endpoint the sandbox uses to read its public IP.
   - `timeout_seconds`: Timeout for backend commands, sandbox probe commands,

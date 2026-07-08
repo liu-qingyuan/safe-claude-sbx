@@ -34,8 +34,9 @@ This repository is implementing the Docker Sandbox / `sbx` MVP described in:
 
 ## Daily Commands
 
-Before starting work, update `network.egress_ip.expected_ip` in `config.yaml`
-for the current approved egress IP.
+The example config defaults `network.egress_ip.expected_ip` to the team's
+approved egress IP, `34.68.40.236`. Change it only when your approved route uses
+a different public IP.
 
 Build the Docker Sandbox template that contains sandbox-local Herdr and
 `/usr/local/bin/cc`:
@@ -85,9 +86,9 @@ safe-claude-sbx --config config.yaml
 
 ## Configuration
 
-Copy `config.example.yaml` to `config.yaml`, then set
-`network.egress_ip.expected_ip` and `network.egress_ip.host_check_url` for your
-local network policy before running `doctor` or `safe-herdr`.
+Copy `config.example.yaml` to `config.yaml`. The example defaults to the team
+egress IP `34.68.40.236`; update `network.egress_ip.expected_ip` only if your
+local approved route differs before running `doctor` or `safe-herdr`.
 
 ## Safety Notice
 
