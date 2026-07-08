@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -708,6 +711,92 @@ func TestLaunchWatchdogStopsMainSandboxWhenRouteEventChangesDefaultRoute(t *test
 	}
 	if containsLogLine(log, "exec claude-sbx curl -fsS https://api.ipify.org") {
 		t.Fatalf("runtime route event should not run sandbox egress curl, got:\n%s", log)
+	}
+}
+
+func TestLaunchWatchdogStopsMainSandboxWhenClashAppHomeMetadataChangesHostEgress(t *testing.T) {
+	var runtimeMismatch atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if runtimeMismatch.Load() {
+			fmt.Fprintln(w, "198.51.100.77")
+			return
+		}
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	appHome := writeClashVergeHome(t, true, true, "utun9")
+	configBody := strings.Replace(
+		validConfig(server.URL, "203.0.113.10", 10),
+		"  clash_verge:\n",
+		fmt.Sprintf("  clash_verge:\n    app_home: %q\n", appHome),
+		1,
+	)
+	configPath := writeTestConfig(t, configBody)
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{EgressIP: "203.0.113.10", LogPath: logPath, BlockRun: true})
+
+	cmd := exec.Command("go", "run", ".", "--config", configPath)
+	cmd.Dir = "."
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start launch: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+			}
+		}
+	})
+
+	waitForLogLine(t, logPath, "run --name claude-sbx")
+	time.Sleep(300 * time.Millisecond)
+	runtimeMismatch.Store(true)
+	writeFile(t, filepath.Join(appHome, "clash-verge.yaml"), strings.TrimSpace(`
+tun:
+  enable: true
+  device: utun9
+profile: redacted-fixture
+`))
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("launch unexpectedly succeeded after Clash app-home metadata change:\n%s", output.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("launch did not stop after Clash app-home metadata change:\n%s", output.String())
+	}
+	if !strings.Contains(output.String(), "clash-app-home runtime check failed") {
+		t.Fatalf("expected Clash app-home event source in watchdog output, got:\n%s", output.String())
+	}
+	if !strings.Contains(output.String(), "host egress drift") {
+		t.Fatalf("expected host egress drift, got:\n%s", output.String())
+	}
+	for _, forbidden := range []string{"sandbox egress invalid", "sandbox egress mismatch", "sandbox-egress"} {
+		if strings.Contains(output.String(), forbidden) {
+			t.Fatalf("runtime Clash event should not report sandbox egress failure %q:\n%s", forbidden, output.String())
+		}
+	}
+	log := readFile(t, logPath)
+	if !containsLogLine(log, "stop claude-sbx") {
+		t.Fatalf("expected watchdog cleanup to stop main sandbox, got:\n%s", log)
+	}
+	if containsLogLine(log, "exec claude-sbx curl -fsS https://api.ipify.org") {
+		t.Fatalf("runtime Clash event should not run sandbox egress curl, got:\n%s", log)
 	}
 }
 
@@ -2043,6 +2132,18 @@ func readOptionalFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(data)
+}
+
+func waitForLogLine(t *testing.T, path, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(readOptionalFile(t, path), want) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for log line %q; log:\n%s", want, readOptionalFile(t, path))
 }
 
 func containsLogLine(log, line string) bool {

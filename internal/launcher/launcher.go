@@ -154,6 +154,12 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 	defer stopSignals()
 
 	routeEvents, routeErrors := watchdog.RouteMonitor{}.Start(signalCtx)
+	clashEvents, clashErrors := watchdog.ClashAppHomeMonitor{Policy: cfg.Network.ClashVerge}.Start(signalCtx)
+	watchdogEvents, watchdogErrors := watchdog.MergeEventStreams(
+		signalCtx,
+		[]<-chan watchdog.Event{routeEvents, clashEvents},
+		[]<-chan error{routeErrors, clashErrors},
+	)
 	cleanup := watchdog.CleanupFunc(func(ctx context.Context) error {
 		stopMainCommand()
 		return errors.Join(
@@ -162,8 +168,8 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 		)
 	})
 	supervisor := watchdog.Supervisor{
-		Events:        routeEvents,
-		EventErrors:   routeErrors,
+		Events:        watchdogEvents,
+		EventErrors:   watchdogErrors,
 		BackendExit:   backendExit,
 		EventDebounce: watchdog.DefaultEventDebounce,
 		Check: watchdog.RuntimeChecker{

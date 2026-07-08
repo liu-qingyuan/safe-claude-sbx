@@ -174,13 +174,21 @@ func readYAML(fileSystem fs.FS, path string, target any) error {
 	return nil
 }
 
-func appHomePath(configured string) string {
+func ClashVergeAppHomePath(configured string) string {
+	return strings.TrimPrefix(ClashVergeAppHomeHostPath(configured), string(filepath.Separator))
+}
+
+func ClashVergeAppHomeHostPath(configured string) string {
 	if configured != "" {
-		return strings.TrimPrefix(filepath.Clean(configured), string(filepath.Separator))
+		return filepath.Clean(configured)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return defaultClashVergeAppHome
 	}
-	return strings.TrimPrefix(filepath.Join(home, defaultClashVergeAppHome), string(filepath.Separator))
+	return filepath.Join(home, defaultClashVergeAppHome)
+}
+
+func appHomePath(configured string) string {
+	return ClashVergeAppHomePath(configured)
 }
