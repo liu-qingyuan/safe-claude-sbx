@@ -78,7 +78,6 @@ type SupervisionPlan struct {
 }
 
 type HerdrPlan struct {
-	InstallIfMissing bool
 	SocketPath       string
 	PaneID           string
 	ReadinessTimeout time.Duration
@@ -92,7 +91,6 @@ func NewStartPlan(cfg config.Config) StartPlan {
 	var herdr HerdrPlan
 	if cfg.Sandbox.Supervision.Herdr != nil {
 		herdr = HerdrPlan{
-			InstallIfMissing: cfg.Sandbox.Supervision.Herdr.InstallIfMissing != nil && *cfg.Sandbox.Supervision.Herdr.InstallIfMissing,
 			SocketPath:       strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.SocketPath),
 			PaneID:           strings.TrimSpace(cfg.Sandbox.Supervision.Herdr.PaneID),
 			ReadinessTimeout: time.Duration(cfg.Network.EgressIP.TimeoutSeconds) * time.Second,

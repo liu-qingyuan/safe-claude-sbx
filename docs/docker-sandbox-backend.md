@@ -492,15 +492,11 @@ The implementation contract for sandbox-local Herdr mode is:
 
 - Use the `claude` template sandbox, not the `shell` probe template, for Herdr
   integration validation.
-- Install or reuse `/home/agent/.local/bin/herdr`. The launcher checks inside
-  the sandbox with `command -v herdr` first, so a preinstalled or cached binary
-  is reused without downloading.
-- If Herdr is missing and install is allowed, run the sandbox-local installer
-  with two attempts. Each attempt is bounded by
-  `network.egress_ip.timeout_seconds`; timeout, download failure, or retry
-  exhaustion fails closed with an actionable attempt count and timeout
-  diagnostic.
-- Fail closed if the install command or version check fails.
+- Require template-provided `herdr` and `/usr/local/bin/cc`. The launcher checks
+  inside the sandbox with `command -v herdr` and `command -v cc`; missing tools
+  fail closed with an actionable template diagnostic and do not trigger runtime
+  downloads.
+- Fail closed if the version checks fail.
 - Run `herdr integration install claude` inside the Claude template sandbox and
   verify `/home/agent/.claude/hooks/herdr-agent-state.sh`.
 - Start `herdr server` inside the sandbox before starting Claude under the
@@ -564,18 +560,26 @@ sequenceDiagram
     participant C as Claude Code
     participant K as Claude hook
 
-    L->>S: sbx create --name main claude workspace
-    S-->>X: Claude template with /home/agent/.claude
+    L->>S: sbx create --name main --template configured-template claude workspace
+    S-->>X: Claude template with Herdr and /usr/local/bin/cc
     L->>S: sbx exec main command -v herdr
-    alt Herdr missing and install allowed
-        L->>S: sbx exec main install Herdr
-        S-->>X: /home/agent/.local/bin/herdr
-    else Herdr unavailable or install disabled
+    alt Herdr missing
         L->>S: sbx stop main
         S-->>L: fail closed
+    else Herdr available
+        S-->>L: continue startup
     end
+    L->>S: sbx exec main herdr --version
     L->>S: sbx exec main herdr integration install claude
     S-->>K: Hook and settings installed
+    L->>S: sbx exec main command -v cc
+    alt cc missing
+        L->>S: sbx stop main
+        S-->>L: fail closed
+    else cc available
+        S-->>L: continue startup
+    end
+    L->>S: sbx exec main cc --version
     L->>S: sbx exec main herdr server
     S-->>H: Foreground server owns sandbox socket
     loop until ready or bounded timeout
