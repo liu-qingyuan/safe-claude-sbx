@@ -29,10 +29,14 @@ Default cleanup behavior is:
   `false`.
 - Treat already-missing cleanup targets as non-fatal.
 
-`route -n monitor` is the first MVP runtime event source. Record the observed
-route event lines for each runtime scenario, but do not assume every macOS,
-Clash Verge, Docker Sandbox, Wi-Fi, sleep/wake, or VPN state transition emits
-the same event sequence on every host.
+Runtime watchdog checks are event-triggered. The current event sources are
+`route -n monitor` and Clash Verge app-home file metadata changes. Record the
+observed route event lines and changed app-home path names for runtime
+scenarios, but do not paste Clash configuration contents, subscriptions, node
+names, secrets, Claude tokens, SSH keys, Docker credentials, or Herdr
+socket/env values into issues. Do not assume every macOS, Clash Verge, Docker
+Sandbox, Wi-Fi, sleep/wake, VPN, or node transition emits the same event
+sequence on every host.
 
 ## 1. TUN off at startup
 
@@ -119,7 +123,7 @@ Steps:
 Expected CLI output:
 
 - The launcher exits non-zero.
-- The error includes `watchdog stopped sandbox: route-monitor runtime policy failed`.
+- The error includes `watchdog stopped sandbox: route-monitor runtime check failed`.
 - The reason includes either
   `default route changed from startup interface utunX to <iface>` or another
   runtime check failure naming the route/interface problem.
@@ -133,38 +137,77 @@ Expected sandbox stop/cleanup behavior:
 - The main sandbox is not removed unless `cleanup.remove_main_sandbox` is
   explicitly `true`.
 
-## 4. Clash node switch changes egress IP
+## 4. Clash node switch changes host egress IP
 
 Prerequisites:
 
 - Complete scenario 2 and keep the launcher running.
 - Have two Clash nodes whose public egress IPs differ.
 - `network.egress_ip.expected_ip` is set to the first node's IP.
+- Confirm `network.clash_verge.app_home` points at the active Clash Verge Rev
+  app home.
 
 Steps:
 
 1. In another terminal, run `route -n monitor` and save the observed lines.
 2. Switch Clash Verge to the second node.
 3. Confirm the host egress endpoint now returns a different IP.
-4. Wait for the launcher watchdog to process route events.
+4. Note only which watched app-home paths changed, if any, for example
+   `verge.yaml`, `clash-verge.yaml`, `profiles.yaml`, or `profiles`.
+5. Wait for the launcher watchdog to process route or Clash app-home metadata
+   events.
 
 Expected CLI output:
 
-- If the node switch emits a route event, the launcher exits non-zero.
-- The error includes `watchdog stopped sandbox: route-monitor runtime policy failed`
-  or `route-monitor runtime check failed`.
-- The reason should include `host-egress-mismatch`,
-  `sandbox-egress-mismatch`, or `sandbox egress invalid`.
+- If the node switch emits a route event or app-home metadata event, the
+  launcher exits non-zero.
+- The error includes either
+  `watchdog stopped sandbox: route-monitor runtime check failed` or
+  `watchdog stopped sandbox: clash-app-home runtime check failed`.
+- The reason includes `host egress drift` and `host-egress-mismatch`.
+- The runtime failure must not report `sandbox-egress-mismatch`,
+  `sandbox egress invalid`, or `sandbox-egress-indeterminate`.
 
 Expected sandbox stop/cleanup behavior:
 
 - On detection, the main sandbox is stopped and the probe sandbox is removed
   according to cleanup policy.
-- If the node switch does not emit a route event on the test host, record that
-  limitation and validate manually with `safe-claude-sbx doctor --config
-  config.yaml`; the MVP does not guarantee polling without a route event.
+- If the node switch emits neither a route event nor a watched app-home metadata
+  change on the test host, record that limitation and validate manually with
+  `safe-claude-sbx doctor --config config.yaml`; the watchdog does not
+  continuously poll the public IP endpoint without an event.
 
-## 5. Wi-Fi switch
+## 5. Clash app-home metadata changes while host egress stays valid
+
+Prerequisites:
+
+- Complete scenario 2 and keep the launcher running.
+- `network.clash_verge.app_home` points at a disposable or active Clash Verge
+  Rev app home that the launcher can read.
+- Host egress currently matches `network.egress_ip.expected_ip`.
+
+Steps:
+
+1. Record the active app-home path without copying file contents.
+2. Change metadata for a watched path, for example by switching a harmless
+   profile setting in Clash Verge or touching a disposable copied app-home file
+   during a controlled local test.
+3. Confirm the host egress endpoint still returns the expected IP.
+4. Wait for the launcher watchdog to process the Clash app-home event.
+
+Expected CLI output:
+
+- No watchdog failure is printed while the startup TUN route, startup TUN
+  interface, and host egress remain valid.
+- If a failure occurs, it should name `clash-app-home` as the event source and
+  report the concrete route/interface/host-egress reason.
+
+Expected sandbox stop/cleanup behavior:
+
+- The main sandbox continues running when policy remains valid.
+- No probe sandbox is created for this runtime check.
+
+## 6. Wi-Fi switch
 
 Prerequisites:
 
@@ -185,10 +228,10 @@ Expected CLI output:
 - If the route remains on the same `utunX` and egress still matches,
   no watchdog failure is expected.
 - If the default route changes away from the startup `utunX`, expect
-  `watchdog stopped sandbox: route-monitor runtime policy failed` with a
+  `watchdog stopped sandbox: route-monitor runtime check failed` with a
   default-route reason.
-- If the route remains on TUN but egress changes, expect a host or sandbox
-  egress mismatch reason after a route event.
+- If the route remains on TUN but host egress changes, expect a host egress
+  drift reason after a route or app-home metadata event.
 
 Expected sandbox stop/cleanup behavior:
 
@@ -197,7 +240,7 @@ Expected sandbox stop/cleanup behavior:
 - If macOS changes Wi-Fi without producing route monitor events, record the
   observation and verify the current state with `doctor`.
 
-## 6. Sleep/wake
+## 7. Sleep/wake
 
 Prerequisites:
 
@@ -230,7 +273,7 @@ Expected sandbox stop/cleanup behavior:
 - If sleep/wake produces no route event, record the observation and validate
   manually with `doctor`.
 
-## 7. VPN conflict
+## 8. VPN conflict
 
 Prerequisites:
 
@@ -252,8 +295,8 @@ Expected CLI output:
   route-monitor runtime policy failure.
 - If the VPN still uses a `utun` interface but not the startup interface, expect
   a failure naming the default route change from the startup interface.
-- If the route stays the same but egress changes, expect host or sandbox egress
-  mismatch after a route event.
+- If the route stays the same but host egress changes, expect host egress drift
+  after a route or app-home metadata event.
 
 Expected sandbox stop/cleanup behavior:
 
@@ -261,7 +304,7 @@ Expected sandbox stop/cleanup behavior:
 - Do not continue using the running sandbox after a VPN conflict unless a fresh
   launcher run passes preflight.
 
-## 8. Docker Sandbox already running
+## 9. Docker Sandbox already running
 
 Prerequisites:
 
@@ -292,7 +335,7 @@ Expected sandbox stop/cleanup behavior:
 - The launcher must not remove the main sandbox unless
   `cleanup.remove_main_sandbox` is `true`.
 
-## 9. Backend exits by itself
+## 10. Backend exits by itself
 
 Prerequisites:
 
@@ -318,7 +361,7 @@ Expected sandbox stop/cleanup behavior:
 - Already-stopped or missing cleanup targets are non-fatal when `sbx` reports a
   not-found result.
 
-## 10. Ctrl+C cleanup
+## 11. Ctrl+C cleanup
 
 Prerequisites:
 
@@ -344,7 +387,7 @@ Expected sandbox stop/cleanup behavior:
 - The main sandbox remains listed as stopped unless
   `cleanup.remove_main_sandbox` is `true`.
 
-## 11. Host IP mismatch at startup
+## 12. Host IP mismatch at startup
 
 Prerequisites:
 
@@ -367,7 +410,7 @@ Expected sandbox stop/cleanup behavior:
 - `doctor` fails before probe creation.
 - Launcher fails before creating or starting the main sandbox.
 
-## 12. Sandbox IP mismatch at startup
+## 13. Sandbox IP mismatch at startup
 
 Prerequisites:
 
@@ -392,7 +435,7 @@ Expected sandbox stop/cleanup behavior:
 - The probe sandbox is removed when `cleanup.remove_probe_sandbox` is `true`.
 - The main sandbox is not started.
 
-## 13. `sbx` unavailable or unauthenticated
+## 14. `sbx` unavailable or unauthenticated
 
 Prerequisites:
 
@@ -419,7 +462,7 @@ Expected sandbox stop/cleanup behavior:
 - No probe sandbox is created when availability fails.
 - No main sandbox is started.
 
-## 14. Forbidden mount path
+## 15. Forbidden mount path
 
 Prerequisites:
 
@@ -443,7 +486,7 @@ Expected sandbox stop/cleanup behavior:
 - Failure occurs before any backend command.
 - No probe or main sandbox is created.
 
-## 15. Workspace parent metadata and sibling visibility
+## 16. Workspace parent metadata and sibling visibility
 
 Prerequisites:
 
@@ -491,7 +534,7 @@ Expected sandbox stop/cleanup behavior:
   or `safe-herdr` attach, the launcher stops the main sandbox and does not enter
   watchdog supervision.
 
-## 16. Credential placeholders and SSH agent forwarding in probe
+## 17. Credential placeholders and SSH agent forwarding in probe
 
 Prerequisites:
 
@@ -528,7 +571,7 @@ Expected sandbox stop/cleanup behavior:
   `cleanup.remove_probe_sandbox` is `true`.
 - The launcher must not start the main sandbox after the failed probe.
 
-## 17. Sandbox-local Herdr mode successful startup
+## 18. Sandbox-local Herdr mode successful startup
 
 Prerequisites:
 
@@ -626,12 +669,12 @@ Known limits for this mode:
 - There is no host-to-sandbox Herdr bridge.
 - The launcher does not expose or reuse the host Herdr socket.
 - The launcher does not pass host `HERDR_*` environment into Docker Sandbox.
-- The watchdog remains route-event based; this mode does not add periodic
-  polling.
+- The watchdog remains event-triggered from route monitor and Clash app-home
+  metadata sources; this mode does not add periodic polling.
 
-## 18. Sandbox-local Herdr mode fail-closed checks
+## 19. Sandbox-local Herdr mode fail-closed checks
 
-Run these with `herdr-config.yaml` from scenario 17 and a disposable sandbox
+Run these with `herdr-config.yaml` from scenario 18 and a disposable sandbox
 name when the test can mutate sandbox state:
 
 ```yaml
@@ -710,26 +753,28 @@ Expected result:
 - Cleanup stops the disposable main sandbox. The main sandbox remains listed as
   stopped unless `cleanup.remove_main_sandbox` is `true`.
 
-### Runtime Google connectivity failure is diagnostic only
+### Docker Sandbox control-plane stall is diagnostic only
 
 Steps:
 
 1. Start a disposable sandbox with a config whose
    `network.egress_ip.sandbox_check_url` returns the expected public IP.
-2. In the running main sandbox, run
-   `sbx exec <main-name> curl -fsS https://www.google.com`.
-3. In the same sandbox, run
-   `sbx exec <main-name> curl -fsS <network.egress_ip.sandbox_check_url>`.
-4. Trigger a route event without changing away from the startup TUN interface.
+2. Simulate or observe a Docker Sandbox control-plane stall, for example an
+   `sbx exec <main-name> ...` command that hangs in a separate diagnostic
+   terminal.
+3. Trigger a route or Clash app-home metadata event without changing away from
+   the startup TUN interface and without changing host egress.
+4. If cleanup needs to stop a sandbox while the control plane is unhealthy,
+   record only the `sbx` error class and sandbox name.
 
 Expected result:
 
-- If Google fails but the configured sandbox check URL returns the expected IP,
-  record the result as `Google connectivity failed`; the watchdog should keep
-  the main sandbox running.
-- If the configured sandbox check URL times out and no observed IP mismatch is
-  returned, the watchdog reports `sandbox-egress-indeterminate`, retries once,
-  and only then fails closed if the result remains indeterminate.
-- If the configured sandbox check URL returns a different observed IP, the
-  watchdog reports `sandbox-egress-mismatch` and stops the main sandbox without
-  treating the result as a transient Google or proxy failure.
+- Runtime events do not run `sbx exec <main-name> curl ...` as the watchdog
+  gate.
+- If the route, startup TUN interface, and host egress remain valid, the
+  watchdog should keep the main sandbox running even if a separate manual
+  `sbx exec` diagnostic is stuck.
+- If cleanup later fails because `sbx stop <main-name>` cannot reach the Docker
+  Sandbox control plane, the error should be recorded as `sbx control-plane
+  failure`, not as `sandbox-egress-mismatch`,
+  `sandbox-egress-indeterminate`, or `sandbox egress invalid`.

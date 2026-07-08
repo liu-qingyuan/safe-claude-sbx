@@ -196,3 +196,31 @@ Legacy flat fields such as `expected_egress_ip`, `sandbox_name`,
 `workspace_mount`, `timezone`, and `cleanup.stop_on_exit` are not accepted by the
 MVP CLI. The doctor reports a migration message with the new object path, for
 example `expected_egress_ip -> network.egress_ip.expected_ip`.
+
+## Runtime Watchdog
+
+Startup remains the deep validation point. Before the main sandbox is attached,
+the launcher validates Clash Verge TUN declarations, the live macOS route and
+startup TUN interface, host egress, Docker Sandbox availability, sandbox egress,
+workspace visibility, and sandbox environment policy.
+
+Runtime supervision is intentionally lighter. The watchdog merges macOS route
+monitor events and Clash Verge app-home file metadata events, debounces the
+burst, and then checks host-observable policy facts:
+
+- `route get <network.clash_verge.route_check_target>` still resolves to the
+  startup TUN interface.
+- `ifconfig <startup-utun>` still proves that interface exists.
+- `network.egress_ip.host_check_url` still returns
+  `network.egress_ip.expected_ip`.
+
+The runtime watchdog does not continuously poll the public IP endpoint. It also
+does not use `sbx exec <main-name> curl ...` as the synchronous route-event
+gate. A Docker Sandbox control-plane stall should therefore be diagnosed as
+backend health or cleanup trouble, not as runtime sandbox egress drift.
+
+The Clash Verge app-home event source observes metadata only for stable paths
+such as `verge.yaml`, `config.yaml`, `clash-verge.yaml`, `profiles.yaml`,
+`profiles`, `rules`, and `providers`. It does not read, print, or copy Clash
+configuration contents, subscriptions, node definitions, controller secrets, or
+Claude credentials.

@@ -262,10 +262,11 @@ Confirmed help contract:
 Use `sbx exec <probe-name> env` to classify proxy variables. Docker-managed
 proxy variables are expected; host or unknown proxy targets are not. During
 startup preflight, use `sbx exec <probe-name> curl -fsS <sandbox-check-url>` to
-verify the sandbox egress IP. During runtime watchdog checks, use
-`sbx exec <main-name> curl -fsS <sandbox-check-url>` against the already running
-main sandbox so route events do not create new probe sandboxes or trigger Docker
-registry auth/token requests.
+verify the sandbox egress IP. Runtime watchdog checks do not use
+`sbx exec <main-name> curl -fsS <sandbox-check-url>` as the route-event safety
+gate. They validate host-observable route, interface, and host egress state
+instead, so a Docker Sandbox control-plane stall is not misclassified as runtime
+sandbox egress drift.
 
 Observed runtime behavior:
 
@@ -294,9 +295,9 @@ Observed runtime behavior:
   reliable default check URL for this environment.
 - Google connectivity is diagnostic only. A failed
   `curl -fsS https://www.google.com` from inside Docker Sandbox does not by
-  itself prove an egress IP mismatch. Runtime policy uses the configured
-  `network.egress_ip.sandbox_check_url`; if that endpoint returns the expected
-  IP, the watchdog should keep the main sandbox running.
+  itself prove an egress IP mismatch. Startup policy uses the configured
+  `network.egress_ip.sandbox_check_url` during probe validation. Runtime policy
+  uses event-triggered host route, interface, and host egress checks.
 
 Docker documentation describes this as the normal networking path: requests
 from inside the sandbox go through a sandbox proxy on `gateway.docker.internal`.

@@ -14,7 +14,7 @@ GitHub issue: #13
 
 host Herdr 不参与此模式。`safe-claude-sbx` 不把 host `HERDR_SOCKET_PATH`、`HERDR_PANE_ID`、`HERDR_TAB_ID`、`HERDR_WORKSPACE_ID` 或其他 host `HERDR_*` 传入 sandbox。sandbox 内的 Herdr 状态留在 sandbox 内。
 
-该模式必须继承现有安全启动和运行期行为：启动前必须通过 TUN、host egress、sandbox egress、workspace mount 和 environment inspection；运行中如果现有 route-event watchdog 发现默认路由、TUN 接口或 sandbox egress 不符合策略，仍然停止 sandbox。此 PRD 不新增定时轮询 watchdog。
+该模式必须继承现有安全启动和运行期行为：启动前必须通过 TUN、host egress、sandbox egress、workspace mount 和 environment inspection；运行中如果当前事件触发的 host-centered watchdog 发现默认路由、TUN 接口或 host egress 不符合策略，仍然停止 sandbox。此 PRD 不新增定时轮询 watchdog。
 
 ## 用户故事
 
@@ -46,7 +46,9 @@ host Herdr 不参与此模式。`safe-claude-sbx` 不把 host `HERDR_SOCKET_PATH
   - Host `HERDR_*` values are absent inside sandbox under the current launcher policy.
 - Existing `environment` policy must continue to reject host Herdr values. If sandbox-local Herdr values are allowed, the policy must distinguish sandbox-local paths from host Herdr paths.
 - The launch path may need an in-sandbox supervisor command, such as starting a shell/entrypoint that starts sandbox-local Herdr and then starts Claude Code under Herdr. This must preserve real TTY behavior.
-- The existing route-event watchdog remains the runtime network enforcement mechanism. This PRD does not add periodic polling.
+- The existing event-triggered watchdog remains the runtime network enforcement
+  mechanism through route monitor and Clash app-home metadata events. This PRD
+  does not add periodic polling.
 - If sandbox-local Herdr startup fails, the launcher must fail closed or stop the sandbox rather than falling back silently.
 - The PRD parent issue should be decomposed with `$to-issues-lqy` into prototype and implementation slices before AFK implementation.
 

@@ -13,7 +13,9 @@ The project is intended for compliant local development workflows. It does not b
 - Require explicit configuration before accepting Docker Sandbox SSH agent
   forwarding.
 - Restrict the sandbox workspace mount to the current project directory.
-- Stop the sandbox when route events indicate the TUN interface disappeared, the default route changed, or sandbox egress changed.
+- Stop the sandbox when runtime route or Clash Verge app-home metadata events
+  show that the startup TUN interface disappeared, the default route changed,
+  or host egress drifted from the configured expected IP.
 
 ## Non-Goals
 

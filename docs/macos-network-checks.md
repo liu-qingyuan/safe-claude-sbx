@@ -9,8 +9,14 @@ Planned checks:
 - Record the startup TUN interface and require runtime route checks to keep using the same interface.
 - Use `ifconfig <utunX>` to verify the startup TUN interface still exists.
 - Use `route -n monitor` as the primary runtime event source.
+- Use Clash Verge app-home file metadata as an additional runtime event source.
+- Keep startup sandbox egress validation in preflight; runtime watchdog checks
+  are host-centered and event-triggered.
 
-Known limitation: not every observable network condition is guaranteed to emit a route event in the same way across macOS, Clash Verge, and Docker Sandbox versions. Manual testing must document observed behavior.
+Known limitation: not every observable network condition is guaranteed to emit a
+route event or watched Clash app-home metadata change in the same way across
+macOS, Clash Verge, and Docker Sandbox versions. Manual testing must document
+observed behavior.
 
 ## Clash Verge Rev TUN State Sources
 

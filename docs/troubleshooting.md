@@ -125,16 +125,17 @@ Typical output:
 
 ```text
 sandbox probe invalid: sandbox-egress-mismatch: sandbox egress observed IP <observed> does not match expected IP <expected>
-watchdog stopped sandbox: route-monitor runtime policy failed: sandbox egress invalid: sandbox-egress-mismatch: ...
 ```
 
 Meaning:
 
-- Docker Sandbox egress does not match the configured expected IP even though
-  the host may have passed its own egress check.
+- During startup preflight, Docker Sandbox egress does not match the configured
+  expected IP even though the host may have passed its own egress check.
 - Docker Sandbox normally uses an internal proxy at
   `gateway.docker.internal:3128`; this is allowed when the observed public IP
   still matches policy.
+- Runtime route and Clash app-home events no longer run sandbox egress curl as
+  the watchdog gate. Runtime IP drift is reported through host egress failures.
 
 Checks:
 
@@ -142,53 +143,83 @@ Checks:
 - Confirm `network.egress_ip.sandbox_check_url` returns a plain IP from inside
   the sandbox.
 - Check whether a Clash node switch, VPN, Wi-Fi switch, or Docker Sandbox
-  backend state changed host or sandbox egress.
+  backend state changed startup sandbox egress.
 
 Expected behavior:
 
 - Startup mismatch removes the probe sandbox and does not start the main
   sandbox.
-- Runtime mismatch stops the main sandbox and removes the probe sandbox
-  according to cleanup policy after a route event triggers validation.
+- At runtime, the watchdog does not report `sandbox-egress-mismatch`; it stops
+  the main sandbox when a route or Clash app-home metadata event leads to a
+  route/interface failure or a `host-egress-mismatch`.
 
-## Runtime sandbox egress indeterminate
+## Runtime host egress drift
 
 Typical output:
 
 ```text
-watchdog stopped sandbox: route-monitor runtime check failed: indeterminate runtime egress check failed after 10 attempt(s): runtime egress indeterminate retry 10/10: runtime sandbox egress command failed against configured network.egress_ip.sandbox_check_url ...
+watchdog stopped sandbox: route-monitor runtime check failed: host egress drift: host egress observed IP <observed> does not match expected IP <expected>
+watchdog stopped sandbox: clash-app-home runtime check failed: host egress drift: host egress observed IP <observed> does not match expected IP <expected>
 ```
 
 Meaning:
 
-- The watchdog could not prove the main sandbox egress IP from
-  `network.egress_ip.sandbox_check_url`, but it also did not observe a different
-  public IP.
-- Common causes include a curl timeout, Docker Sandbox gateway proxy failure,
-  Docker registry auth/token timeout in older probe-based paths, DNS/TLS
-  endpoint failure, or transient network loss.
-- This is distinct from `sandbox-egress-mismatch`, where the sandbox returned a
-  concrete observed IP that differs from the configured expected IP.
+- A route monitor event or Clash Verge app-home metadata event triggered a
+  runtime check.
+- The startup TUN route and interface were still safe enough to reach the host
+  egress check, but `network.egress_ip.host_check_url` no longer returned
+  `network.egress_ip.expected_ip`.
+- The watchdog does not continuously poll the host egress endpoint; it checks
+  only when a supported event source fires.
 
 Checks:
 
-- Run `sbx exec <main-name> curl -fsS <network.egress_ip.sandbox_check_url>`.
-- If Google is the only failing destination, also run
-  `sbx exec <main-name> curl -fsS https://www.google.com` and record it as
-  Google connectivity failure, not as the policy check.
-- Prefer a `sandbox_check_url` endpoint that returns only a plain IP and is
-  reliable from both host and Docker Sandbox.
+- Confirm the configured expected IP is still the approved IP for the active
+  Clash node.
+- Run the host check endpoint locally and confirm it returns a plain IP.
+- If the event source was `clash-app-home`, inspect only whether relevant files
+  changed; do not paste Clash configs, subscriptions, nodes, secrets, or logs
+  into issues.
 
 Expected behavior:
 
-- Runtime checks retry indeterminate failures up to 10 attempts with capped
-  exponential backoff before failing closed.
-- Before each retry, the watchdog revalidates the startup TUN route and fails
-  closed immediately if the route or startup TUN interface is explicitly unsafe.
-- If the configured sandbox check URL later returns the expected IP, the
-  watchdog keeps the main sandbox running even when Google connectivity fails.
-- Explicit TUN mismatch, TUN missing, or observed IP mismatch still fail closed
-  immediately.
+- Host egress mismatch fails closed and stops the main sandbox.
+- Endpoint errors are reported as `host egress check failed` rather than as
+  sandbox egress failures.
+- The cleanup path stops the main sandbox according to cleanup policy; if that
+  cleanup hangs or fails, diagnose Docker Sandbox control-plane health.
+
+## Runtime Docker Sandbox control-plane stall
+
+Typical output:
+
+```text
+watchdog stopped sandbox: ... cleanup failed: sbx control-plane failure: stop main sandbox "<main-name>" failed: ...
+sbx exec <main-name> curl -fsS <network.egress_ip.sandbox_check_url>   # manual diagnostic hangs or times out
+```
+
+Meaning:
+
+- `sbx exec` or `sbx stop` is slow, hung, unauthenticated, or unable to reach
+  the Docker Sandbox control plane.
+- This should not be interpreted as a runtime sandbox egress mismatch. Runtime
+  watchdog policy no longer depends on repeated `sbx exec` egress probes.
+- Manual `sbx exec <main-name> curl ...` remains useful as a backend diagnostic
+  after the fact, but it is not the runtime safety gate.
+
+Checks:
+
+- Run `sbx version` and `sbx ls`.
+- If `sbx ls` hangs, treat it as Docker Sandbox control-plane unavailability.
+- Run `safe-claude-sbx doctor --config config.yaml` after recovering the Docker
+  Sandbox control plane to revalidate startup sandbox egress.
+
+Expected behavior:
+
+- Host route or host egress failures are reported separately from cleanup
+  failures.
+- A cleanup control-plane failure may leave the main sandbox in Docker Sandbox
+  until local recovery commands succeed.
 
 ## `sbx` is unavailable
 
@@ -416,7 +447,8 @@ watchdog stopped sandbox: watchdog event source failed: start route monitor: ...
 
 Meaning:
 
-- `route -n monitor` is the MVP's primary runtime event source.
+- `route -n monitor` is one runtime event source; Clash app-home metadata is
+  the other current runtime event source.
 - If it exits, the launcher treats the event source as failed and stops the
   sandbox.
 - Real macOS environments may not emit identical route events for every Clash
@@ -437,3 +469,37 @@ Expected behavior:
   according to cleanup policy.
 - Missing route events are a known MVP limitation; the launcher does not claim
   polling coverage without an event.
+
+## Clash app-home event source exits or misses an event
+
+Typical output:
+
+```text
+watchdog stopped sandbox: watchdog event source failed: clash app-home event source unavailable: network.clash_verge.app_home does not exist or is not accessible
+watchdog stopped sandbox: clash-app-home runtime check failed: host egress drift: ...
+```
+
+Meaning:
+
+- The runtime watchdog also watches Clash Verge app-home metadata for configured
+  policy files and directories.
+- Metadata changes trigger the same lightweight runtime check as route events:
+  startup TUN route, startup TUN interface existence, and host egress.
+- The watcher observes file metadata only. It does not read or print Clash file
+  contents.
+
+Checks:
+
+- Confirm `network.clash_verge.app_home` points to the active Clash Verge Rev
+  app home, especially for portable mode.
+- Check that the app-home directory exists and is readable by the launcher.
+- Reproduce the node or profile switch while recording only changed path names,
+  not file contents.
+
+Expected behavior:
+
+- If app-home metadata changes and host egress drifts, the main sandbox stops.
+- If the app-home event source cannot start, the watchdog treats that event
+  source as failed and stops the main sandbox.
+- If a Clash node switch emits no route event and changes no watched app-home
+  metadata, immediate detection is not guaranteed.

@@ -5,10 +5,11 @@
 ## Domain Terms
 
 - **launcher**: The user-facing CLI that validates safety conditions before starting the sandbox.
-- **preflight**: Startup checks that must pass before a sandbox may be created or used.
-- **watchdog**: Runtime supervision that stops the sandbox when network conditions no longer match policy.
+- **preflight**: Startup checks that must pass before a sandbox may be created or used, including sandbox reachability checks that require `sbx exec`.
+- **watchdog**: Lightweight runtime supervision that stops the sandbox when host route or host egress conditions no longer match policy.
+- **Clash event source**: A host-side signal that may indicate route or egress drift, such as a route event or Clash Verge app-home file metadata change; it must not require reading or printing proxy credentials.
 - **TUN interface**: A macOS `utunX` interface used by Clash Verge TUN mode for transparent routing.
-- **egress IP**: The public IP observed by the host or sandbox when calling a configured IP-check endpoint.
+- **egress IP**: The public IP observed by the host, or by the sandbox during startup validation, when calling a configured IP-check endpoint.
 - **workspace mount**: The single project directory made visible inside the sandbox.
 - **sensitive path**: A host path that must never be mounted into the sandbox, such as Home, SSH, Claude config, Clash config, or Keychain directories.
 - **backend**: The sandbox runtime adapter. Phase 1 supports Docker Sandbox / `sbx`.

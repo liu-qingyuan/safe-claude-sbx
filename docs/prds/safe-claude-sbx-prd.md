@@ -1,5 +1,10 @@
 # PRD: safe-claude-sbx MVP
 
+> Current runtime-watchdog behavior is amended by ADR 0002 and PRD #31:
+> startup still validates host and sandbox egress, but runtime route and Clash
+> app-home events now trigger lightweight host-centered route, interface, and
+> host egress checks rather than sandbox egress curl through `sbx exec`.
+
 ## 问题陈述
 
 macOS 本机开发者在使用 Claude Code 的 Docker Sandbox 时，容易因为忘记开启 Clash Verge TUN 模式、默认路由变化、出口 IP 变化或误挂载敏感路径，导致 sandbox 在不符合预期的网络和隔离条件下运行。
@@ -12,7 +17,7 @@ macOS 本机开发者在使用 Claude Code 的 Docker Sandbox 时，容易因为
 
 CLI 执行 preflight 检查，只有在 Clash Verge TUN 路由有效、宿主机和 sandbox 出口 IP 都等于配置值、sandbox 内没有显式代理环境变量、workspace mount 安全时，才启动 Docker Sandbox / `sbx` 中的 Claude Code。
 
-启动后，CLI 进入事件驱动的 watchdog。watchdog 使用 `route -n monitor` 监听 macOS 路由变化，把路由事件转换成重新验证动作。每次相关事件触发后，它重新检查启动时记录的 TUN 接口、默认路由、接口可用性和 sandbox 出口 IP。一旦任一对象的状态不再满足策略，CLI 立即停止 sandbox 并执行统一 cleanup。
+启动后，CLI 进入事件驱动的 watchdog。watchdog 使用 `route -n monitor` 和 Clash Verge app-home 文件 metadata 变化监听运行期漂移，把事件转换成重新验证动作。每次相关事件触发后，它重新检查启动时记录的 TUN 接口、默认路由、接口可用性和 host 出口 IP。一旦任一对象的状态不再满足策略，CLI 立即停止 sandbox 并执行统一 cleanup。
 
 ## 用户故事
 
@@ -23,7 +28,7 @@ CLI 执行 preflight 检查，只有在 Clash Verge TUN 路由有效、宿主机
 5. 作为 macOS 开发者，我想只挂载当前项目目录，这样 Home、SSH、Claude 配置、Clash 配置和 Keychain 不会被误暴露。
 6. 作为 macOS 开发者，我想在 TUN 关闭时自动停止 sandbox，这样异常网络状态不会持续。
 7. 作为 macOS 开发者，我想在默认路由切走启动时的 TUN 接口后自动停止 sandbox，这样路由漂移不会被忽略。
-8. 作为 macOS 开发者，我想在 sandbox 出口 IP 变化后自动停止 sandbox，这样节点切换或网络异常不会继续运行任务。
+8. 作为 macOS 开发者，我想在事件触发后发现 host 出口 IP 变化并自动停止 sandbox，这样节点切换或网络异常不会继续运行任务。
 9. 作为 macOS 开发者，我想在 Docker Sandbox 自己退出时让 watchdog 正常退出，这样本地终端不会残留无意义进程。
 10. 作为 macOS 开发者，我想按 Ctrl+C 时优雅停止 sandbox 和 watcher，这样资源不会残留。
 11. 作为 macOS 开发者，我想用结构化配置分别声明网络、时区、语言、sandbox 和 mount 策略，这样我能清楚知道每类设置影响什么行为。
@@ -47,8 +52,8 @@ CLI 执行 preflight 检查，只有在 Clash Verge TUN 路由有效、宿主机
 - Clash Verge TUN 检测负责验证 macOS 默认路由是否通过 `utunX`，并确认启动时使用的 TUN 接口处于可用状态。默认路由检查使用 `route get <route_check_target>`。
 - 出口 IP 检测负责验证宿主机和 sandbox 内观察到的公网 IP 是否都等于配置值。它不负责判断 TUN 是否存在，也不推断 Clash Verge 状态。
 - 启动时记录 `startup_tun_interface`。运行期间要求默认路由继续使用该接口；如果接口消失、路由切走或事件后无法确认接口有效，应视为策略失败。
-- 运行期 route watcher 是事件驱动组件，使用 `route -n monitor` 监听路由变化。事件触发后重新验证 Clash Verge TUN 状态和 sandbox egress。第一版默认不使用 5 到 10 秒低频兜底轮询。
-- watchdog 应把“事件来源”和“验证失败原因”分开记录。例如 route event 触发了检查，但最终失败原因可能是 TUN interface missing、default route changed、host egress mismatch 或 sandbox egress mismatch。
+- 运行期 watcher 是事件驱动组件，使用 `route -n monitor` 和 Clash Verge app-home 文件 metadata 变化监听运行期漂移。事件触发后重新验证 startup TUN route、startup TUN interface 和 host egress。第一版默认不使用 5 到 10 秒低频兜底轮询。
+- watchdog 应把“事件来源”和“验证失败原因”分开记录。例如 route event 或 clash-app-home event 触发了检查，但最终失败原因可能是 TUN interface missing、default route changed 或 host egress mismatch。
 - backend policy、platform/network policy、configuration model 和 mount policy 分离。Docker Sandbox / `sbx` 是 adapter，不承载核心安全策略。
 - launcher 不得主动向 sandbox 注入 Clash 或本机代理端口。Docker Sandbox / `sbx` 官方网络模型会在 sandbox 内通过 proxy 环境变量把流量送到 Docker-managed proxy，例如 `gateway.docker.internal:3128`。MVP 应允许这种 Docker-managed proxy env，但必须拒绝 host/Clash 代理值（如 `127.0.0.1:7897`）或未知 proxy 目标。网络一致性仍由 TUN 路由和 host/sandbox egress IP 验证承担。
 - timezone 和 locale 不能只通过 host/daemon 日志判断。`sbx` 日志中的 `+08:00` 是 host/daemon 时区；MVP 必须通过 sandbox 内部命令或主 agent 启动 contract 验证 timezone/locale 是否真正生效。
@@ -61,7 +66,7 @@ CLI 执行 preflight 检查，只有在 Clash Verge TUN 路由有效、宿主机
 - 最高价值测试接缝是 launcher 行为：给定配置对象、route/backend/egress/mount 的可观察结果，验证 CLI 是否启动、拒绝或 cleanup。
 - 单元测试应覆盖配置对象校验、Clash Verge TUN 检测、route 输出解析、egress IP 比较、mount policy、timezone/locale 传递和 cleanup 幂等行为。
 - 集成测试应通过 fake backend 和 fake macOS command runner 模拟 `route get`、`route -n monitor`、`ifconfig`、`sbx` 和 `curl`。
-- 事件驱动测试应覆盖：TUN interface 消失、默认路由切走、route event 到达但状态仍有效、sandbox egress 变化、backend 自行退出和 Ctrl+C。
+- 事件驱动测试应覆盖：TUN interface 消失、默认路由切走、route event 到达但状态仍有效、Clash app-home metadata event、host egress 变化、backend 自行退出和 Ctrl+C。
 - 真实 TUN、Clash Verge、Docker Sandbox 和公网 IP 依赖本机环境，第一阶段必须维护手动测试计划。
 - 测试不得依赖真实 token、Claude 凭证、SSH key、Clash 配置或 Keychain。
 
