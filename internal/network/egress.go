@@ -39,13 +39,17 @@ func CheckHostEgress(policy config.EgressIP) (EgressResult, error) {
 }
 
 func (v EgressValidator) CheckHost(policy config.EgressIP) (EgressResult, error) {
+	return v.CheckHostContext(context.Background(), policy)
+}
+
+func (v EgressValidator) CheckHostContext(ctx context.Context, policy config.EgressIP) (EgressResult, error) {
 	timeout := time.Duration(policy.TimeoutSeconds) * time.Second
 	client := v.Client
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, policy.HostCheckURL, nil)

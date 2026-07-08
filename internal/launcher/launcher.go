@@ -170,7 +170,6 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 			Config:              cfg,
 			StartupTUNInterface: tun.StartupTUNInterface,
 			RouteRunner:         network.ExecRunner{},
-			Sandbox:             sandbox,
 		},
 		Cleanup: cleanup,
 	}

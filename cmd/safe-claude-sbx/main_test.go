@@ -486,6 +486,9 @@ func TestSafeHerdrWatchdogStopsSandboxWhenRouteEventChangesDefaultRoute(t *testi
 	if !containsLogLine(log, "stop claude-sbx") {
 		t.Fatalf("expected watchdog cleanup to stop main sandbox, got:\n%s", log)
 	}
+	if containsLogLine(log, "exec claude-sbx curl -fsS https://api.ipify.org") {
+		t.Fatalf("runtime route event should not run sandbox egress curl, got:\n%s", log)
+	}
 }
 
 func TestSafeHerdrFailsClosedBeforeTUI(t *testing.T) {
@@ -702,6 +705,9 @@ func TestLaunchWatchdogStopsMainSandboxWhenRouteEventChangesDefaultRoute(t *test
 	log := readFile(t, logPath)
 	if !containsLogLine(log, "stop claude-sbx") {
 		t.Fatalf("expected watchdog cleanup to stop main sandbox, got:\n%s", log)
+	}
+	if containsLogLine(log, "exec claude-sbx curl -fsS https://api.ipify.org") {
+		t.Fatalf("runtime route event should not run sandbox egress curl, got:\n%s", log)
 	}
 }
 

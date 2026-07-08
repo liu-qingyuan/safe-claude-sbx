@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liu-qingyuan/safe-claude-sbx/internal/backend"
-	"github.com/liu-qingyuan/safe-claude-sbx/internal/config"
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/network"
 )
 
@@ -138,21 +136,23 @@ func TestSupervisorDebouncesRouteEvents(t *testing.T) {
 	}
 }
 
-func TestSupervisorFailsClosedOnRouteChangeWhileRuntimeEgressIsBlocked(t *testing.T) {
-	events := make(chan Event, 2)
+func TestSupervisorFailsClosedOnRouteChangeBeforeHostEgressCheck(t *testing.T) {
+	events := make(chan Event, 1)
 	cleanup := &recordingCleanup{}
-	routes := &switchingRouteRunner{
-		routeInterface: "utun9",
-		interfaces:     map[string]bool{"utun9": true},
-	}
-	probe := &blockingRuntimeEgress{started: make(chan struct{})}
+	hostEgressCalls := 0
 	supervisor := Supervisor{
 		Events: events,
 		Check: RuntimeChecker{
 			Config:              runtimeCheckConfig(),
 			StartupTUNInterface: "utun9",
-			RouteRunner:         routes,
-			Sandbox:             probe,
+			RouteRunner: fakeRouteRunner{
+				routeInterface: "en0",
+				interfaces:     map[string]bool{"utun9": true},
+			},
+			HostEgress: fakeHostEgressChecker{
+				result: network.EgressResult{OK: true, ObservedIP: "203.0.113.10", ExpectedIP: "203.0.113.10"},
+				calls:  &hostEgressCalls,
+			},
 		},
 		Cleanup: cleanup,
 	}
@@ -162,14 +162,6 @@ func TestSupervisorFailsClosedOnRouteChangeWhileRuntimeEgressIsBlocked(t *testin
 		done <- supervisor.Run(context.Background())
 	}()
 
-	events <- Event{Source: "route-monitor", Detail: "initial route event"}
-	select {
-	case <-probe.started:
-	case <-time.After(time.Second):
-		t.Fatal("runtime egress check did not start")
-	}
-
-	routes.setRouteInterface("en0")
 	events <- Event{Source: "route-monitor", Detail: "route changed"}
 
 	err := waitDone(t, done)
@@ -179,13 +171,15 @@ func TestSupervisorFailsClosedOnRouteChangeWhileRuntimeEgressIsBlocked(t *testin
 	if !strings.Contains(err.Error(), "default route changed from startup interface utun9 to en0") {
 		t.Fatalf("expected route failure, got %v", err)
 	}
+	if hostEgressCalls != 0 {
+		t.Fatalf("route failure should happen before host egress check, got %d calls", hostEgressCalls)
+	}
 	if cleanup.calls != 1 {
 		t.Fatalf("expected one cleanup after route failure, got %d", cleanup.calls)
 	}
-	probe.release()
 }
 
-func TestSupervisorCleansUpOnFastSandboxEgressMismatch(t *testing.T) {
+func TestSupervisorCleansUpOnHostEgressMismatch(t *testing.T) {
 	events := make(chan Event, 1)
 	cleanup := &recordingCleanup{}
 	supervisor := Supervisor{
@@ -197,9 +191,15 @@ func TestSupervisorCleansUpOnFastSandboxEgressMismatch(t *testing.T) {
 				routeInterface: "utun9",
 				interfaces:     map[string]bool{"utun9": true},
 			},
-			Sandbox: &fakeFastSandbox{
-				egressErr: errors.New("sandbox-egress-mismatch: observed IP mismatch"),
-				probeDone: make(chan struct{}),
+			HostEgress: fakeHostEgressChecker{
+				result: network.EgressResult{
+					OK:            false,
+					ExpectedIP:    "203.0.113.10",
+					ObservedIP:    "198.51.100.77",
+					FailureKind:   network.EgressFailureMismatch,
+					FailureReason: "host egress observed IP 198.51.100.77 does not match expected IP 203.0.113.10",
+				},
+				err: errors.New("host-egress-mismatch: observed IP mismatch"),
 			},
 		},
 		Cleanup: cleanup,
@@ -215,11 +215,56 @@ func TestSupervisorCleansUpOnFastSandboxEgressMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected watchdog to fail closed")
 	}
-	if !strings.Contains(err.Error(), "sandbox-egress-mismatch") {
-		t.Fatalf("expected sandbox egress mismatch, got %v", err)
+	if !strings.Contains(err.Error(), "host egress drift") {
+		t.Fatalf("expected host egress drift, got %v", err)
+	}
+	if strings.Contains(err.Error(), "sandbox egress") {
+		t.Fatalf("host drift should not be reported as sandbox egress failure: %v", err)
 	}
 	if cleanup.calls != 1 {
 		t.Fatalf("expected one cleanup after egress failure, got %d", cleanup.calls)
+	}
+}
+
+func TestSupervisorKeepsRunningWhenHostCenteredRuntimeCheckPasses(t *testing.T) {
+	events := make(chan Event, 1)
+	backendExit := make(chan error)
+	cleanup := &recordingCleanup{}
+	supervisor := Supervisor{
+		Events:      events,
+		BackendExit: backendExit,
+		Check: RuntimeChecker{
+			Config:              runtimeCheckConfig(),
+			StartupTUNInterface: "utun9",
+			RouteRunner: fakeRouteRunner{
+				routeInterface: "utun9",
+				interfaces:     map[string]bool{"utun9": true},
+			},
+			HostEgress: fakeHostEgressChecker{
+				result: network.EgressResult{OK: true, ObservedIP: "203.0.113.10", ExpectedIP: "203.0.113.10"},
+			},
+		},
+		Cleanup: cleanup,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- supervisor.Run(context.Background())
+	}()
+
+	events <- Event{Source: "route-monitor", Detail: "route unchanged"}
+	select {
+	case err := <-done:
+		t.Fatalf("watchdog exited despite valid runtime state: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	backendExit <- nil
+	if err := waitDone(t, done); err != nil {
+		t.Fatalf("watchdog returned error after backend exit: %v", err)
+	}
+	if cleanup.calls != 1 {
+		t.Fatalf("expected one cleanup after backend exit, got %d", cleanup.calls)
 	}
 }
 
@@ -311,61 +356,3 @@ func (c *blockingCleanup) Cleanup(context.Context) error {
 }
 
 var errRuntimeCheck = errors.New("runtime check failed")
-
-type switchingRouteRunner struct {
-	mu             sync.Mutex
-	routeInterface string
-	interfaces     map[string]bool
-}
-
-func (r *switchingRouteRunner) setRouteInterface(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.routeInterface = name
-}
-
-func (r *switchingRouteRunner) Run(name string, args ...string) (string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if name == "route" && len(args) == 2 && args[0] == "get" {
-		return "interface: " + r.routeInterface + "\n", nil
-	}
-	if name == "ifconfig" && len(args) == 1 {
-		if r.interfaces[args[0]] {
-			return args[0] + ": flags=8051<UP>\n", nil
-		}
-		return "", errors.New("interface missing")
-	}
-	return "", errors.New("unexpected command")
-}
-
-type blockingRuntimeEgress struct {
-	once    sync.Once
-	started chan struct{}
-	done    chan struct{}
-}
-
-func (p *blockingRuntimeEgress) CheckRuntimeEgress(ctx context.Context, cfg config.Config) (backend.ProbeResult, error) {
-	p.once.Do(func() {
-		p.done = make(chan struct{})
-		close(p.started)
-	})
-	select {
-	case <-ctx.Done():
-		return backend.ProbeResult{}, ctx.Err()
-	case <-p.done:
-		return backend.ProbeResult{
-			Egress: network.EgressResult{OK: true, ObservedIP: cfg.Network.EgressIP.ExpectedIP, ExpectedIP: cfg.Network.EgressIP.ExpectedIP},
-		}, nil
-	}
-}
-
-func (p *blockingRuntimeEgress) Probe(context.Context, config.Config) (backend.ProbeResult, error) {
-	return backend.ProbeResult{}, nil
-}
-
-func (p *blockingRuntimeEgress) release() {
-	if p.done != nil {
-		close(p.done)
-	}
-}
