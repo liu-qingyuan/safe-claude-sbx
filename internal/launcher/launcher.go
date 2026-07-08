@@ -68,7 +68,7 @@ func runDoctor(configPath string, stdout, stderr io.Writer) int {
 	sandbox := backend.NewDockerSandbox()
 	availability, err := sandbox.CheckAvailability(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "sandbox backend invalid: %v\n", err)
+		fmt.Fprintf(stderr, "sandbox backend invalid: %s\n", backendAvailabilityError(availability, err))
 		return 1
 	}
 	fmt.Fprintf(stdout, "sandbox backend ok: %s\n", availability.Version)
@@ -119,7 +119,7 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 	sandbox := backend.NewDockerSandbox()
 	availability, err := sandbox.CheckAvailability(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "sandbox backend invalid: %v\n", err)
+		fmt.Fprintf(stderr, "sandbox backend invalid: %s\n", backendAvailabilityError(availability, err))
 		return 1
 	}
 	fmt.Fprintf(stdout, "sandbox backend ok: %s\n", availability.Version)
@@ -243,4 +243,11 @@ func targetStartedLabel(target launchTarget) string {
 		return "Herdr TUI"
 	}
 	return "sandbox"
+}
+
+func backendAvailabilityError(availability backend.Availability, err error) string {
+	if availability.Kind == backend.AvailabilityControlPlaneUnavailable {
+		return fmt.Sprintf("%v; run `sbx diagnose` and `sbx ls`, then restart the sbx daemon or Docker Desktop", err)
+	}
+	return err.Error()
 }

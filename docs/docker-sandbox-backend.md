@@ -11,6 +11,13 @@ and shell probe creation have been validated on the target machine.
 The launcher should treat `sbx` as available only when all required preflight
 commands can run successfully.
 
+Startup readiness reports distinct states for a missing `sbx` binary,
+incompatible `sbx version` output, and Docker Sandbox control-plane/listing
+unavailability from bounded `sbx ls`. A killed, canceled, timed-out, or local
+socket-stalled `sbx ls` is reported as `sbx control-plane unavailable` with a
+short recovery hint, not as Herdr, Clash/TUN, sandbox egress, or runtime
+watchdog failure.
+
 Observed installation flow:
 
 ```bash

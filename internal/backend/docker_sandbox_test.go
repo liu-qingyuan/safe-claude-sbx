@@ -16,10 +16,11 @@ import (
 
 func TestDockerSandboxAvailabilityDistinguishesStates(t *testing.T) {
 	tests := []struct {
-		name     string
-		runner   stubRunner
-		wantKind AvailabilityKind
-		wantOK   bool
+		name           string
+		runner         stubRunner
+		wantKind       AvailabilityKind
+		wantOK         bool
+		wantDiagnostic string
 	}{
 		{
 			name: "available",
@@ -36,7 +37,7 @@ func TestDockerSandboxAvailabilityDistinguishesStates(t *testing.T) {
 		{
 			name:     "binary unavailable",
 			runner:   stubRunner{lookPathErr: errors.New("not found")},
-			wantKind: AvailabilityUnavailable,
+			wantKind: AvailabilityBinaryMissing,
 		},
 		{
 			name: "version incompatible",
@@ -62,6 +63,49 @@ func TestDockerSandboxAvailabilityDistinguishesStates(t *testing.T) {
 			},
 			wantKind: AvailabilityUnavailable,
 		},
+		{
+			name: "control plane killed",
+			runner: stubRunner{
+				path: "/tmp/sbx",
+				results: map[string]CommandResult{
+					"sbx version": {Stdout: "sbx version: v0.34.0 fake\n"},
+				},
+				errors: map[string]error{
+					"sbx ls": errors.New("signal: killed"),
+				},
+			},
+			wantKind:       AvailabilityControlPlaneUnavailable,
+			wantDiagnostic: "sbx control-plane unavailable",
+		},
+		{
+			name: "control plane context canceled",
+			runner: stubRunner{
+				path: "/tmp/sbx",
+				results: map[string]CommandResult{
+					"sbx version": {Stdout: "sbx version: v0.34.0 fake\n"},
+					"sbx ls":      {Stderr: "request failed: context canceled\n"},
+				},
+				errors: map[string]error{
+					"sbx ls": context.Canceled,
+				},
+			},
+			wantKind:       AvailabilityControlPlaneUnavailable,
+			wantDiagnostic: "sbx control-plane unavailable",
+		},
+		{
+			name: "control plane deadline exceeded",
+			runner: stubRunner{
+				path: "/tmp/sbx",
+				results: map[string]CommandResult{
+					"sbx version": {Stdout: "sbx version: v0.34.0 fake\n"},
+				},
+				errors: map[string]error{
+					"sbx ls": context.DeadlineExceeded,
+				},
+			},
+			wantKind:       AvailabilityControlPlaneUnavailable,
+			wantDiagnostic: "command timed out",
+		},
 	}
 
 	for _, tt := range tests {
@@ -79,6 +123,9 @@ func TestDockerSandboxAvailabilityDistinguishesStates(t *testing.T) {
 			}
 			if !tt.wantOK && err == nil {
 				t.Fatalf("availability unexpectedly succeeded: %#v", got)
+			}
+			if tt.wantDiagnostic != "" && !strings.Contains(err.Error(), tt.wantDiagnostic) {
+				t.Fatalf("expected diagnostic %q in error %q", tt.wantDiagnostic, err)
 			}
 		})
 	}

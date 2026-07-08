@@ -21,9 +21,11 @@ import (
 type AvailabilityKind string
 
 const (
-	AvailabilityAvailable    AvailabilityKind = "available"
-	AvailabilityUnavailable  AvailabilityKind = "unavailable"
-	AvailabilityIncompatible AvailabilityKind = "version-incompatible"
+	AvailabilityAvailable               AvailabilityKind = "available"
+	AvailabilityBinaryMissing           AvailabilityKind = "sbx binary missing"
+	AvailabilityUnavailable             AvailabilityKind = "unavailable"
+	AvailabilityIncompatible            AvailabilityKind = "version-incompatible"
+	AvailabilityControlPlaneUnavailable AvailabilityKind = "sbx control-plane unavailable"
 )
 
 var sandboxLocalHerdrCleanupTimeout = 5 * time.Second
@@ -142,7 +144,7 @@ func (b DockerSandbox) CheckAvailability(ctx context.Context) (Availability, err
 
 	path, err := runner.LookPath(binary)
 	if err != nil {
-		status := Availability{Kind: AvailabilityUnavailable, Diagnostic: err.Error()}
+		status := Availability{Kind: AvailabilityBinaryMissing, Diagnostic: err.Error()}
 		return status, fmt.Errorf("%s: %s not found", status.Kind, binary)
 	}
 
@@ -159,6 +161,15 @@ func (b DockerSandbox) CheckAvailability(ctx context.Context) (Availability, err
 
 	diagnose, err := runner.Run(ctx, binary, "ls")
 	if err != nil {
+		if isStartupControlPlaneFailure(diagnose, err) {
+			status := Availability{
+				Kind:       AvailabilityControlPlaneUnavailable,
+				Path:       path,
+				Version:    versionText,
+				Diagnostic: startupControlPlaneDiagnostic(diagnose, err),
+			}
+			return status, fmt.Errorf("%s: %s", status.Kind, status.Diagnostic)
+		}
 		status := Availability{
 			Kind:       AvailabilityUnavailable,
 			Path:       path,
@@ -1186,6 +1197,34 @@ func isSBXControlPlaneFailure(result CommandResult, err error) bool {
 		return true
 	}
 	return strings.Contains(text, "http://socket/") || strings.Contains(text, "sandboxd.sock")
+}
+
+func isStartupControlPlaneFailure(result CommandResult, err error) bool {
+	if isSBXControlPlaneFailure(result, err) {
+		return true
+	}
+	text := strings.ToLower(commandText(result, err))
+	return strings.Contains(text, "signal: killed") ||
+		strings.Contains(text, "socket") ||
+		(strings.Contains(text, "daemon") && strings.Contains(text, "not reachable"))
+}
+
+func startupControlPlaneDiagnostic(result CommandResult, err error) string {
+	text := strings.ToLower(commandText(result, err))
+	switch {
+	case strings.Contains(text, "signal: killed"):
+		return "sbx ls failed: command was killed"
+	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(text, "deadline exceeded") || strings.Contains(text, "timed out") || strings.Contains(text, "timeout"):
+		return "sbx ls failed: command timed out"
+	case errors.Is(err, context.Canceled) || strings.Contains(text, "context canceled"):
+		return "sbx ls failed: command was canceled"
+	case strings.Contains(text, "socket"):
+		return "sbx ls failed: local Docker Sandbox socket did not respond"
+	case strings.Contains(text, "daemon") && strings.Contains(text, "not reachable"):
+		return "sbx ls failed: Docker Sandbox daemon did not respond"
+	default:
+		return "sbx ls failed"
+	}
 }
 
 func sbxProcessEnv() []string {

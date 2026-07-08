@@ -965,6 +965,119 @@ func TestDoctorAcceptsValidStructuredConfig(t *testing.T) {
 	}
 }
 
+func TestDoctorClassifiesControlPlaneListFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		LogPath:     logPath,
+		FailList:    true,
+		ListFailure: "context canceled while dialing /Users/alice/.docker/run/docker.sock",
+	})
+
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("doctor unexpectedly accepted unhealthy control plane:\n%s", output)
+	}
+	text := string(output)
+	for _, want := range []string{
+		"sandbox backend invalid: sbx control-plane unavailable",
+		"run `sbx diagnose` and `sbx ls`, then restart the sbx daemon or Docker Desktop",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in output, got:\n%s", want, output)
+		}
+	}
+	for _, forbidden := range []string{
+		"/Users/alice/.docker/run/docker.sock",
+		"docker.sock",
+		"sandbox probe invalid",
+		"sandbox egress",
+		"watchdog",
+		"Herdr",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("doctor leaked or misclassified %q:\n%s", forbidden, output)
+		}
+	}
+	log := readOptionalFile(t, logPath)
+	if strings.Contains(log, "create ") || strings.Contains(log, "exec ") || strings.Contains(log, "run ") {
+		t.Fatalf("doctor continued past backend readiness after control-plane failure:\n%s", log)
+	}
+}
+
+func TestDoctorBoundsControlPlaneListHang(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 1))
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{BlockList: true})
+
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	start := time.Now()
+	output, err := cmd.CombinedOutput()
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("doctor unexpectedly accepted hung control plane:\n%s", output)
+	}
+	text := string(output)
+	if !strings.Contains(text, "sandbox backend invalid: sbx control-plane unavailable") {
+		t.Fatalf("expected control-plane diagnostic, got:\n%s", output)
+	}
+	if elapsed > 4*time.Second {
+		t.Fatalf("doctor did not bound sbx ls readiness hang; elapsed %s with output:\n%s", elapsed, output)
+	}
+}
+
+func TestSafeHerdrClassifiesControlPlaneListFailureBeforeTUI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(validConfig(server.URL, "203.0.113.10", 10)))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun5", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		LogPath:     logPath,
+		FailList:    true,
+		ListFailure: "context canceled while dialing local Docker socket",
+	})
+
+	cmd := exec.Command("go", "run", "../safe-herdr", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("safe-herdr unexpectedly accepted unhealthy control plane:\n%s", output)
+	}
+	text := string(output)
+	if !strings.Contains(text, "sandbox backend invalid: sbx control-plane unavailable") {
+		t.Fatalf("expected control-plane diagnostic, got:\n%s", output)
+	}
+	if strings.Contains(text, "Herdr TUI") || strings.Contains(text, "watchdog") || strings.Contains(text, "sandbox egress") {
+		t.Fatalf("safe-herdr misclassified startup control-plane failure:\n%s", output)
+	}
+	log := readOptionalFile(t, logPath)
+	if containsLogLine(log, "exec -it claude-sbx herdr") || strings.Contains(log, "create ") || strings.Contains(log, "run ") {
+		t.Fatalf("safe-herdr continued into TUI startup after control-plane failure:\n%s", log)
+	}
+}
+
 func TestDoctorAcceptsSandboxLocalHerdrSupervisionConfig(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "203.0.113.10")
@@ -1777,6 +1890,9 @@ type fakeSBXOptions struct {
 	LogPath               string
 	LogRunEnvironment     bool
 	FailCreate            bool
+	FailList              bool
+	BlockList             bool
+	ListFailure           string
 	FailCurl              bool
 	FailRun               bool
 	FailHerdrHook         bool
@@ -1841,6 +1957,13 @@ case "$1" in
     printf '%%s\n' %q
     ;;
   ls)
+    if [ %q = "true" ]; then
+      exec sleep 5
+    fi
+    if [ %q = "true" ]; then
+      printf '%%s\n' %q >&2
+      exit 1
+    fi
     if [ -n %q ]; then
       printf 'SANDBOX                       AGENT   STATUS    PORTS   WORKSPACE\n'
       printf 'claude-sbx                     claude  %%s             %%s\n' %q %q
@@ -1992,6 +2115,9 @@ esac
 `, logSnippet,
 		logEnvironmentSnippet,
 		version,
+		shellBool(opts.BlockList),
+		shellBool(opts.FailList),
+		opts.ListFailure,
 		opts.ExistingMainStatus,
 		opts.ExistingMainStatus,
 		existingMainWorkspace,

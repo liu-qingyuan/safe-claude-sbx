@@ -226,22 +226,25 @@ Expected behavior:
 Typical output:
 
 ```text
-sandbox backend invalid: unavailable: sbx not found
+sandbox backend invalid: sbx binary missing: sbx not found
+sandbox backend invalid: version-incompatible: sbx version failed: ...
+sandbox backend invalid: sbx control-plane unavailable: sbx ls failed: command was canceled; run `sbx diagnose` and `sbx ls`, then restart the sbx daemon or Docker Desktop
 sandbox backend invalid: unavailable: sbx list failed: ERROR: Not authenticated to Docker
-sandbox backend invalid: unavailable: sbx list failed: ...
 watchdog stopped sandbox: ... cleanup failed: sbx control-plane failure: stop main sandbox "claude-sbx" failed: ...
 ```
 
 Meaning:
 
-- The `sbx` CLI is missing, incompatible, unauthenticated, or unable to reach
-  its backend.
+- Startup backend readiness distinguishes a missing `sbx` binary, incompatible
+  `sbx version`, Docker Sandbox control-plane/listing unavailability, and other
+  `sbx ls` backend errors such as authentication failures.
 - If cleanup reports `sbx control-plane failure`, the launcher already decided
   to fail closed, but Docker Sandbox's local control plane did not complete the
   stop or remove request. This is distinct from a TUN, route, or egress policy
   failure.
-- If `sbx ls` hangs, treat it as Docker Sandbox control plane unavailability,
-  not as evidence that the network safety policy passed or failed.
+- If startup reports `sbx control-plane unavailable`, treat it as local Docker
+  Sandbox control-plane health, not as evidence that the network safety policy
+  passed or failed.
 
 Checks:
 
