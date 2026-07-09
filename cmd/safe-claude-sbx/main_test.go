@@ -274,10 +274,13 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 	}
 	log := readFile(t, logPath)
 	assertLogLineOrder(t, log, []string{
-		"create --name claude-sbx-probe shell .",
-		"exec claude-sbx-probe curl -fsS https://api.ipify.org",
-		"rm --force claude-sbx-probe",
 		"ls",
+		"exec -e TZ=America/Chicago -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 claude-sbx env",
+		"exec claude-sbx pwd",
+		"exec claude-sbx mount",
+		"exec -e TZ=America/Chicago claude-sbx date",
+		"exec -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 claude-sbx locale",
+		"exec claude-sbx curl -fsS https://api.ipify.org",
 		"exec claude-sbx sh -lc command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
@@ -287,10 +290,14 @@ func TestSafeHerdrStartsSandboxLocalTUIAfterAllPreflightsPass(t *testing.T) {
 	})
 	for _, forbidden := range []string{
 		"create --name claude-sbx claude .",
+		"create --name claude-sbx-probe shell .",
+		"exec claude-sbx-probe curl -fsS https://api.ipify.org",
+		"stop claude-sbx-probe",
+		"rm --force claude-sbx-probe",
 		"curl -fsSL https://herdr.dev/install.sh | sh",
 	} {
 		if containsLogLine(log, forbidden) {
-			t.Fatalf("safe-herdr should not create or download for existing main sandbox, got forbidden command %q:\n%s", forbidden, log)
+			t.Fatalf("safe-herdr should not probe, create, or download for existing main sandbox, got forbidden command %q:\n%s", forbidden, log)
 		}
 	}
 	for _, forbidden := range []string{"/tmp/host-herdr.sock", "host-pane", "host-workspace"} {
@@ -329,6 +336,12 @@ func TestSafeHerdrCreatesTemplateSandboxWhenMainSandboxIsMissing(t *testing.T) {
 	log := readFile(t, logPath)
 	assertLogLineOrder(t, log, []string{
 		"create --name claude-sbx --template safe-claude-sbx-herdr:latest claude .",
+		"exec -e TZ=America/Chicago -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 claude-sbx env",
+		"exec claude-sbx pwd",
+		"exec claude-sbx mount",
+		"exec -e TZ=America/Chicago claude-sbx date",
+		"exec -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 claude-sbx locale",
+		"exec claude-sbx curl -fsS https://api.ipify.org",
 		"exec claude-sbx sh -lc command -v herdr",
 		"exec claude-sbx herdr --version",
 		"exec claude-sbx herdr integration install claude",
@@ -339,8 +352,16 @@ func TestSafeHerdrCreatesTemplateSandboxWhenMainSandboxIsMissing(t *testing.T) {
 	if !strings.Contains(log, "exec claude-sbx sh -lc workspace=") {
 		t.Fatalf("expected main workspace visibility check before Herdr TUI attach, got:\n%s", log)
 	}
-	if strings.Contains(log, "curl -fsSL https://herdr.dev/install.sh") {
-		t.Fatalf("safe-herdr must not download Herdr at startup, got:\n%s", log)
+	for _, forbidden := range []string{
+		"create --name claude-sbx-probe shell .",
+		"exec claude-sbx-probe curl -fsS https://api.ipify.org",
+		"stop claude-sbx-probe",
+		"rm --force claude-sbx-probe",
+		"curl -fsSL https://herdr.dev/install.sh",
+	} {
+		if strings.Contains(log, forbidden) {
+			t.Fatalf("safe-herdr must not probe or download Herdr at startup, got forbidden command %q:\n%s", forbidden, log)
+		}
 	}
 }
 
@@ -377,8 +398,17 @@ func TestSafeHerdrChecksMainWorkspaceVisibilityBeforeTUIAttach(t *testing.T) {
 	}
 	herdrCheckIndex := strings.Index(log, "exec claude-sbx sh -lc command -v herdr")
 	visibilityIndex := strings.Index(log, "exec claude-sbx sh -lc workspace=")
-	if herdrCheckIndex < 0 || visibilityIndex < 0 || herdrCheckIndex > visibilityIndex {
-		t.Fatalf("expected existing Herdr check before main visibility gate, got:\n%s", log)
+	if visibilityIndex < 0 || herdrCheckIndex >= 0 {
+		t.Fatalf("expected main visibility gate to fail before Herdr validation, got:\n%s", log)
+	}
+	for _, forbidden := range []string{
+		"create --name claude-sbx-probe shell .",
+		"stop claude-sbx",
+		"rm --force claude-sbx",
+	} {
+		if containsLogLine(log, forbidden) {
+			t.Fatalf("safe-herdr should not probe or clean existing failed main sandbox, got forbidden command %q:\n%s", forbidden, log)
+		}
 	}
 }
 
@@ -489,8 +519,8 @@ func TestSafeHerdrWatchdogStopsSandboxWhenRouteEventChangesDefaultRoute(t *testi
 	if !containsLogLine(log, "stop claude-sbx") {
 		t.Fatalf("expected watchdog cleanup to stop main sandbox, got:\n%s", log)
 	}
-	if containsLogLine(log, "exec claude-sbx curl -fsS https://api.ipify.org") {
-		t.Fatalf("runtime route event should not run sandbox egress curl, got:\n%s", log)
+	if countLogLine(log, "exec claude-sbx curl -fsS https://api.ipify.org") != 1 {
+		t.Fatalf("runtime route event should not run an additional sandbox egress curl, got:\n%s", log)
 	}
 }
 
@@ -558,10 +588,49 @@ func TestSafeHerdrFailsClosedBeforeTUI(t *testing.T) {
 			if containsLogLine(log, "exec -it claude-sbx herdr") {
 				t.Fatalf("Herdr TUI started despite preflight failure:\n%s", log)
 			}
-			if tt.wantCleanup && !strings.Contains(log, "rm --force claude-sbx-probe") {
-				t.Fatalf("expected probe cleanup after startup failure, got:\n%s", log)
+			if tt.wantCleanup && !containsLogLine(log, "stop claude-sbx") {
+				t.Fatalf("expected main sandbox cleanup after startup failure, got:\n%s", log)
 			}
 		})
+	}
+}
+
+func TestSafeHerdrCleansNewMainSandboxWhenHerdrVerificationFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(validLaunchConfig(t, server.URL, "203.0.113.10", 10)))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeBin := writeFakeSystemCommands(t, "utun9", false)
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP:      "203.0.113.10",
+		LogPath:       logPath,
+		FailHerdrHook: true,
+	})
+
+	cmd := exec.Command("go", "run", "../safe-herdr", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("safe-herdr unexpectedly succeeded after Herdr verification failure:\n%s", output)
+	}
+	if !strings.Contains(string(output), "install Claude Herdr integration") {
+		t.Fatalf("expected Herdr hook failure in output, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	assertLogLineOrder(t, log, []string{
+		"create --name claude-sbx --template safe-claude-sbx-herdr:latest claude .",
+		"exec claude-sbx curl -fsS https://api.ipify.org",
+		"exec claude-sbx herdr integration install claude",
+		"exec claude-sbx herdr server stop",
+		"stop claude-sbx",
+	})
+	if containsLogLine(log, "exec -it claude-sbx herdr") {
+		t.Fatalf("Herdr TUI attached after Herdr verification failure:\n%s", log)
 	}
 }
 
@@ -2037,6 +2106,7 @@ func writeFakeSBX(t *testing.T, opts fakeSBXOptions) string {
 	}
 	stopFile := filepath.Join(dir, "main-stopped")
 	herdrStopFile := filepath.Join(dir, "herdr-stopped")
+	createdFile := filepath.Join(dir, "main-created")
 
 	script := fmt.Sprintf(`#!/bin/sh
 set -eu
@@ -2054,7 +2124,10 @@ case "$1" in
       printf '%%s\n' %q >&2
       exit 1
     fi
-    if [ -n %q ]; then
+    if [ -f %q ]; then
+      printf 'SANDBOX                       AGENT   STATUS    PORTS   WORKSPACE\n'
+      printf 'claude-sbx                     claude  running             %%s\n' %q
+    elif [ -n %q ]; then
       printf 'SANDBOX                       AGENT   STATUS    PORTS   WORKSPACE\n'
       printf 'claude-sbx                     claude  %%s             %%s\n' %q %q
     else
@@ -2066,6 +2139,9 @@ case "$1" in
       printf 'create failed\n' >&2
       exit 1
     fi
+    case "$*" in
+      *" --name claude-sbx "*) touch %q ;;
+    esac
     printf 'probe created\n'
     ;;
   exec)
@@ -2208,10 +2284,13 @@ esac
 		shellBool(opts.BlockList),
 		shellBool(opts.FailList),
 		opts.ListFailure,
+		createdFile,
+		existingMainWorkspace,
 		opts.ExistingMainStatus,
 		opts.ExistingMainStatus,
 		existingMainWorkspace,
 		shellBool(opts.FailCreate),
+		createdFile,
 		shellBool(opts.FailCurl),
 		egressIP,
 		mainVisibilityOutput,
@@ -2369,6 +2448,16 @@ func containsLogLine(log, line string) bool {
 		}
 	}
 	return false
+}
+
+func countLogLine(log, line string) int {
+	count := 0
+	for _, got := range strings.Split(log, "\n") {
+		if got == line {
+			count++
+		}
+	}
+	return count
 }
 
 func assertNoParentGuidanceMutation(t *testing.T, log string) {

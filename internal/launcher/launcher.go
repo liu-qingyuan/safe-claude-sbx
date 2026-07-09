@@ -130,21 +130,39 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 	}
 	fmt.Fprintf(stdout, "sandbox backend ok: %s\n", availability.Version)
 
-	probe, err := sandbox.Probe(ctx, cfg)
-	if err != nil {
-		fmt.Fprintf(stderr, "sandbox probe invalid: %v\n", err)
-		return 1
-	}
-	fmt.Fprintf(stdout, "sandbox egress ok: observed IP %s\n", probe.Egress.ObservedIP)
-	fmt.Fprintln(stdout, "sandbox inspection ok")
-
 	mainCtx, stopMainCommand := context.WithCancel(context.Background())
 	defer stopMainCommand()
 
 	plan := backend.NewStartPlan(cfg)
+	mainCreatedByCommand := false
+	if target == herdrTUITarget {
+		preflight, err := sandbox.PreflightMainSandbox(ctx, cfg)
+		mainCreatedByCommand = preflight.CreatedByCommand
+		if err != nil {
+			if backend.ShouldCleanupMainAfterStartError(err) {
+				if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
+					fmt.Fprintf(stderr, "main sandbox preflight invalid: %v; cleanup main sandbox failed: %v\n", err, cleanupErr)
+					return 1
+				}
+			}
+			fmt.Fprintf(stderr, "main sandbox preflight invalid: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "sandbox egress ok: observed IP %s\n", preflight.Egress.ObservedIP)
+		fmt.Fprintln(stdout, "sandbox inspection ok")
+	} else {
+		probe, err := sandbox.Probe(ctx, cfg)
+		if err != nil {
+			fmt.Fprintf(stderr, "sandbox probe invalid: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "sandbox egress ok: observed IP %s\n", probe.Egress.ObservedIP)
+		fmt.Fprintln(stdout, "sandbox inspection ok")
+	}
+
 	start, backendExit, err := startAttachedTarget(sandbox, target, mainCtx, cfg, plan, stdin, stdout, stderr)
 	if err != nil {
-		if backend.ShouldCleanupMainAfterStartError(err) {
+		if backend.ShouldCleanupMainAfterStartError(err) || mainCreatedByCommand {
 			stopMainCommand()
 			if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
 				fmt.Fprintf(stderr, "%s invalid: %v; cleanup main sandbox failed: %v\n", targetStartLabel(target), err, cleanupErr)
@@ -168,10 +186,10 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 	)
 	cleanup := watchdog.CleanupFunc(func(ctx context.Context) error {
 		stopMainCommand()
-		return errors.Join(
-			sandbox.CleanupMain(ctx, cfg),
-			sandbox.CleanupProbe(ctx, cfg),
-		)
+		if target == herdrTUITarget {
+			return sandbox.CleanupMain(ctx, cfg)
+		}
+		return errors.Join(sandbox.CleanupMain(ctx, cfg), sandbox.CleanupProbe(ctx, cfg))
 	})
 	supervisor := watchdog.Supervisor{
 		Events:        watchdogEvents,
@@ -207,9 +225,6 @@ func startAttachedTarget(sandbox backend.DockerSandbox, target launchTarget, ctx
 			Locale:      plan.Locale,
 		}
 		if err := sandbox.PrepareHerdrTUI(ctx, plan); err != nil {
-			return start, nil, err
-		}
-		if err := checkMainWorkspaceVisibility(sandbox, cfg); err != nil {
 			return start, nil, err
 		}
 		fmt.Fprintln(stdout, "main sandbox inspection ok")
