@@ -292,6 +292,179 @@ func TestDockerSandboxCheckRuntimeEgressClassifiesTimeoutAsIndeterminate(t *test
 	}
 }
 
+func TestDockerSandboxPreflightMainSandboxCreatesAndInspectsMain(t *testing.T) {
+	calls := []string{}
+	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
+	cfg.Workspace.Mount = "/work/project"
+	runner := mainPreflightRunner(cfg, &calls)
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).PreflightMainSandbox(context.Background(), cfg)
+
+	if err != nil {
+		t.Fatalf("main preflight failed: %v", err)
+	}
+	if result.SandboxName != "main-sbx" || !result.CreatedByCommand {
+		t.Fatalf("expected new main sandbox result, got %#v", result)
+	}
+	if !result.Egress.OK || result.Egress.ObservedIP != "203.0.113.10" {
+		t.Fatalf("expected matching egress, got %#v", result.Egress)
+	}
+	if result.Inspection.Environment["HTTP_PROXY"] != "http://gateway.docker.internal:3128" {
+		t.Fatalf("expected environment observation, got %#v", result.Inspection.Environment)
+	}
+	got := strings.Join(calls, "\n")
+	want := strings.Join([]string{
+		"sbx ls",
+		"sbx create --name main-sbx claude /work/project",
+		"sbx exec -e TZ=UTC -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 main-sbx env",
+		"sbx exec main-sbx pwd",
+		"sbx exec main-sbx mount",
+		"sbx exec main-sbx sh -lc " + workspaceVisibilityScript("/work/project"),
+		"sbx exec -e TZ=UTC main-sbx date",
+		"sbx exec -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 main-sbx locale",
+		"sbx exec main-sbx curl -fsS https://example.test/ip",
+	}, "\n")
+	if got != want {
+		t.Fatalf("expected main sandbox preflight command contract, got:\n%s", got)
+	}
+}
+
+func TestDockerSandboxPreflightMainSandboxFailsOnEgressMismatch(t *testing.T) {
+	calls := []string{}
+	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
+	cfg.Workspace.Mount = "/work/project"
+	runner := mainPreflightRunner(cfg, &calls)
+	runner.results["sbx exec main-sbx curl -fsS https://example.test/ip"] = CommandResult{Stdout: "198.51.100.20\n"}
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).PreflightMainSandbox(context.Background(), cfg)
+
+	if err == nil {
+		t.Fatalf("main preflight unexpectedly passed")
+	}
+	if result.Egress.FailureKind != "sandbox-egress-mismatch" || result.Egress.ObservedIP != "198.51.100.20" {
+		t.Fatalf("expected egress mismatch result, got %#v", result.Egress)
+	}
+	if !result.CreatedByCommand || !ShouldCleanupMainAfterStartError(err) {
+		t.Fatalf("newly created failed main sandbox should be eligible for caller cleanup, result=%#v err=%v", result, err)
+	}
+}
+
+func TestDockerSandboxPreflightMainSandboxCreateFailureCanCleanupAttemptedMain(t *testing.T) {
+	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
+	cfg.Workspace.Mount = "/work/project"
+	runner := mainPreflightRunner(cfg, nil)
+	runner.results["sbx create --name main-sbx claude /work/project"] = CommandResult{Stderr: "create failed\n"}
+	runner.errors = map[string]error{
+		"sbx create --name main-sbx claude /work/project": errors.New("exit status 1"),
+	}
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).PreflightMainSandbox(context.Background(), cfg)
+
+	if err == nil {
+		t.Fatalf("main preflight unexpectedly passed")
+	}
+	if !result.CreatedByCommand || !ShouldCleanupMainAfterStartError(err) {
+		t.Fatalf("failed create attempt should be eligible for caller cleanup, result=%#v err=%v", result, err)
+	}
+}
+
+func TestDockerSandboxPreflightMainSandboxRedactsEgressCommandFailure(t *testing.T) {
+	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
+	cfg.Workspace.Mount = "/work/project"
+	cfg.Network.EgressIP.SandboxCheckURL = "https://example.test/ip?token=secret-token&cookie=secret-cookie"
+	runner := mainPreflightRunner(cfg, nil)
+	key := "sbx exec main-sbx curl -fsS " + cfg.Network.EgressIP.SandboxCheckURL
+	runner.results[key] = CommandResult{Stderr: "curl failed for secret-token\n"}
+	runner.errors = map[string]error{key: errors.New("exit status 1")}
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).PreflightMainSandbox(context.Background(), cfg)
+
+	if err == nil {
+		t.Fatalf("main preflight unexpectedly passed")
+	}
+	if result.Egress.FailureKind != "sandbox-egress-indeterminate" {
+		t.Fatalf("expected indeterminate egress result, got %#v", result.Egress)
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "secret-cookie") {
+		t.Fatalf("main preflight egress diagnostic leaked configured URL secret: %v", err)
+	}
+}
+
+func TestDockerSandboxPreflightMainSandboxFailsClosedForUnsafeInspection(t *testing.T) {
+	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
+	cfg.Workspace.Mount = "/work/project"
+	runner := mainPreflightRunner(cfg, nil)
+	runner.results["sbx exec -e TZ=UTC -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 main-sbx env"] = CommandResult{
+		Stdout: "PATH=/usr/bin\nHTTP_PROXY=http://127.0.0.1:7897\n",
+	}
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).PreflightMainSandbox(context.Background(), cfg)
+
+	if err == nil {
+		t.Fatalf("main preflight unexpectedly passed")
+	}
+	if !strings.Contains(err.Error(), "environment.inspection.env.HTTP_PROXY") {
+		t.Fatalf("expected unsafe proxy diagnostic, got %v", err)
+	}
+	if strings.Contains(err.Error(), "127.0.0.1:7897") {
+		t.Fatalf("main preflight diagnostic leaked proxy value: %v", err)
+	}
+	if !result.CreatedByCommand || !ShouldCleanupMainAfterStartError(err) {
+		t.Fatalf("newly created unsafe main should be eligible for caller cleanup, result=%#v err=%v", result, err)
+	}
+}
+
+func TestDockerSandboxPreflightMainSandboxPreservesExistingMainOnFailure(t *testing.T) {
+	calls := []string{}
+	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
+	cfg.Workspace.Mount = "/work/project"
+	runner := mainPreflightRunner(cfg, &calls)
+	runner.results["sbx ls"] = CommandResult{Stdout: "SANDBOX    AGENT    STATUS    PORTS    WORKSPACE\nmain-sbx   claude   running            /work/project\n"}
+	runner.results["sbx exec main-sbx sh -lc "+workspaceVisibilityScript("/work/project")] = CommandResult{
+		Stdout: "sibling-readable=/work/other/config.yaml\n",
+	}
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).PreflightMainSandbox(context.Background(), cfg)
+
+	if err == nil {
+		t.Fatalf("main preflight unexpectedly passed")
+	}
+	if result.CreatedByCommand || ShouldCleanupMainAfterStartError(err) {
+		t.Fatalf("existing failed main sandbox must not be caller-cleaned, result=%#v err=%v", result, err)
+	}
+	got := strings.Join(calls, "\n")
+	if strings.Contains(got, "sbx create") || strings.Contains(got, "sbx stop main-sbx") || strings.Contains(got, "sbx rm --force main-sbx") {
+		t.Fatalf("existing main sandbox should not be created or destroyed by preflight, got:\n%s", got)
+	}
+}
+
+func TestDockerSandboxPreflightMainSandboxRejectsExistingWorkspaceMismatch(t *testing.T) {
+	calls := []string{}
+	cfg := probeConfig()
+	cfg.Sandbox.MainName = "main-sbx"
+	cfg.Workspace.Mount = "/work/project"
+	runner := mainPreflightRunner(cfg, &calls)
+	runner.results["sbx ls"] = CommandResult{Stdout: "SANDBOX    AGENT    STATUS    PORTS    WORKSPACE\nmain-sbx   claude   running            /work/other\n"}
+
+	result, err := (DockerSandbox{Runner: runner, Binary: "sbx"}).PreflightMainSandbox(context.Background(), cfg)
+
+	if err == nil {
+		t.Fatalf("main preflight unexpectedly passed")
+	}
+	if result.CreatedByCommand || ShouldCleanupMainAfterStartError(err) {
+		t.Fatalf("workspace-mismatched existing main must be preserved, result=%#v err=%v", result, err)
+	}
+	if got := strings.Join(calls, "\n"); got != "sbx ls" {
+		t.Fatalf("workspace mismatch should fail before main exec, got:\n%s", got)
+	}
+}
+
 func TestDockerSandboxCheckMainWorkspaceVisibilityFailsClosed(t *testing.T) {
 	cfg := probeConfig()
 	cfg.Sandbox.MainName = "main-sbx"
@@ -1086,6 +1259,38 @@ func probeRunner(env, mounts string) stubRunner {
 		errors: map[string]error{
 			"sbx stop probe":       errors.New("exit status 1"),
 			"sbx rm --force probe": errors.New("exit status 1"),
+		},
+	}
+}
+
+func mainPreflightRunner(cfg config.Config, calls *[]string) stubRunner {
+	return stubRunner{
+		path:  "/tmp/sbx",
+		calls: calls,
+		results: map[string]CommandResult{
+			"sbx ls": {Stdout: "No sandboxes found.\n"},
+			"sbx create --name main-sbx claude /work/project": {Stdout: "created\n"},
+			"sbx exec -e TZ=UTC -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 main-sbx env": {
+				Stdout: "PATH=/usr/bin\nHTTP_PROXY=http://gateway.docker.internal:3128\n",
+			},
+			"sbx exec main-sbx pwd": {
+				Stdout: "/work/project\n",
+			},
+			"sbx exec main-sbx mount": {
+				Stdout: "/dev/disk1 on /work/project type virtiofs (rw,source=/work/project)\n",
+			},
+			"sbx exec main-sbx sh -lc " + workspaceVisibilityScript(cfg.Workspace.Mount): {
+				Stdout: "ok\n",
+			},
+			"sbx exec -e TZ=UTC main-sbx date": {
+				Stdout: "Sun Jul 5 00:00:00 UTC 2026\n",
+			},
+			"sbx exec -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 main-sbx locale": {
+				Stdout: "LANG=en_US.UTF-8\n",
+			},
+			"sbx exec main-sbx curl -fsS https://example.test/ip": {
+				Stdout: "203.0.113.10\n",
+			},
 		},
 	}
 }

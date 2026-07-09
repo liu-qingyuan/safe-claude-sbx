@@ -54,6 +54,13 @@ type ProbeResult struct {
 	CleanupDone bool
 }
 
+type MainSandboxPreflightResult struct {
+	SandboxName      string
+	CreatedByCommand bool
+	Egress           network.EgressResult
+	Inspection       InspectionObservation
+}
+
 type StartResult struct {
 	SandboxName string
 	Agent       string
@@ -263,6 +270,123 @@ func (b DockerSandbox) Probe(ctx context.Context, cfg config.Config) (ProbeResul
 	}
 
 	return b.finishProbe(ctx, cfg, result, nil)
+}
+
+func (b DockerSandbox) PreflightMainSandbox(ctx context.Context, cfg config.Config) (MainSandboxPreflightResult, error) {
+	plan := NewStartPlan(cfg)
+	result := MainSandboxPreflightResult{SandboxName: plan.SandboxName}
+
+	state, err := b.inspectMainSandbox(ctx, plan.SandboxName)
+	if err != nil {
+		return result, preserveExistingMainError{err: err}
+	}
+	if state.Exists {
+		if err := validateExistingMainForPreflight(state, plan); err != nil {
+			return result, preserveExistingMainError{err: err}
+		}
+	} else {
+		result.CreatedByCommand = true
+		createResult, createErr := b.runner().Run(ctx, b.binary(), createMainArgs(plan)...)
+		if createErr != nil {
+			return result, fmt.Errorf("create main sandbox: %s", commandText(createResult, createErr))
+		}
+	}
+
+	result, err = b.inspectMainPreflight(ctx, cfg, result)
+	if err != nil {
+		if result.CreatedByCommand {
+			return result, err
+		}
+		return result, preserveExistingMainError{err: err}
+	}
+	return result, nil
+}
+
+func validateExistingMainForPreflight(state mainSandboxState, plan StartPlan) error {
+	if state.Status != "running" {
+		return fmt.Errorf("preflight existing main sandbox: %q has unsafe status %q", plan.SandboxName, state.Status)
+	}
+	if state.Workspace != "" && state.Workspace != plan.Workspace {
+		return fmt.Errorf("preflight existing main sandbox: %q workspace mismatch: configured %q, observed %q", plan.SandboxName, plan.Workspace, state.Workspace)
+	}
+	return nil
+}
+
+func (b DockerSandbox) inspectMainPreflight(ctx context.Context, cfg config.Config, result MainSandboxPreflightResult) (MainSandboxPreflightResult, error) {
+	mainName := result.SandboxName
+
+	env, err := b.execMainWithOptions(ctx, mainName, []string{"-e", "TZ=" + cfg.Environment.Timezone, "-e", "LANG=" + cfg.Environment.Locale, "-e", "LC_ALL=" + cfg.Environment.Locale}, "env")
+	if err != nil {
+		return result, err
+	}
+	pwd, err := b.execMain(ctx, mainName, "pwd")
+	if err != nil {
+		return result, err
+	}
+	mounts, err := b.execMain(ctx, mainName, "mount")
+	if err != nil {
+		return result, err
+	}
+	visibility, err := b.checkMainWorkspaceVisibility(ctx, mainName, cfg.Workspace.Mount)
+	if err != nil {
+		return result, err
+	}
+	date, err := b.execMainWithOptions(ctx, mainName, []string{"-e", "TZ=" + cfg.Environment.Timezone}, "date")
+	if err != nil {
+		return result, err
+	}
+	locale, err := b.execMainWithOptions(ctx, mainName, []string{"-e", "LANG=" + cfg.Environment.Locale, "-e", "LC_ALL=" + cfg.Environment.Locale}, "locale")
+	if err != nil {
+		return result, err
+	}
+	egressText, err := b.execMain(ctx, mainName, "curl", "-fsS", cfg.Network.EgressIP.SandboxCheckURL)
+	if err != nil {
+		egress, classifyErr := runtimeEgressIndeterminate(cfg.Network.EgressIP, "main sandbox egress command failed against configured network.egress_ip.sandbox_check_url")
+		result.Egress = egress
+		return result, classifyErr
+	}
+
+	egress, err := compareSandboxEgress(cfg.Network.EgressIP, egressText)
+	result.Egress = egress
+	if err != nil {
+		return result, err
+	}
+
+	inspection := InspectionObservation{
+		Environment:         parseEnv(env),
+		WorkingDirectory:    strings.TrimSpace(pwd),
+		Mounts:              strings.TrimSpace(mounts),
+		Date:                strings.TrimSpace(date),
+		Locale:              strings.TrimSpace(locale),
+		EgressIP:            egress.ObservedIP,
+		WorkspaceVisibility: visibility,
+	}
+	result.Inspection = inspection
+	if err := policy.ValidateInspection(mainInspectionPolicy(cfg), policy.InspectionObservation{
+		Environment:         inspection.Environment,
+		WorkingDirectory:    inspection.WorkingDirectory,
+		Mounts:              inspection.Mounts,
+		Date:                inspection.Date,
+		Locale:              inspection.Locale,
+		WorkspaceVisibility: inspection.WorkspaceVisibility,
+	}); err != nil {
+		return result, fmt.Errorf("main sandbox inspection invalid: %w", err)
+	}
+	return result, nil
+}
+
+func mainInspectionPolicy(cfg config.Config) policy.InspectionPolicy {
+	return policy.InspectionPolicy{
+		Workspace: policy.WorkspacePolicy{
+			Mount:          cfg.Workspace.Mount,
+			ForbiddenPaths: cfg.Workspace.ForbiddenPaths,
+		},
+		Timezone:                cfg.Environment.Timezone,
+		Locale:                  cfg.Environment.Locale,
+		AllowSSHAgentForwarding: cfg.Environment.AllowSSHAgentForwarding,
+		ForbiddenEnvVars:        cfg.Environment.ForbiddenEnvVars,
+		HerdrRuntime:            herdrRuntimePolicy(cfg),
+	}
 }
 
 func (b DockerSandbox) CheckRuntimeEgress(ctx context.Context, cfg config.Config) (ProbeResult, error) {
@@ -984,6 +1108,28 @@ func (b DockerSandbox) execMain(ctx context.Context, sandboxName string, args ..
 			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(result.Stderr))
 		}
 		return "", fmt.Errorf("%s", commandText(result, err))
+	}
+	return result.Stdout, nil
+}
+
+func (b DockerSandbox) execMainWithOptions(ctx context.Context, sandboxName string, options []string, args ...string) (string, error) {
+	command := []string{"exec"}
+	command = append(command, options...)
+	command = append(command, sandboxName)
+	command = append(command, args...)
+
+	result, err := b.runner().Run(ctx, b.binary(), command...)
+	if err != nil {
+		if commandName(args) == "env" {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return "", fmt.Errorf("main sandbox command failed: env: %w", err)
+			}
+			return "", fmt.Errorf("main sandbox command failed: env: %s", commandErrorText(result, err))
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("main sandbox command failed: %w", err)
+		}
+		return "", fmt.Errorf("main sandbox command failed: %s", commandText(result, err))
 	}
 	return result.Stdout, nil
 }
