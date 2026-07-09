@@ -106,6 +106,7 @@ func TestRuntimeCheckerFailsWhenHostEgressMismatches(t *testing.T) {
 }
 
 func TestRuntimeCheckerFailsWhenHostEgressEndpointFails(t *testing.T) {
+	hostEgressCalls := 0
 	checker := RuntimeChecker{
 		Config:              runtimeCheckConfig(),
 		StartupTUNInterface: "utun9",
@@ -120,7 +121,8 @@ func TestRuntimeCheckerFailsWhenHostEgressEndpointFails(t *testing.T) {
 				FailureKind:   network.EgressFailureEndpointFailure,
 				FailureReason: "host egress endpoint request failed",
 			},
-			err: errors.New("endpoint-failure: host egress endpoint request failed"),
+			err:   errors.New("endpoint-failure: host egress endpoint request failed"),
+			calls: &hostEgressCalls,
 		},
 	}
 
@@ -133,6 +135,58 @@ func TestRuntimeCheckerFailsWhenHostEgressEndpointFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "host egress check failed") {
 		t.Fatalf("expected host egress endpoint failure reason, got %v", err)
+	}
+	if hostEgressCalls != 5 {
+		t.Fatalf("expected endpoint failure to be retried up to 5 attempts, got %d calls", hostEgressCalls)
+	}
+}
+
+func TestRuntimeCheckerPassesWhenHostEgressEndpointRecoversWithinRetryBudget(t *testing.T) {
+	hostEgressCalls := 0
+	checker := RuntimeChecker{
+		Config:              runtimeCheckConfig(),
+		StartupTUNInterface: "utun9",
+		RouteRunner: fakeRouteRunner{
+			routeInterface: "utun9",
+			interfaces:     map[string]bool{"utun9": true},
+		},
+		HostEgress: fakeHostEgressChecker{
+			sequence: []fakeHostEgressResponse{
+				{
+					result: network.EgressResult{
+						OK:            false,
+						ExpectedIP:    "203.0.113.10",
+						FailureKind:   network.EgressFailureEndpointFailure,
+						FailureReason: "host egress endpoint request failed: unexpected EOF",
+					},
+					err: errors.New("endpoint-failure: unexpected EOF"),
+				},
+				{
+					result: network.EgressResult{
+						OK:            false,
+						ExpectedIP:    "203.0.113.10",
+						FailureKind:   network.EgressFailureEndpointFailure,
+						FailureReason: "host egress endpoint request failed: unexpected EOF",
+					},
+					err: errors.New("endpoint-failure: unexpected EOF"),
+				},
+				{
+					result: network.EgressResult{OK: true, ObservedIP: "203.0.113.10", ExpectedIP: "203.0.113.10"},
+				},
+			},
+			calls: &hostEgressCalls,
+		},
+	}
+
+	result, err := checker.Check(context.Background(), Event{Source: "route-monitor"})
+	if err != nil {
+		t.Fatalf("runtime check should pass after transient endpoint failures: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("runtime check did not pass: %#v", result)
+	}
+	if hostEgressCalls != 3 {
+		t.Fatalf("expected host egress to stop retrying after success, got %d calls", hostEgressCalls)
 	}
 }
 
@@ -247,14 +301,33 @@ func (r fakeRouteRunner) Run(name string, args ...string) (string, error) {
 }
 
 type fakeHostEgressChecker struct {
-	result network.EgressResult
-	err    error
-	calls  *int
+	result   network.EgressResult
+	err      error
+	sequence []fakeHostEgressResponse
+	calls    *int
 }
 
 func (c fakeHostEgressChecker) CheckHostContext(context.Context, config.EgressIP) (network.EgressResult, error) {
+	call := 0
 	if c.calls != nil {
 		(*c.calls)++
+		call = *c.calls
+	}
+	if len(c.sequence) > 0 {
+		index := call - 1
+		if index < 0 {
+			index = 0
+		}
+		if index >= len(c.sequence) {
+			index = len(c.sequence) - 1
+		}
+		response := c.sequence[index]
+		return response.result, response.err
 	}
 	return c.result, c.err
+}
+
+type fakeHostEgressResponse struct {
+	result network.EgressResult
+	err    error
 }

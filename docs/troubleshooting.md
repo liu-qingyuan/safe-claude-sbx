@@ -185,7 +185,10 @@ Expected behavior:
 
 - Host egress mismatch fails closed and stops the main sandbox.
 - Endpoint errors are reported as `host egress check failed` rather than as
-  sandbox egress failures.
+  sandbox egress failures. Runtime endpoint failures are retried up to five
+  attempts with short backoff before the watchdog fails closed.
+- Host egress mismatch, TUN route changes, and missing TUN interfaces are not
+  retried.
 - The cleanup path stops the main sandbox according to cleanup policy; if that
   cleanup hangs or fails, diagnose Docker Sandbox control-plane health.
 
