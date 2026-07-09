@@ -935,7 +935,11 @@ func TestDoctorAcceptsValidStructuredConfig(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10))
-	fakeSBX := writeFakeSBX(t, fakeSBXOptions{EgressIP: "203.0.113.10"})
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EgressIP: "203.0.113.10",
+		LogPath:  logPath,
+	})
 
 	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
 	cmd.Dir = "."
@@ -962,6 +966,27 @@ func TestDoctorAcceptsValidStructuredConfig(t *testing.T) {
 	}
 	if strings.Contains(string(output), "SECRET_SHOULD_NOT_LEAK") {
 		t.Fatalf("doctor leaked raw sandbox env:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	if strings.Contains(log, "claude-sbx-probe") {
+		t.Fatalf("doctor should inspect main sandbox without temporary probe, got:\n%s", log)
+	}
+	for _, want := range []string{
+		"version\nls\nls\ncreate --name claude-sbx claude .",
+		"exec -e TZ=America/Chicago -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 claude-sbx env",
+		"exec claude-sbx pwd",
+		"exec claude-sbx mount",
+		"exec claude-sbx sh -lc workspace='",
+		"exec -e TZ=America/Chicago claude-sbx date",
+		"exec -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 claude-sbx locale",
+		"exec claude-sbx curl -fsS https://api.ipify.org",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("expected doctor main preflight command %q, got:\n%s", want, log)
+		}
+	}
+	if containsLogLine(log, "run --name claude-sbx") || strings.Contains(log, "herdr") {
+		t.Fatalf("doctor must not attach Herdr, start Claude, or enter runtime behavior, got:\n%s", log)
 	}
 }
 
@@ -1350,9 +1375,9 @@ func TestDoctorFailsClosedForSandboxBackendProblems(t *testing.T) {
 			wantError: "sandbox-egress-mismatch",
 		},
 		{
-			name:      "probe command failure",
+			name:      "main sandbox egress command failure",
 			fake:      fakeSBXOptions{EgressIP: "203.0.113.10", FailCurl: true},
-			wantError: "probe command failed",
+			wantError: "main sandbox egress command failed",
 		},
 		{
 			name:      "version command incompatible",
@@ -1360,9 +1385,9 @@ func TestDoctorFailsClosedForSandboxBackendProblems(t *testing.T) {
 			wantError: "version-incompatible",
 		},
 		{
-			name:      "probe create failure",
+			name:      "main sandbox create failure",
 			fake:      fakeSBXOptions{EgressIP: "203.0.113.10", FailCreate: true},
-			wantError: "create probe sandbox",
+			wantError: "create main sandbox",
 		},
 	}
 
@@ -1480,6 +1505,71 @@ func TestDoctorFailsClosedForUnsafeSandboxInspection(t *testing.T) {
 				t.Fatalf("doctor leaked sensitive value:\n%s", output)
 			}
 		})
+	}
+}
+
+func TestDoctorCleansUpNewMainSandboxAfterInspectionFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EnvOutput: "PATH=/usr/bin\nHTTP_PROXY=http://127.0.0.1:7897\n",
+		LogPath:   logPath,
+		BlockRun:  true,
+	})
+
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("doctor unexpectedly succeeded:\n%s", output)
+	}
+	if !strings.Contains(string(output), "main sandbox preflight invalid") || !strings.Contains(string(output), "environment.inspection.env.HTTP_PROXY") {
+		t.Fatalf("expected main inspection failure, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	if !containsLogLine(log, "stop claude-sbx") {
+		t.Fatalf("expected doctor to cleanup newly created failed main sandbox, got:\n%s", log)
+	}
+	if containsLogLine(log, "run --name claude-sbx") || strings.Contains(log, "herdr") {
+		t.Fatalf("doctor must not attach or enter runtime behavior after inspection failure, got:\n%s", log)
+	}
+}
+
+func TestDoctorPreservesExistingMainSandboxAfterInspectionFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := writeTestConfig(t, validConfig(server.URL, "203.0.113.10", 10))
+	logPath := filepath.Join(t.TempDir(), "sbx.log")
+	fakeSBX := writeFakeSBX(t, fakeSBXOptions{
+		EnvOutput:          "PATH=/usr/bin\nHTTP_PROXY=http://127.0.0.1:7897\n",
+		LogPath:            logPath,
+		ExistingMainStatus: "running",
+	})
+
+	cmd := exec.Command("go", "run", ".", "doctor", "--config", configPath)
+	cmd.Dir = "."
+	cmd.Env = append(os.Environ(), "PATH="+fakeSBX+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("doctor unexpectedly succeeded:\n%s", output)
+	}
+	if !strings.Contains(string(output), "main sandbox preflight invalid") || !strings.Contains(string(output), "environment.inspection.env.HTTP_PROXY") {
+		t.Fatalf("expected main inspection failure, got:\n%s", output)
+	}
+	log := readFile(t, logPath)
+	if strings.Contains(log, "create --name claude-sbx") || containsLogLine(log, "stop claude-sbx") || containsLogLine(log, "rm --force claude-sbx") {
+		t.Fatalf("doctor must preserve an existing failed main sandbox, got:\n%s", log)
 	}
 }
 

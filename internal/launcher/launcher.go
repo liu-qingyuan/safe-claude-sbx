@@ -73,12 +73,18 @@ func runDoctor(configPath string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "sandbox backend ok: %s\n", availability.Version)
 
-	probe, err := sandbox.Probe(ctx, cfg)
+	preflight, err := sandbox.PreflightMainSandbox(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "sandbox probe invalid: %v\n", err)
+		if backend.ShouldCleanupMainAfterStartError(err) {
+			if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
+				fmt.Fprintf(stderr, "main sandbox preflight invalid: %v; cleanup main sandbox failed: %v\n", err, cleanupErr)
+				return 1
+			}
+		}
+		fmt.Fprintf(stderr, "main sandbox preflight invalid: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "sandbox egress ok: observed IP %s\n", probe.Egress.ObservedIP)
+	fmt.Fprintf(stdout, "sandbox egress ok: observed IP %s\n", preflight.Egress.ObservedIP)
 	fmt.Fprintln(stdout, "sandbox inspection ok")
 	return 0
 }
