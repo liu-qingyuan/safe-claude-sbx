@@ -50,6 +50,18 @@ This repository is implementing the Docker Sandbox / `sbx` MVP described in:
 
 The example config defaults `network.egress_ip.expected_ip` to the team's approved egress IP, `34.68.40.236`. Change it only when your approved route uses a different public IP.
 
+日常使用建议先安装二进制，再运行 `safe-claude-sbx` 或 `safe-herdr`：
+
+For daily use, install the binaries first, then run `safe-claude-sbx` or `safe-herdr`:
+
+```bash
+go install ./cmd/safe-claude-sbx ./cmd/safe-herdr
+```
+
+`go run` 会先 compile 再执行，适合开发验证；它不是最快的日常启动方式。
+
+`go run` compiles before running, which is useful for development checks but is not the fastest daily startup path.
+
 构建包含 sandbox-local Herdr 和 `/usr/local/bin/cc` 的 Docker Sandbox template：
 
 Build the Docker Sandbox template that contains sandbox-local Herdr and `/usr/local/bin/cc`:
@@ -80,9 +92,9 @@ Use the policy-gated sandbox-local Herdr TUI as the daily entry point:
 safe-herdr --config config.yaml
 ```
 
-`safe-herdr` 会验证策略，在需要时从 `sandbox.template` 创建配置的主 sandbox，验证 sandbox 内的 `herdr` 和 `cc`，然后通过 `sbx exec -it <main_name> herdr` attach。它不会在启动时下载 Herdr，也不会重写 sandbox-local wrapper。
+`safe-herdr` 会验证策略，直接检查 configured main sandbox，在需要时从 `sandbox.template` 创建主 sandbox，验证 sandbox 内的 `herdr` 和 `cc`，然后通过 `sbx exec -it <main_name> herdr` attach。它不会创建临时 probe sandbox、在启动时下载 Herdr，也不会重写 sandbox-local wrapper。
 
-`safe-herdr` validates policy, creates the configured main sandbox from `sandbox.template` when needed, verifies `herdr` and `cc` inside that sandbox, and then attaches with `sbx exec -it <main_name> herdr`. It does not download Herdr during startup or rewrite sandbox-local wrappers.
+`safe-herdr` validates policy, directly inspects the configured main sandbox, creates it from `sandbox.template` when needed, verifies `herdr` and `cc` inside that sandbox, and then attaches with `sbx exec -it <main_name> herdr`. It does not create a temporary probe sandbox, download Herdr during startup, or rewrite sandbox-local wrappers.
 
 在 Herdr TUI 内，用 sandbox-local shortcut 启动 Claude：
 

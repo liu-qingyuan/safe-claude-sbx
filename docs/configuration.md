@@ -5,7 +5,7 @@ sandbox behavior, workspace mount policy, runtime environment, watchdog logging,
 and cleanup behavior. See `config.example.yaml` for a complete example.
 
 Run the doctor before starting a sandbox. It validates the configuration and
-checks that the host public egress IP matches `network.egress_ip.expected_ip`:
+checks the configured main sandbox directly after host policy checks pass:
 
 ```bash
 safe-claude-sbx doctor --config config.yaml
@@ -29,7 +29,8 @@ safe-herdr --config config.yaml
 is missing, verifies `herdr`, `herdr --version`,
 `herdr integration install claude`, `cc`, and `cc --version` inside the sandbox,
 then attaches the Herdr TUI. It does not download Herdr during startup or
-rewrite `/usr/local/bin/cc`.
+rewrite `/usr/local/bin/cc`, and it does not create a temporary probe sandbox on
+the hot path.
 
 Inside the Herdr TUI, run `cc` to start Claude. The `cc` command is baked into
 the Docker Sandbox template at `/usr/local/bin/cc`.
@@ -83,14 +84,16 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
     the approved route uses a different public IP.
   - `host_check_url`: Endpoint the host uses to read its public IP.
   - `sandbox_check_url`: Endpoint the sandbox uses to read its public IP.
-  - `timeout_seconds`: Timeout for backend commands, sandbox probe commands,
-    sandbox-local Herdr install attempts, cleanup attempts, and egress IP
-    checks. Use at least `30` for real Docker Sandbox probes because first-run
-    image and daemon startup can be slow.
+  - `timeout_seconds`: Timeout for backend commands, configured main sandbox
+    inspection commands, sandbox-local Herdr checks, cleanup attempts, and
+    egress IP checks. Use at least `30` for real Docker Sandbox startup because
+    first-run image and daemon startup can be slow.
 - `sandbox`
   - `backend`: Runtime backend. MVP value: `docker-sandbox`.
   - `main_name`: Main Docker Sandbox name.
-  - `probe_name`: Temporary probe sandbox name.
+  - `probe_name`: Legacy compatibility name for temporary probe diagnostics.
+    It no longer affects the `doctor` or `safe-herdr` hot path, which inspects
+    the configured main sandbox directly.
   - `agent`: Agent command to run, normally `claude`.
   - `template`: Optional Docker Sandbox template image for direct Claude mode.
     Required for `sandbox-local-herdr`; the launcher passes it as
@@ -139,7 +142,9 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
   - `log_file`: Optional log file path. Empty string means stderr/stdout only.
 - `cleanup`
   - `stop_main_sandbox`: Stop the main sandbox on normal shutdown or watchdog failure.
-  - `remove_probe_sandbox`: Remove temporary probe sandboxes after preflight.
+  - `remove_probe_sandbox`: Legacy compatibility cleanup flag for temporary
+    probe diagnostics. It no longer affects the `doctor` or `safe-herdr` hot
+    path.
   - `remove_main_sandbox`: Remove the main sandbox on exit. The default is `false`.
 
 ## Validation
@@ -160,24 +165,24 @@ Supervision config also fails closed. `sandbox.supervision.mode` must be either
 id. Host-looking Herdr socket paths and top-level `HERDR_*` config are rejected
 without printing raw socket or pane values.
 
-After the Docker Sandbox probe runs, `doctor` validates the sandbox observation
-before printing `sandbox inspection ok`. Timezone and locale validation use
-sandbox-internal `TZ`, `date`, and `locale` observations; host or daemon log
-timestamps are not accepted as proof of sandbox runtime settings. The same
-inspection rejects visible sensitive mounts, raw token or credential-like env
-values such as `OPENAI_API_KEY`, unexpected SSH agent forwarding env such as
-`SSH_AUTH_SOCK` and `SSH_AUTH_SOCK_GATEWAY`, host proxy values such as
-`127.0.0.1:7897`, and unknown proxy targets. Docker-managed credential
-placeholders are allowed. These errors name the policy object and env variable
-but do not print captured secret values.
+`doctor` validates the configured main sandbox before printing
+`sandbox inspection ok`; it does not create a temporary probe sandbox. Timezone
+and locale validation use sandbox-internal `TZ`, `date`, and `locale`
+observations; host or daemon log timestamps are not accepted as proof of sandbox
+runtime settings. The same inspection rejects visible sensitive mounts, raw
+token or credential-like env values such as `OPENAI_API_KEY`, unexpected SSH
+agent forwarding env such as `SSH_AUTH_SOCK` and `SSH_AUTH_SOCK_GATEWAY`, host
+proxy values such as `127.0.0.1:7897`, and unknown proxy targets.
+Docker-managed credential placeholders are allowed. These errors name the
+policy object and env variable but do not print captured secret values.
 
-The probe and the configured main sandbox both check workspace visibility. The
-configured workspace is the only project tree expected to be readable by Herdr,
-Claude Code, and the `cc` process started inside Herdr because they share the
-same Docker Sandbox filesystem view. Current Docker Sandbox behavior can expose
-the configured workspace and its parent path as host-style paths; a parent
+The configured main sandbox checks workspace visibility. The configured
+workspace is the only project tree expected to be readable by Herdr, Claude
+Code, and the `cc` process started inside Herdr because they share the same
+Docker Sandbox filesystem view. Current Docker Sandbox behavior can expose the
+configured workspace and its parent path as host-style paths; a parent
 `CLAUDE.md` guidance file is therefore treated as Docker Sandbox/Claude template
-workspace metadata, not as a policy failure. If either sandbox can read a file
+workspace metadata, not as a policy failure. If the main sandbox can read a file
 under a sibling project directory, `doctor` or launcher startup fails closed
 with `workspace.inspection.visibility.sibling`. The diagnostic names the
 readable non-workspace path but does not print file contents. The current

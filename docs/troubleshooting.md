@@ -91,8 +91,7 @@ Checks:
 Expected behavior:
 
 - Startup route failures happen before sandbox creation.
-- Runtime route failures stop the main sandbox and remove the probe sandbox
-  according to cleanup policy.
+- Runtime route failures stop the main sandbox according to cleanup policy.
 
 ## Host egress mismatch
 
@@ -124,8 +123,11 @@ Expected behavior:
 Typical output:
 
 ```text
-sandbox probe invalid: sandbox-egress-mismatch: sandbox egress observed IP <observed> does not match expected IP <expected>
+main sandbox preflight invalid: sandbox-egress-mismatch: sandbox egress observed IP <observed> does not match expected IP <expected>
 ```
+
+The direct Claude launcher path may still report the same policy failure as
+`sandbox probe invalid: ...` while that legacy probe remains in use.
 
 Meaning:
 
@@ -147,8 +149,8 @@ Checks:
 
 Expected behavior:
 
-- Startup mismatch removes the probe sandbox and does not start the main
-  sandbox.
+- Startup mismatch fails before attach/start behavior and cleans up only main
+  sandbox state created by the current command.
 - At runtime, the watchdog does not report `sandbox-egress-mismatch`; it stops
   the main sandbox when a route or Clash app-home metadata event leads to a
   route/interface failure or a `host-egress-mismatch`.
@@ -260,8 +262,8 @@ Checks:
 
 Expected behavior:
 
-- Availability failure happens before probe creation and before main sandbox
-  startup.
+- Availability failure happens before temporary probe creation and before main
+  sandbox startup.
 - Cleanup uses bounded, independent `sbx` operations. A sandbox-local Herdr
   stop timeout should not prevent the main sandbox stop attempt.
 
@@ -334,9 +336,12 @@ Typical output:
 
 ```text
 configuration invalid: workspace.mount: path is forbidden by workspace policy
-sandbox probe invalid: sandbox inspection invalid: workspace.inspection.mounts: forbidden host path visible
-sandbox probe invalid: sandbox inspection invalid: workspace.inspection.visibility.sibling: non-workspace path readable: /Users/alice/work/other-project/config.yaml
+main sandbox preflight invalid: main sandbox inspection invalid: workspace.inspection.mounts: forbidden host path visible
+main sandbox preflight invalid: main sandbox inspection invalid: workspace.inspection.visibility.sibling: non-workspace path readable: /Users/alice/work/other-project/config.yaml
 ```
+
+The direct Claude launcher path may still use the legacy `sandbox probe invalid`
+prefix for the same inspection policy failures.
 
 Meaning:
 
@@ -367,17 +372,21 @@ Checks:
 Expected behavior:
 
 - Configuration failures happen before backend commands.
-- Inspection failures clean up the probe and prevent main sandbox startup.
+- `doctor` and `safe-herdr` inspection failures clean up only main sandbox state
+  created by the current command and prevent attach/start behavior.
 
 ## Proxy environment rejected
 
 Typical output:
 
 ```text
-sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.HTTP_PROXY: proxy target is not Docker-managed
-sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.HTTPS_PROXY: proxy target is not Docker-managed
-sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.NO_PROXY: unknown proxy bypass policy
+main sandbox preflight invalid: main sandbox inspection invalid: environment.inspection.env.HTTP_PROXY: proxy target is not Docker-managed
+main sandbox preflight invalid: main sandbox inspection invalid: environment.inspection.env.HTTPS_PROXY: proxy target is not Docker-managed
+main sandbox preflight invalid: main sandbox inspection invalid: environment.inspection.env.NO_PROXY: unknown proxy bypass policy
 ```
+
+The direct Claude launcher path may still use the legacy `sandbox probe invalid`
+prefix for the same environment policy failures.
 
 Meaning:
 
@@ -396,18 +405,22 @@ Checks:
 
 Expected behavior:
 
-- Probe cleanup runs.
-- Main sandbox startup is blocked.
+- `doctor` and `safe-herdr` clean up only main sandbox state created by the
+  current command.
+- Attach/start behavior is blocked.
 
 ## Forbidden environment detected
 
 Typical output:
 
 ```text
-sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.OPENAI_API_KEY: raw credential value visible
-sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.SSH_AUTH_SOCK: ssh agent forwarding is not allowed
-sandbox probe invalid: sandbox inspection invalid: environment.inspection.env.SSH_AUTH_SOCK_GATEWAY: ssh agent forwarding is not allowed
+main sandbox preflight invalid: main sandbox inspection invalid: environment.inspection.env.OPENAI_API_KEY: raw credential value visible
+main sandbox preflight invalid: main sandbox inspection invalid: environment.inspection.env.SSH_AUTH_SOCK: ssh agent forwarding is not allowed
+main sandbox preflight invalid: main sandbox inspection invalid: environment.inspection.env.SSH_AUTH_SOCK_GATEWAY: ssh agent forwarding is not allowed
 ```
+
+The direct Claude launcher path may still use the legacy `sandbox probe invalid`
+prefix for the same environment policy failures.
 
 Meaning:
 
@@ -471,8 +484,7 @@ Checks:
 
 Expected behavior:
 
-- Event source failure stops the main sandbox and removes the probe sandbox
-  according to cleanup policy.
+- Event source failure stops the main sandbox according to cleanup policy.
 - Missing route events are a known MVP limitation; the launcher does not claim
   polling coverage without an event.
 

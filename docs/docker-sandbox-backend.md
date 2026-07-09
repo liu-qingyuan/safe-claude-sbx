@@ -3,8 +3,10 @@
 The first backend is Docker Sandbox / `sbx`.
 
 This page records the command contract observed on the target macOS host for
-`sbx v0.34.0` on 2026-07-05. Docker authentication, global network policy setup,
-and shell probe creation have been validated on the target machine.
+`sbx v0.34.0` on 2026-07-05. Docker authentication and global network policy
+setup have been validated on the target machine. Historical shell probe notes
+remain below for the legacy direct-Claude diagnostic path; `doctor` and
+`safe-herdr` now inspect the configured main sandbox directly.
 
 ## Availability
 
@@ -212,9 +214,9 @@ Confirmed help contract:
 - Help text mentions `--detached (-d)`, but the observed flag list did not show
   it. Do not depend on detached `run` until verified after login.
 
-### Probe Sandbox
+### Legacy Probe Sandbox
 
-The MVP should use a separate probe sandbox name derived from configuration,
+Early MVP notes used a separate probe sandbox name derived from configuration,
 for example:
 
 ```bash
@@ -224,7 +226,10 @@ sbx exec <probe-name> curl -fsS <sandbox-check-url>
 sbx rm --force <probe-name>
 ```
 
-The `shell` agent is listed as an available agent for `create` and `run`.
+The `shell` agent is listed as an available agent for `create` and `run`, but
+the current `doctor` and `safe-herdr` hot paths no longer create this temporary
+probe. They prepare or inspect the configured main sandbox directly so the
+diagnostic target matches the runtime target.
 
 Runtime validation attempted:
 
@@ -364,14 +369,14 @@ Current launcher behavior:
 
 - The backend adapter runs `sbx` subprocesses with a small host environment
   allowlist: `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `TMPDIR`, and `USER`.
-- The probe still inspects the sandbox environment after creation. Docker-managed
-  credential placeholders such as `proxy-managed` are allowed, raw credential
-  values fail closed, host or unknown proxy targets fail closed, and
+- The configured main sandbox is inspected after host-side checks pass.
+  Docker-managed credential placeholders such as `proxy-managed` are allowed,
+  raw credential values fail closed, host or unknown proxy targets fail closed, and
   SSH forwarding environment such as `SSH_AUTH_SOCK` and
   `SSH_AUTH_SOCK_GATEWAY` is allowed only when
   `environment.allow_ssh_agent_forwarding` is explicitly `true`.
-- The probe and the configured main sandbox perform sibling project read checks
-  without reading file contents. They fail closed if the sandbox can read a file
+- The configured main sandbox performs sibling project read checks without
+  reading file contents. It fails closed if the sandbox can read a file
   under a sibling project directory. Diagnostics report the readable path only.
   Direct launcher startup creates the main sandbox first, checks visibility
   without modifying parent guidance paths, and only then attaches Claude Code or
@@ -652,7 +657,7 @@ classDiagram
 Default cleanup policy:
 
 - Stop the main sandbox.
-- Remove the probe sandbox.
+- Remove temporary probe sandboxes only when a legacy diagnostic path created one.
 - Do not remove the main sandbox.
 - Treat missing or already-stopped cleanup targets as non-fatal after their
   authenticated exit behavior is confirmed.

@@ -24,7 +24,9 @@ sandbox started: <main-name>
 Default cleanup behavior is:
 
 - Stop the main sandbox when `cleanup.stop_main_sandbox` is `true`.
-- Remove the probe sandbox when `cleanup.remove_probe_sandbox` is `true`.
+- `doctor` and `safe-herdr` do not create a temporary probe sandbox on the hot
+  path. Legacy direct-Claude probe diagnostics clean up their temporary sandbox
+  before attach/start behavior.
 - Leave the main sandbox state present when `cleanup.remove_main_sandbox` is
   `false`.
 - Treat already-missing cleanup targets as non-fatal.
@@ -99,7 +101,9 @@ Expected CLI output:
 
 Expected sandbox stop/cleanup behavior:
 
-- The probe sandbox is removed after preflight.
+- `doctor` inspects the configured main sandbox directly without a temporary
+  probe. The direct Claude launcher may still clean up its legacy probe after
+  preflight.
 - The main sandbox remains running while the attached agent is running.
 - The main sandbox is stopped only when the agent exits, a signal is received,
   or a later watchdog failure occurs.
@@ -132,8 +136,6 @@ Expected sandbox stop/cleanup behavior:
 
 - `sbx stop <main-name>` is attempted when `cleanup.stop_main_sandbox` is
   `true`.
-- `sbx rm --force <probe-name>` is attempted when
-  `cleanup.remove_probe_sandbox` is `true`.
 - The main sandbox is not removed unless `cleanup.remove_main_sandbox` is
   explicitly `true`.
 
@@ -170,8 +172,7 @@ Expected CLI output:
 
 Expected sandbox stop/cleanup behavior:
 
-- On detection, the main sandbox is stopped and the probe sandbox is removed
-  according to cleanup policy.
+- On detection, the main sandbox is stopped according to cleanup policy.
 - If the node switch emits neither a route event nor a watched app-home metadata
   change on the test host, record that limitation and validate manually with
   `safe-claude-sbx doctor --config config.yaml`; the watchdog does not
@@ -236,7 +237,6 @@ Expected CLI output:
 Expected sandbox stop/cleanup behavior:
 
 - The main sandbox is stopped only when a policy failure is detected.
-- The probe sandbox is removed on failure cleanup.
 - If macOS changes Wi-Fi without producing route monitor events, record the
   observation and verify the current state with `doctor`.
 
@@ -269,7 +269,7 @@ Expected CLI output:
 Expected sandbox stop/cleanup behavior:
 
 - On watchdog failure or route monitor failure, cleanup stops the main sandbox
-  and removes the probe sandbox according to policy.
+  according to policy.
 - If sleep/wake produces no route event, record the observation and validate
   manually with `doctor`.
 
@@ -300,7 +300,7 @@ Expected CLI output:
 
 Expected sandbox stop/cleanup behavior:
 
-- On detection, the main sandbox is stopped and the probe sandbox is removed.
+- On detection, the main sandbox is stopped according to cleanup policy.
 - Do not continue using the running sandbox after a VPN conflict unless a fresh
   launcher run passes preflight.
 
@@ -320,8 +320,9 @@ Steps:
 
 Expected CLI output:
 
-- `doctor` should still validate backend availability, probe creation,
-  sandbox egress, and sandbox inspection.
+- `doctor` should validate backend availability, configured main sandbox
+  egress, and configured main sandbox inspection without creating a temporary
+  probe sandbox.
 - Launcher startup should create a fresh main sandbox when needed, validate main
   sandbox workspace visibility without modifying parent guidance paths, and then
   attach with `sbx run --name <main-name>`.
@@ -382,8 +383,6 @@ Expected sandbox stop/cleanup behavior:
 - The route watcher stops.
 - `sbx stop <main-name>` is attempted when `cleanup.stop_main_sandbox` is
   `true`.
-- `sbx rm --force <probe-name>` is attempted when
-  `cleanup.remove_probe_sandbox` is `true`.
 - The main sandbox remains listed as stopped unless
   `cleanup.remove_main_sandbox` is `true`.
 
@@ -407,7 +406,7 @@ Expected CLI output:
 
 Expected sandbox stop/cleanup behavior:
 
-- `doctor` fails before probe creation.
+- `doctor` fails before configured main sandbox inspection.
 - Launcher fails before creating or starting the main sandbox.
 
 ## 13. Sandbox IP mismatch at startup
@@ -427,13 +426,16 @@ Steps:
 Expected CLI output:
 
 - Startup fails after `sandbox backend ok`.
-- The error includes `sandbox probe invalid: sandbox-egress-mismatch` or
-  `sandbox probe invalid: sandbox egress response is not an IP address`.
+- For `doctor` and `safe-herdr`, the error includes
+  `main sandbox preflight invalid: sandbox-egress-mismatch` or a main sandbox
+  egress parse/command diagnostic. For the direct Claude launcher, the legacy
+  probe path may still report `sandbox probe invalid: sandbox-egress-mismatch`.
 
 Expected sandbox stop/cleanup behavior:
 
-- The probe sandbox is removed when `cleanup.remove_probe_sandbox` is `true`.
-- The main sandbox is not started.
+- `doctor` and `safe-herdr` clean up only main sandbox state created by the
+  current command. The direct Claude launcher cleans up its temporary probe
+  before refusing to start the main sandbox.
 
 ## 14. `sbx` unavailable or unauthenticated
 
@@ -527,18 +529,17 @@ Expected CLI output:
 
 Expected sandbox stop/cleanup behavior:
 
-- On inspection failure, the probe sandbox is removed when
-  `cleanup.remove_probe_sandbox` is `true`.
-- When the probe visibility inspection fails, the main sandbox is not started.
-- When the real main sandbox visibility inspection fails after launcher start
-  or `safe-herdr` attach, the launcher stops the main sandbox and does not enter
-  watchdog supervision.
+- On `doctor` or `safe-herdr` inspection failure, only main sandbox state
+  created by the current command is eligible for cleanup.
+- When the main sandbox visibility inspection fails before attach/start, the
+  launcher stops the newly created main sandbox and does not enter watchdog
+  supervision.
 
-## 17. Credential placeholders and SSH agent forwarding in probe
+## 17. Credential placeholders and SSH agent forwarding in main inspection
 
 Prerequisites:
 
-- Use a shell or Docker Sandbox environment where the probe can observe
+- Use a shell or Docker Sandbox environment where the configured main sandbox can observe
   Docker-managed credential placeholders, for example `OPENAI_API_KEY` or
   `ANTHROPIC_API_KEY` with value class `proxy-managed`.
 - If the host has an SSH agent, observe whether Docker Sandbox forwards
@@ -567,9 +568,10 @@ Expected CLI output:
 
 Expected sandbox stop/cleanup behavior:
 
-- On inspection failure, the probe sandbox is removed when
-  `cleanup.remove_probe_sandbox` is `true`.
-- The launcher must not start the main sandbox after the failed probe.
+- On `doctor` or `safe-herdr` inspection failure, only main sandbox state
+  created by the current command is eligible for cleanup.
+- The launcher must not attach Herdr or start Claude after failed main sandbox
+  inspection.
 
 ## 18. Sandbox-local Herdr mode successful startup
 
@@ -657,8 +659,7 @@ Expected CLI output:
 
 Expected sandbox stop/cleanup behavior:
 
-- The probe sandbox is removed after preflight when
-  `cleanup.remove_probe_sandbox` is `true`.
+- No temporary probe sandbox is created by `doctor` or `safe-herdr`.
 - On normal exit or Ctrl+C, cleanup stops the sandbox-local Herdr server before
   stopping the main sandbox.
 - The main sandbox remains listed as stopped unless
@@ -709,28 +710,28 @@ Steps:
 Expected result:
 
 - Both commands fail with `host egress invalid: host-egress-mismatch`.
-- The launcher fails before creating the probe or main sandbox.
+- The launcher fails before creating or inspecting the main sandbox.
 
 ### Sandbox egress or inspection failure
 
 Steps:
 
 1. Restore the correct host expected IP.
-2. Force a sandbox probe failure by using a sandbox check endpoint that returns
-   a different IP, or by setting `workspace.mount` to a forbidden path such as
-   `~/.ssh` in a disposable config.
+2. Force a main sandbox preflight failure by using a sandbox check endpoint that
+   returns a different IP, or by setting `workspace.mount` to a forbidden path
+   such as `~/.ssh` in a disposable config.
 3. Run `safe-claude-sbx doctor --config herdr-config.yaml`.
 4. Run `safe-claude-sbx --config herdr-config.yaml`.
 
 Expected result:
 
 - Sandbox egress mismatch fails with
-  `sandbox probe invalid: sandbox-egress-mismatch`.
+  `main sandbox preflight invalid: sandbox-egress-mismatch`.
 - Forbidden mount inspection fails with
   `configuration invalid: workspace.mount: path is forbidden by workspace policy`.
-- When a probe sandbox was created before the failure, it is removed when
-  `cleanup.remove_probe_sandbox` is `true`.
-- The main sandbox is not started after the failed probe or inspection.
+- Main sandbox state created by the current command is cleaned up after failed
+  preflight or inspection.
+- Herdr is not attached after failed main sandbox preflight or inspection.
 
 ### Herdr unavailable or startup failure
 
