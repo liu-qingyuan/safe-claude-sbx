@@ -396,6 +396,112 @@ Host-side `sbx` and `sandboxd` logs still use the host timezone. A timestamp
 such as `time=2026-07-05T21:32:31.321+08:00` should be treated as host/daemon
 log time, not proof that the sandbox main agent timezone is configured.
 
+### Dedicated Sandboxd Upstream Research
+
+Issue #43 validated the `DOCKER_SANDBOXES_PROXY` contract on 2026-07-13 with:
+
+- `sbx v0.34.0` (`2eae0c4fc3894475da3318615f69783b0e7be747`);
+- Mihomo Meta `v1.19.28` for Darwin arm64; and
+- MetaCubeXD `v1.267.2` served by that disposable Mihomo instance.
+
+The tested `sbx` version accepts an HTTP upstream. SOCKS5 must remain behind an
+explicit Docker Sandbox version capability check; this experiment did not test
+the v0.35 SOCKS5 behavior.
+
+The test Mihomo listened only on host loopback, used no controller secret or
+proxy credentials, and chained to the host's existing credential-free loopback
+HTTP proxy. Direct host dialing was unavailable on the test machine, so the
+test gateway and the normal host path observed the same public IP. The evidence
+therefore proves upstream traversal and fail-closed behavior, not a distinct
+provider or public IP.
+
+Sandboxd was started with a minimal command-scoped environment:
+
+```bash
+env -i \
+  HOME="$HOME" \
+  USER="$USER" \
+  LOGNAME="$LOGNAME" \
+  TMPDIR="${TMPDIR:-/tmp}" \
+  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  DOCKER_SANDBOXES_PROXY="http://127.0.0.1:17890" \
+  sbx daemon start
+```
+
+Do not add generic `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` variables to the
+dedicated daemon environment. Keep the upstream URL credential-free.
+
+Observed scope and positive egress evidence:
+
+- Two disposable shell sandboxes ran simultaneously. Both retained Docker's
+  managed `gateway.docker.internal:3128` proxy environment.
+- HTTP and HTTPS requests from both sandboxes returned public IP
+  `144.168.60.76`. At the same timestamps, Mihomo logged two HTTP and two HTTPS
+  `api.ipify.org` connections through the configured upstream.
+- Sandboxd reads the upstream at daemon startup and applies it to every loaded
+  runtime. Its logs created a separate managed listener for each sandbox and
+  reported `sandbox-specific upstream proxy configured` with the same upstream
+  for both disposable sandboxes and the preexisting stopped sandbox.
+- The practical contract is daemon-global selection with per-runtime managed
+  listeners. There is no observed per-sandbox API for selecting different
+  upstreams. A dedicated lease must therefore exclude concurrently running
+  sandboxes that are not owned by the launcher and must keep watching for new
+  conflicting runtimes.
+
+Observed fail-closed behavior:
+
+- With sandboxd still configured for the upstream, stopping Mihomo caused HTTP
+  workload requests to receive a managed-proxy `500` response.
+- HTTPS CONNECT failed with `502`. Curl still reported `proxy_used=1`; neither
+  protocol returned a public IP or fell back to host-direct egress.
+- `sbx daemon status`, `sbx ls`, `sbx template ls`, and `sbx exec` remained
+  available while the gateway was down. The exec control request succeeded and
+  only the workload network request failed.
+
+Observed restart and drift behavior:
+
+- `sbx daemon stop` changed both running disposable sandboxes to `stopped`.
+- Restarting sandboxd without `DOCKER_SANDBOXES_PROXY` left existing sandbox
+  metadata intact. A later `sbx exec` restarted those sandboxes and restored the
+  normal host egress path while Mihomo remained stopped.
+- A launcher must not trust persisted sandbox state. The dedicated lease must
+  detect at least daemon PID/liveness change and loss of the upstream contract,
+  then revalidate observed egress before reuse. Public IP alone is insufficient
+  when dedicated and host paths happen to share an exit.
+- Recovery requires the gateway to be healthy before sandboxd starts with the
+  command-scoped upstream. A foreground daemon restart re-injected the upstream
+  into loaded runtimes, after which both HTTP and HTTPS workload probes again
+  appeared in Mihomo logs.
+
+Control-plane boundary and limitations:
+
+- All positive Mihomo observations came from sandbox workload or sandbox
+  bootstrap hosts such as `api.ipify.org`, `download.docker.com`, and
+  `ports.ubuntu.com`.
+- Pull attempts for uncached stable tags `shell-0.2.0` and
+  `shell-docker-0.2.0` caused containerd to contact
+  `registry-1.docker.io` directly. With the minimal dedicated daemon
+  environment and no usable host-direct route, each registry HEAD timed out
+  after about 30 seconds. No request traversed Mihomo, no sandbox was created,
+  and no image was added to the local store. This proves template transfer is
+  outside the workload upstream, but it also means operators must complete
+  required pulls on a working host control-plane path before acquiring the
+  dedicated lease.
+- `sbx login` is a separate operator CLI action and is not run inside the
+  command-scoped daemon environment. Its interactive device flow was not
+  repeated because doing so would create or handle a device code. Login remains
+  a host control-plane prerequisite, not part of the dedicated workload-egress
+  guarantee.
+- Existing authentication state, daemon control, image listing, and sandbox
+  lifecycle operations remained available independently of gateway health.
+  Treat login, template image transfer, and daemon APIs as host control-plane
+  traffic outside the dedicated workload-egress guarantee.
+
+Cleanup removed both disposable sandboxes, the test gateway process, the
+dashboard assets, and all temporary files. The preexisting `claude-sbx`
+remained present and stopped, with its original workspace unchanged. The normal
+sandboxd process was restored without `DOCKER_SANDBOXES_PROXY`.
+
 ### Sandbox-Local Herdr Prototype
 
 Issue #15 validated the sandbox-local Herdr startup contract against a real
