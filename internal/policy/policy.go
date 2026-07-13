@@ -45,6 +45,10 @@ type WorkspaceVisibilityObservation struct {
 	SiblingPath string
 }
 
+func NormalizeWorkspacePath(path string) (string, error) {
+	return normalizePath(path, WorkspacePolicy{})
+}
+
 func ValidateWorkspaceMount(policy WorkspacePolicy) error {
 	mount, err := normalizePath(policy.Mount, policy)
 	if err != nil {

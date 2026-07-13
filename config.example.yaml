@@ -1,4 +1,6 @@
 network:
+  egress:
+    mode: "host-inherited"
   clash_verge:
     app_home: ""
     route_check_target: "1.1.1.1"

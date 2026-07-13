@@ -11,6 +11,7 @@ import (
 
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/backend"
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/config"
+	"github.com/liu-qingyuan/safe-claude-sbx/internal/egressguard"
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/network"
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/watchdog"
 )
@@ -51,23 +52,48 @@ func runDoctor(configPath string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, "configuration ok")
 
-	result, err := network.CheckHostEgress(cfg.Network.EgressIP)
-	if err != nil {
-		fmt.Fprintf(stderr, "host egress invalid: %v\n", err)
-		return 1
-	}
-	fmt.Fprintf(stdout, "host egress ok: observed IP %s\n", result.ObservedIP)
-
 	if cfg.Sandbox.Backend != "docker-sandbox" {
 		fmt.Fprintf(stderr, "sandbox backend invalid: unsupported backend %q\n", cfg.Sandbox.Backend)
 		return 1
 	}
+	sandbox := backend.NewDockerSandbox()
+	if cfg.Network.Egress.Mode == "dedicated-gateway" {
+		precheckCtx, cancelPrecheck := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+		availability, precheckErr := sandbox.CheckAvailability(precheckCtx)
+		cancelPrecheck()
+		if precheckErr != nil {
+			fmt.Fprintf(stderr, "sandbox backend invalid: %s\n", backendAvailabilityError(availability, precheckErr))
+			return 1
+		}
+	}
+	guard, err := egressguard.New(cfg, sandbox)
+	if err != nil {
+		fmt.Fprintf(stderr, "egress guard invalid: %v\n", err)
+		return 1
+	}
+	acquireCtx, cancelAcquire := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+	acquisition, err := guard.Acquire(acquireCtx)
+	cancelAcquire()
+	if err != nil {
+		if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, false, stdout); cleanupErr != nil {
+			fmt.Fprintf(stderr, "%v; cleanup failed: %v\n", err, cleanupErr)
+			return 1
+		}
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printEgressGuardMessages(stdout, acquisition)
+
 	ctx, cancel := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
 	defer cancel()
 
-	sandbox := backend.NewDockerSandbox()
 	availability, err := sandbox.CheckAvailability(ctx)
 	if err != nil {
+		cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, false, stdout)
+		if cleanupErr != nil {
+			fmt.Fprintf(stderr, "sandbox backend invalid: %s; cleanup failed: %v\n", backendAvailabilityError(availability, err), cleanupErr)
+			return 1
+		}
 		fmt.Fprintf(stderr, "sandbox backend invalid: %s\n", backendAvailabilityError(availability, err))
 		return 1
 	}
@@ -75,24 +101,59 @@ func runDoctor(configPath string, stdout, stderr io.Writer) int {
 
 	preflight, err := sandbox.PreflightMainSandbox(ctx, cfg)
 	if err != nil {
-		if backend.ShouldCleanupMainAfterStartError(err) {
-			if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
-				fmt.Fprintf(stderr, "main sandbox preflight invalid: %v; cleanup main sandbox failed: %v\n", err, cleanupErr)
-				return 1
-			}
+		cleanupMain := backend.ShouldCleanupMainAfterStartError(err)
+		if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, cleanupMain, stdout); cleanupErr != nil {
+			fmt.Fprintf(stderr, "main sandbox preflight invalid: %v; cleanup failed: %v\n", err, cleanupErr)
+			return 1
 		}
 		fmt.Fprintf(stderr, "main sandbox preflight invalid: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "sandbox egress ok: observed IP %s\n", preflight.Egress.ObservedIP)
+	validation, err := guard.ValidateMain(ctx)
+	if err != nil {
+		if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, preflight.CreatedByCommand, stdout); cleanupErr != nil {
+			fmt.Fprintf(stderr, "%v; cleanup failed: %v\n", err, cleanupErr)
+			return 1
+		}
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printEgressGuardMessages(stdout, validation)
+	cleanupMain := acquisition.CleanupCreatedMain && preflight.CreatedByCommand
+	if err := finalizeDoctorGuard(guard, sandbox, cfg, cleanupMain, stdout); err != nil {
+		fmt.Fprintf(stderr, "doctor cleanup invalid: %v\n", err)
+		return 1
+	}
 	fmt.Fprintln(stdout, "sandbox inspection ok")
 	return 0
+}
+
+func printEgressGuardMessages(output io.Writer, result egressguard.Result) {
+	for _, message := range result.Messages {
+		fmt.Fprintln(output, message)
+	}
+}
+
+func finalizeDoctorGuard(guard egressguard.EgressGuard, sandbox backend.DockerSandbox, cfg config.Config, cleanupMain bool, output io.Writer) error {
+	cleanupCtx, cancel := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+	defer cancel()
+	revoked, revokeErr := guard.Revoke(cleanupCtx)
+	printEgressGuardMessages(output, revoked)
+	if !cleanupMain {
+		return revokeErr
+	}
+	return errors.Join(revokeErr, sandbox.CleanupMain(context.Background(), cfg))
 }
 
 func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, stderr io.Writer) int {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
+		return 1
+	}
+	if cfg.Network.Egress.Mode == "dedicated-gateway" {
+		fmt.Fprintln(stderr, "configuration invalid: dedicated-gateway launch is not available until dedicated runtime supervision is configured")
 		return 1
 	}
 	if target == herdrTUITarget && cfg.Sandbox.Supervision.Mode != "sandbox-local-herdr" {

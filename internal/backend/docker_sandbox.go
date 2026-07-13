@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -412,6 +414,71 @@ func (b DockerSandbox) CheckMainWorkspaceVisibility(ctx context.Context, cfg con
 		return visibility, err
 	}
 	return visibility, nil
+}
+
+func (b DockerSandbox) CheckMainEndpointIsolation(ctx context.Context, sandboxName, endpoint string) error {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Port() == "" {
+		return fmt.Errorf("controller isolation inspection failed: invalid controller endpoint")
+	}
+	parsed.Path = "/version"
+	hostEndpoint := *parsed
+	hostEndpoint.Host = net.JoinHostPort("host.docker.internal", parsed.Port())
+	if err := b.checkMainEndpointProbe(ctx, sandboxName, hostEndpoint.String(), "host alias", "--noproxy", "*"); err != nil {
+		return err
+	}
+	result, err := b.runner().Run(ctx, b.binary(), "exec", sandboxName, "sh", "-lc", controllerProxyIsolationScript(parsed.String()))
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		return fmt.Errorf("controller isolation inspection failed through Docker-managed proxy: %w", err)
+	}
+	if result.ExitCode == 42 {
+		return fmt.Errorf("controller endpoint is reachable through Docker-managed proxy from main sandbox")
+	}
+	return fmt.Errorf("controller isolation inspection failed through Docker-managed proxy")
+}
+
+func (b DockerSandbox) checkMainEndpointProbe(ctx context.Context, sandboxName, endpoint, routeLabel string, curlArgs ...string) error {
+	result, err := b.runner().Run(ctx, b.binary(), "exec", sandboxName, "sh", "-lc", controllerIsolationScript(endpoint, curlArgs...))
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		return fmt.Errorf("controller isolation inspection failed: %w", err)
+	}
+	if result.ExitCode == 42 {
+		return fmt.Errorf("controller endpoint is reachable through %s from main sandbox", routeLabel)
+	}
+	return fmt.Errorf("controller isolation inspection failed through %s", routeLabel)
+}
+
+func controllerIsolationScript(endpoint string, curlArgs ...string) string {
+	args := make([]string, 0, len(curlArgs))
+	for _, arg := range curlArgs {
+		args = append(args, shellQuote(arg))
+	}
+	transport := ""
+	if len(args) > 0 {
+		transport = " " + strings.Join(args, " ")
+	}
+	return strings.Join([]string{
+		"remote=$(curl -sS --connect-timeout 1 --max-time 2 -o /dev/null --write-out '%{remote_ip}'" + transport + " -- " + shellQuote(endpoint) + ")",
+		"code=$?",
+		`if [ -n "$remote" ]; then exit 42; fi`,
+		`case "$code" in 7|28) exit 0 ;; *) exit 43 ;; esac`,
+	}, "\n")
+}
+
+func controllerProxyIsolationScript(endpoint string) string {
+	return strings.Join([]string{
+		"status=$(curl -sS --connect-timeout 1 --max-time 2 -o /dev/null --write-out '%{http_code}' --proxy 'http://gateway.docker.internal:3128' --noproxy '' -- " + shellQuote(endpoint) + ")",
+		"code=$?",
+		`if [ "$status" = "401" ]; then exit 42; fi`,
+		`if [ "$code" -eq 0 ] && { [ "$status" = "502" ] || [ "$status" = "504" ]; }; then exit 0; fi`,
+		`exit 43`,
+	}, "\n")
 }
 
 func (b DockerSandbox) checkMainWorkspaceVisibility(ctx context.Context, sandboxName, workspaceMount string) (policy.WorkspaceVisibilityObservation, error) {

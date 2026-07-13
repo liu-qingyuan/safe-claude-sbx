@@ -1142,7 +1142,14 @@ func TestSafeHerdrClassifiesControlPlaneListFailureBeforeTUI(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	configPath := writeTestConfig(t, withSandboxLocalHerdr(validConfig(server.URL, "203.0.113.10", 10)))
+	appHome := writeClashVergeHome(t, true, true, "utun5")
+	configBody := strings.Replace(
+		validConfig(server.URL, "203.0.113.10", 10),
+		"  clash_verge:\n",
+		fmt.Sprintf("  clash_verge:\n    app_home: %q\n", appHome),
+		1,
+	)
+	configPath := writeTestConfig(t, withSandboxLocalHerdr(configBody))
 	logPath := filepath.Join(t.TempDir(), "sbx.log")
 	fakeBin := writeFakeSystemCommands(t, "utun5", false)
 	fakeSBX := writeFakeSBX(t, fakeSBXOptions{

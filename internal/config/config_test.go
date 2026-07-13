@@ -43,6 +43,121 @@ func TestLoadDefaultsSandboxSupervisionModeToDirectClaude(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsEgressModeToHostInherited(t *testing.T) {
+	path := writeConfig(t, validConfigYAML())
+
+	cfg, err := Load(path)
+
+	if err != nil {
+		t.Fatalf("expected legacy config without egress mode to load: %v", err)
+	}
+	if cfg.Network.Egress.Mode != "host-inherited" {
+		t.Fatalf("expected host-inherited egress mode, got %q", cfg.Network.Egress.Mode)
+	}
+}
+
+func TestLoadAcceptsDedicatedGatewayEgress(t *testing.T) {
+	path := writeConfig(t, strings.Replace(
+		validConfigYAML(),
+		`network:
+  clash_verge:
+    route_check_target: "1.1.1.1"
+    tun_interface_prefix: "utun"
+  egress_ip:
+    expected_ip: "203.0.113.10"
+    host_check_url: "https://api.ipify.org"`,
+		`network:
+  egress:
+    mode: "dedicated-gateway"
+    dedicated_gateway:
+      upstream_url: "http://127.0.0.1:17890"
+      controller_url: "http://127.0.0.1:19090"
+      controller_secret_env: "SAFE_CLAUDE_SBX_MIHOMO_SECRET"
+  egress_ip:
+    expected_ip: "203.0.113.10"`,
+		1,
+	))
+
+	cfg, err := Load(path)
+
+	if err != nil {
+		t.Fatalf("expected dedicated gateway config to load: %v", err)
+	}
+	if cfg.Network.Egress.DedicatedGateway == nil {
+		t.Fatal("expected dedicated gateway config")
+	}
+	if cfg.Network.Egress.DedicatedGateway.UpstreamURL != "http://127.0.0.1:17890" {
+		t.Fatalf("unexpected upstream URL %q", cfg.Network.Egress.DedicatedGateway.UpstreamURL)
+	}
+	if cfg.Network.Egress.DedicatedGateway.ControllerSecretEnv != "SAFE_CLAUDE_SBX_MIHOMO_SECRET" {
+		t.Fatalf("unexpected controller secret reference %q", cfg.Network.Egress.DedicatedGateway.ControllerSecretEnv)
+	}
+}
+
+func TestLoadRejectsUnsafeDedicatedGatewayEgress(t *testing.T) {
+	base := strings.Replace(
+		validConfigYAML(),
+		`network:
+  clash_verge:
+    route_check_target: "1.1.1.1"
+    tun_interface_prefix: "utun"
+  egress_ip:
+    expected_ip: "203.0.113.10"
+    host_check_url: "https://api.ipify.org"`,
+		`network:
+  egress:
+    mode: "dedicated-gateway"
+    dedicated_gateway:
+      upstream_url: "http://127.0.0.1:17890"
+      controller_url: "http://127.0.0.1:19090"
+      controller_secret_env: "SAFE_CLAUDE_SBX_MIHOMO_SECRET"
+  egress_ip:
+    expected_ip: "203.0.113.10"`,
+		1,
+	)
+	tests := []struct {
+		name        string
+		body        string
+		wantMessage string
+	}{
+		{
+			name:        "non-loopback upstream",
+			body:        strings.Replace(base, "http://127.0.0.1:17890", "http://192.0.2.10:17890", 1),
+			wantMessage: "upstream_url",
+		},
+		{
+			name:        "credentialed upstream",
+			body:        strings.Replace(base, "http://127.0.0.1:17890", "http://user:secret@127.0.0.1:17890", 1),
+			wantMessage: "must not include credentials",
+		},
+		{
+			name:        "unsupported upstream scheme",
+			body:        strings.Replace(base, "http://127.0.0.1:17890", "socks5://127.0.0.1:17890", 1),
+			wantMessage: "HTTP URL",
+		},
+		{
+			name:        "non-loopback controller",
+			body:        strings.Replace(base, "http://127.0.0.1:19090", "http://192.0.2.10:19090", 1),
+			wantMessage: "controller_url",
+		},
+		{
+			name:        "invalid secret reference",
+			body:        strings.Replace(base, "SAFE_CLAUDE_SBX_MIHOMO_SECRET", "secret-value", 1),
+			wantMessage: "environment variable name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, tt.body))
+
+			if err == nil || !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Fatalf("expected %q validation error, got %v", tt.wantMessage, err)
+			}
+		})
+	}
+}
+
 func TestLoadAcceptsSandboxLocalHerdrSupervision(t *testing.T) {
 	path := writeConfig(t, strings.Replace(
 		validConfigYAML(),

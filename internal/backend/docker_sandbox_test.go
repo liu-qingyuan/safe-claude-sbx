@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -392,6 +393,147 @@ func TestDockerSandboxPreflightMainSandboxRedactsEgressCommandFailure(t *testing
 	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "secret-cookie") {
 		t.Fatalf("main preflight egress diagnostic leaked configured URL secret: %v", err)
 	}
+}
+
+func TestDockerSandboxCheckMainEndpointIsolation(t *testing.T) {
+	const endpoint = "http://127.0.0.1:19090"
+	directCommand := "sbx exec main sh -lc " + controllerIsolationScript("http://host.docker.internal:19090", "--noproxy", "*")
+	proxyCommand := "sbx exec main sh -lc " + controllerProxyIsolationScript(endpoint+"/version")
+	tests := []struct {
+		name      string
+		result    CommandResult
+		runErr    error
+		wantError string
+	}{
+		{
+			name:   "connection blocked",
+			result: CommandResult{},
+		},
+		{
+			name:      "endpoint reachable",
+			result:    CommandResult{ExitCode: 42},
+			runErr:    errors.New("exit status 42"),
+			wantError: "controller endpoint is reachable",
+		},
+		{
+			name:      "inspection failed",
+			result:    CommandResult{ExitCode: 43, Stderr: "SECRET_SHOULD_NOT_LEAK"},
+			runErr:    errors.New("exit status 43"),
+			wantError: "controller isolation inspection failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := stubRunner{
+				results: map[string]CommandResult{
+					directCommand: {},
+					proxyCommand:  tt.result,
+				},
+				errors: map[string]error{proxyCommand: tt.runErr},
+			}
+
+			err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckMainEndpointIsolation(context.Background(), "main", endpoint)
+
+			if tt.wantError == "" && err != nil {
+				t.Fatalf("expected isolated endpoint, got %v", err)
+			}
+			if tt.wantError != "" && (err == nil || !strings.Contains(err.Error(), tt.wantError)) {
+				t.Fatalf("expected %q, got %v", tt.wantError, err)
+			}
+			if err != nil && strings.Contains(err.Error(), "SECRET_SHOULD_NOT_LEAK") {
+				t.Fatalf("isolation error leaked command output: %v", err)
+			}
+		})
+	}
+}
+
+func TestControllerIsolationScriptDistinguishesConnectedTimeout(t *testing.T) {
+	tests := []struct {
+		name     string
+		remoteIP string
+		wantCode int
+	}{
+		{name: "connect timeout", wantCode: 0},
+		{name: "connected response timeout", remoteIP: "127.0.0.1", wantCode: 42},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			curl := filepath.Join(dir, "curl")
+			body := "#!/bin/sh\nprintf '%s' " + shellQuote(tt.remoteIP) + "\nexit 28\n"
+			if err := os.WriteFile(curl, []byte(body), 0o700); err != nil {
+				t.Fatalf("write fake curl: %v", err)
+			}
+			cmd := exec.Command("sh", "-c", controllerIsolationScript("http://127.0.0.1:19090"))
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			err := cmd.Run()
+			if got := exitCode(err); got != tt.wantCode {
+				t.Fatalf("expected exit %d, got %d with err %v", tt.wantCode, got, err)
+			}
+		})
+	}
+}
+
+func TestDockerSandboxCheckMainEndpointIsolationRejectsManagedProxyReachability(t *testing.T) {
+	runner := &proxyIsolationRunner{}
+
+	err := (DockerSandbox{Runner: runner, Binary: "sbx"}).CheckMainEndpointIsolation(context.Background(), "main", "http://127.0.0.1:19090")
+
+	if err == nil || !strings.Contains(err.Error(), "reachable through Docker-managed proxy") {
+		t.Fatalf("expected managed proxy exposure failure, got %v", err)
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected direct and managed proxy probes, got %d calls", runner.calls)
+	}
+}
+
+func TestControllerProxyIsolationScriptUsesTargetStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		httpStatus string
+		wantCode   int
+	}{
+		{name: "proxy cannot reach target", httpStatus: "502", wantCode: 0},
+		{name: "controller authentication response", httpStatus: "401", wantCode: 42},
+		{name: "unexpected response", httpStatus: "500", wantCode: 43},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			curl := filepath.Join(dir, "curl")
+			body := "#!/bin/sh\nprintf '%s' " + shellQuote(tt.httpStatus) + "\nexit 0\n"
+			if err := os.WriteFile(curl, []byte(body), 0o700); err != nil {
+				t.Fatalf("write fake curl: %v", err)
+			}
+			cmd := exec.Command("sh", "-c", controllerProxyIsolationScript("http://127.0.0.1:19090/version"))
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			err := cmd.Run()
+			if got := exitCode(err); got != tt.wantCode {
+				t.Fatalf("expected exit %d, got %d with err %v", tt.wantCode, got, err)
+			}
+		})
+	}
+}
+
+type proxyIsolationRunner struct {
+	calls int
+}
+
+func (r *proxyIsolationRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
+	r.calls++
+	if r.calls == 1 {
+		return CommandResult{}, nil
+	}
+	return CommandResult{ExitCode: 42}, errors.New("exit status 42")
+}
+
+func (*proxyIsolationRunner) LookPath(file string) (string, error) {
+	return "/tmp/sbx", nil
 }
 
 func TestDockerSandboxPreflightMainSandboxFailsClosedForUnsafeInspection(t *testing.T) {

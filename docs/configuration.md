@@ -35,6 +35,64 @@ the hot path.
 Inside the Herdr TUI, run `cc` to start Claude. The `cc` command is baked into
 the Docker Sandbox template at `/usr/local/bin/cc`.
 
+## Egress Modes
+
+If `network.egress.mode` is omitted, the launcher uses `host-inherited`. This
+keeps the existing Clash Verge TUN, host public IP, doctor, launch, and watchdog
+behavior unchanged. The explicit form is:
+
+```yaml
+network:
+  egress:
+    mode: "host-inherited"
+  clash_verge:
+    route_check_target: "1.1.1.1"
+    tun_interface_prefix: "utun"
+  egress_ip:
+    expected_ip: "34.68.40.236"
+    host_check_url: "https://ipv4.icanhazip.com"
+    sandbox_check_url: "https://ipv4.icanhazip.com"
+    timeout_seconds: 60
+```
+
+`dedicated-gateway` is currently a doctor-only vertical slice. Mihomo and
+MetaCubeXD remain operator-managed external processes; the launcher does not
+install, start, stop, or update them, and MetaCubeXD availability is not a
+startup gate. Configure only the facts the launcher needs:
+
+```yaml
+network:
+  egress:
+    mode: "dedicated-gateway"
+    dedicated_gateway:
+      upstream_url: "http://127.0.0.1:17890"
+      controller_url: "http://127.0.0.1:19090"
+      controller_secret_env: "SAFE_CLAUDE_SBX_MIHOMO_SECRET"
+  egress_ip:
+    expected_ip: "203.0.113.10"
+    sandbox_check_url: "https://ipv4.icanhazip.com"
+    timeout_seconds: 60
+```
+
+Set the referenced controller secret in the doctor process environment. The
+secret itself does not belong in YAML. Both URLs must be credential-free
+loopback HTTP endpoints with explicit ports. The upstream transport is limited
+to HTTP for the validated `sbx v0.34.0` contract.
+
+Dedicated doctor validates authenticated controller health, refuses an
+exclusive lease when any unrelated sandbox is present, starts a foreground
+sandboxd with command-scoped `DOCKER_SANDBOXES_PROXY`, reuses the existing main
+sandbox preflight, rechecks the exclusive scope, and verifies the controller is
+unreachable from main both through the direct `host.docker.internal` route and
+through an explicitly selected Docker-managed proxy. A configured main that
+was already running is reloaded under the dedicated daemon for inspection and
+restored under the normal daemon afterward; doctor never cleans that
+preexisting main. Doctor then revokes the lease and restores a normal daemon
+before cleaning main state that doctor created. It never sets generic
+`HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` on sandboxd. `safe-claude-sbx`
+launch and `safe-herdr` reject this mode until dedicated runtime supervision is
+implemented.
+
 ## Supervision Examples
 
 The default supervision mode is direct Claude startup. A minimal explicit
@@ -74,15 +132,27 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
 
 ## Object Model
 
+- `network.egress`
+  - `mode`: `host-inherited` or `dedicated-gateway`. If omitted, defaults to
+    `host-inherited`.
+  - `dedicated_gateway`: Required only for `dedicated-gateway`.
+    - `upstream_url`: Credential-free loopback HTTP upstream URL with an
+      explicit port.
+    - `controller_url`: Credential-free loopback HTTP Mihomo controller base
+      URL with an explicit port.
+    - `controller_secret_env`: Name of the host environment variable containing
+      the controller secret. The value is never passed to sandboxd or main.
 - `network.clash_verge`
   - `app_home`: Optional Clash Verge Rev app-home override. Empty string uses the normal macOS app-home path.
   - `route_check_target`: IP used by `route get` to inspect the outbound route.
   - `tun_interface_prefix`: Expected macOS TUN interface prefix, normally `utun`.
 - `network.egress_ip`
-  - `expected_ip`: Public IP that both host and sandbox must observe. The
-    example default is the team egress IP `34.68.40.236`; change it only when
-    the approved route uses a different public IP.
-  - `host_check_url`: Endpoint the host uses to read its public IP.
+  - `expected_ip`: Public IP the sandbox must observe. In `host-inherited`, the
+    host must also observe it. The example default is the team egress IP
+    `34.68.40.236`; change it only when the approved route uses a different
+    public IP.
+  - `host_check_url`: Endpoint the host uses to read its public IP. Required
+    only for `host-inherited`.
   - `sandbox_check_url`: Endpoint the sandbox uses to read its public IP.
   - `timeout_seconds`: Timeout for backend commands, configured main sandbox
     inspection commands, sandbox-local Herdr checks, cleanup attempts, and
@@ -150,13 +220,14 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
 ## Validation
 
 `doctor --config` fails closed when required objects or fields are missing, when
-`workspace.mount` resolves to a forbidden mount, when
-`network.egress_ip.expected_ip` is not an IP address, or when the host egress
-check cannot prove that the observed public IP matches the configured expected
-IP. Error messages include object paths such as `network.clash_verge`,
-`workspace.mount`, or `network.egress_ip.expected_ip`, and host egress failures
-distinguish `host-egress-mismatch`, `endpoint-failure`, and
-`response-parse-failure`.
+`workspace.mount` resolves to a forbidden mount, or when
+`network.egress_ip.expected_ip` is not an IP address. `host-inherited` also
+requires Clash Verge policy and a host check URL, and fails when the host egress
+check cannot prove the expected IP. Dedicated mode rejects non-loopback,
+credentialed, path-bearing, or non-HTTP endpoints and invalid controller secret
+references before backend mutation. Error messages include object paths such as
+`network.clash_verge`, `network.egress.dedicated_gateway.upstream_url`,
+`workspace.mount`, or `network.egress_ip.expected_ip`.
 
 Supervision config also fails closed. `sandbox.supervision.mode` must be either
 `direct-claude` or `sandbox-local-herdr`. Herdr mode requires
@@ -206,10 +277,12 @@ example `expected_egress_ip -> network.egress_ip.expected_ip`.
 
 ## Runtime Watchdog
 
-Startup remains the deep validation point. Before the main sandbox is attached,
-the launcher validates Clash Verge TUN declarations, the live macOS route and
-startup TUN interface, host egress, Docker Sandbox availability, sandbox egress,
-workspace visibility, and sandbox environment policy.
+Startup remains the deep validation point. In `host-inherited`, before the main
+sandbox is attached, the launcher validates Clash Verge TUN declarations, the
+live macOS route and startup TUN interface, host egress, Docker Sandbox
+availability, sandbox egress, workspace visibility, and sandbox environment
+policy. Dedicated launch/watchdog behavior is not enabled by this doctor-only
+slice.
 
 Runtime supervision is intentionally lighter. The watchdog merges macOS route
 monitor events and Clash Verge app-home file metadata events, debounces the

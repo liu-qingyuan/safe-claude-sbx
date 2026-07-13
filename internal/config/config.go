@@ -3,7 +3,9 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path"
 	"sort"
@@ -25,6 +27,18 @@ type Config struct {
 type Network struct {
 	ClashVerge ClashVerge `yaml:"clash_verge"`
 	EgressIP   EgressIP   `yaml:"egress_ip"`
+	Egress     Egress     `yaml:"egress"`
+}
+
+type Egress struct {
+	Mode             string            `yaml:"mode"`
+	DedicatedGateway *DedicatedGateway `yaml:"dedicated_gateway"`
+}
+
+type DedicatedGateway struct {
+	UpstreamURL         string `yaml:"upstream_url"`
+	ControllerURL       string `yaml:"controller_url"`
+	ControllerSecretEnv string `yaml:"controller_secret_env"`
 }
 
 type ClashVerge struct {
@@ -175,10 +189,7 @@ func (c Config) Validate() error {
 		path  string
 		value string
 	}{
-		{"network.clash_verge.route_check_target", c.Network.ClashVerge.RouteCheckTarget},
-		{"network.clash_verge.tun_interface_prefix", c.Network.ClashVerge.TUNInterfacePrefix},
 		{"network.egress_ip.expected_ip", c.Network.EgressIP.ExpectedIP},
-		{"network.egress_ip.host_check_url", c.Network.EgressIP.HostCheckURL},
 		{"network.egress_ip.sandbox_check_url", c.Network.EgressIP.SandboxCheckURL},
 		{"sandbox.backend", c.Sandbox.Backend},
 		{"sandbox.main_name", c.Sandbox.MainName},
@@ -194,6 +205,9 @@ func (c Config) Validate() error {
 		if field.value == "" {
 			return fmt.Errorf("missing required field %s", field.path)
 		}
+	}
+	if err := c.Network.ValidateEgress(); err != nil {
+		return err
 	}
 	if c.Network.EgressIP.TimeoutSeconds <= 0 {
 		return fmt.Errorf("invalid field network.egress_ip.timeout_seconds: must be greater than 0")
@@ -222,7 +236,92 @@ func (c Config) Validate() error {
 	return nil
 }
 
+func (n Network) ValidateEgress() error {
+	switch n.Egress.Mode {
+	case "host-inherited":
+		for _, field := range []struct {
+			path  string
+			value string
+		}{
+			{"network.clash_verge.route_check_target", n.ClashVerge.RouteCheckTarget},
+			{"network.clash_verge.tun_interface_prefix", n.ClashVerge.TUNInterfacePrefix},
+			{"network.egress_ip.host_check_url", n.EgressIP.HostCheckURL},
+		} {
+			if strings.TrimSpace(field.value) == "" {
+				return fmt.Errorf("missing required field %s", field.path)
+			}
+		}
+		return nil
+	case "dedicated-gateway":
+		if n.Egress.DedicatedGateway == nil {
+			return fmt.Errorf("missing required object network.egress.dedicated_gateway")
+		}
+		for _, field := range []struct {
+			path  string
+			value string
+		}{
+			{"network.egress.dedicated_gateway.upstream_url", n.Egress.DedicatedGateway.UpstreamURL},
+			{"network.egress.dedicated_gateway.controller_url", n.Egress.DedicatedGateway.ControllerURL},
+			{"network.egress.dedicated_gateway.controller_secret_env", n.Egress.DedicatedGateway.ControllerSecretEnv},
+		} {
+			if strings.TrimSpace(field.value) == "" {
+				return fmt.Errorf("missing required field %s", field.path)
+			}
+		}
+		if err := validateLoopbackHTTPURL("network.egress.dedicated_gateway.upstream_url", n.Egress.DedicatedGateway.UpstreamURL); err != nil {
+			return err
+		}
+		if err := validateLoopbackHTTPURL("network.egress.dedicated_gateway.controller_url", n.Egress.DedicatedGateway.ControllerURL); err != nil {
+			return err
+		}
+		if !validEnvironmentVariableName(n.Egress.DedicatedGateway.ControllerSecretEnv) {
+			return fmt.Errorf("invalid field network.egress.dedicated_gateway.controller_secret_env: must be an environment variable name")
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid field network.egress.mode: supported values are host-inherited, dedicated-gateway")
+	}
+}
+
+func validateLoopbackHTTPURL(fieldPath, raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "http" || parsed.Host == "" {
+		return fmt.Errorf("invalid field %s: must be an HTTP URL", fieldPath)
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("invalid field %s: must not include credentials", fieldPath)
+	}
+	if parsed.Port() == "" {
+		return fmt.Errorf("invalid field %s: must include an explicit port", fieldPath)
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("invalid field %s: host must be loopback", fieldPath)
+	}
+	if (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("invalid field %s: must not include a path, query, or fragment", fieldPath)
+	}
+	return nil
+}
+
+func validEnvironmentVariableName(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || !((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z') || value[0] == '_') {
+		return false
+	}
+	for i := 1; i < len(value); i++ {
+		if !((value[i] >= 'A' && value[i] <= 'Z') || (value[i] >= 'a' && value[i] <= 'z') || (value[i] >= '0' && value[i] <= '9') || value[i] == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Config) ApplyDefaults() {
+	if c.Network.Egress.Mode == "" {
+		c.Network.Egress.Mode = "host-inherited"
+	}
 	if c.Sandbox.Supervision.Mode == "" {
 		c.Sandbox.Supervision.Mode = "direct-claude"
 	}
