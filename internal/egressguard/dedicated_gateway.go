@@ -157,6 +157,9 @@ func dockerSandboxProtocolCheck(executor commandExecutor) protocolCapabilityChec
 }
 
 func validateDockerSandboxProtocolSupport(version string) error {
+	if dockerSandboxProtocolComplete(version) {
+		return nil
+	}
 	// No released Docker Sandbox version has a validated upstream contract for
 	// managed HTTP(S), generic TCP, and DNS together.
 	switch version {
