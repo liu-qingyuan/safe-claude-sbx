@@ -779,3 +779,76 @@ Expected result:
   Sandbox control plane, the error should be recorded as `sbx control-plane
   failure`, not as `sandbox-egress-mismatch`,
   `sandbox-egress-indeterminate`, or `sandbox egress invalid`.
+
+## 20. Dedicated private Docker Engine and protocol acceptance
+
+This scenario is a strict gate for `dedicated-gateway`; it is not a routine
+launcher smoke test. Run it only with a disposable sandbox name, a cached
+`shell-docker` template, an operator-managed disposable gateway, and an approved
+public test endpoint. Record hostnames, status classes, and expected public IPs
+only. Do not record proxy configuration, subscriptions, node names, credentials,
+controller secrets, or response bodies other than the public IP result.
+
+Prerequisites:
+
+- `sbx version` and the Docker Sandbox version under test are recorded.
+- `sbx ls` is saved so preexisting sandboxes can be distinguished from the
+  disposable sandbox. No preexisting sandbox may be removed.
+- The `shell-docker` template is already cached. Template transfer is a host
+  sandboxd control-plane path and must not be attempted after acquiring the
+  dedicated lease.
+- The disposable gateway is healthy, loopback-only, credential-free at the
+  sandboxd upstream endpoint, and has connection logging enabled without
+  sensitive configuration output.
+- The normal sandboxd daemon can be restored after the experiment. Do not
+  modify host routes or reset/change global Docker Sandbox policy.
+
+Steps:
+
+1. Start sandboxd with the command-scoped
+   `DOCKER_SANDBOXES_PROXY=<loopback-http-upstream>` environment described in
+   `docs/docker-sandbox-backend.md`. Do not add generic proxy environment
+   variables.
+2. Create one uniquely named disposable `shell-docker` sandbox and verify its
+   private Docker Engine with `docker version`.
+3. From the agent, request the approved IP endpoint over HTTP and HTTPS. From an
+   `alpine` container, repeat both requests without injecting proxy variables.
+4. Pull one uncached, disposable container image with the private Docker Engine.
+   Confirm registry, authentication, and layer-download hosts appear in gateway
+   logs. Do not confuse this with `sbx create` template transfer.
+5. From agent and container, resolve a unique harmless hostname so cached DNS
+   cannot hide the path. Confirm the query uses a documented, dedicated-aware
+   resolver path.
+6. From the container, connect to an approved non-HTTP TCP endpoint, for example
+   the SSH banner endpoint at `ssh.github.com:443`. Confirm the connection is
+   either recorded by the dedicated gateway or explicitly denied by policy.
+7. Confirm direct external UDP DNS and ICMP are blocked. Check `sbx policy log`
+   for `<udp proxy policy>` and `<icmp proxy policy>` without changing policy.
+8. Stop only the disposable gateway while leaving the dedicated sandboxd lease
+   active. Repeat agent/container HTTP and HTTPS, the unique DNS lookup, the
+   non-HTTP TCP connection, and an uncached private Engine image pull.
+9. Stop and remove only the disposable sandbox, stop the dedicated daemon,
+   restore normal sandboxd without `DOCKER_SANDBOXES_PROXY`, and verify the
+   preexisting sandbox list and states are unchanged.
+
+Pass conditions:
+
+- Agent and container HTTP/HTTPS return the configured expected dedicated IP
+  while the gateway is healthy and fail without an IP after gateway loss.
+- Private Engine image pull hosts appear in gateway logs while healthy; an
+  uncached pull fails after gateway loss without host-direct fallback.
+- Allowed non-HTTP TCP is observable on the dedicated path. If the backend
+  cannot route it through that path, it must be denied.
+- Agent and container DNS use a documented dedicated-aware path and cannot keep
+  producing external resolutions after gateway loss.
+- Direct UDP and ICMP remain blocked by Docker Sandbox policy.
+- Any raw TCP connection or unique external DNS lookup that succeeds after
+  gateway loss fails this scenario. Keep the validation Ticket open and create
+  or retain a blocker rather than weakening the pass condition.
+
+Observed `sbx v0.34.0` result on 2026-07-13:
+
+- HTTP/HTTPS and private Engine pulls met the fail-closed conditions.
+- Direct external UDP DNS and ICMP were blocked.
+- Agent/container unique DNS lookups and raw TCP remained available after
+  gateway loss, so the overall scenario failed. See blocker #51.

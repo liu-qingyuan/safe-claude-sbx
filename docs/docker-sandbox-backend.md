@@ -502,6 +502,57 @@ dashboard assets, and all temporary files. The preexisting `claude-sbx`
 remained present and stopped, with its original workspace unchanged. The normal
 sandboxd process was restored without `DOCKER_SANDBOXES_PROXY`.
 
+### Private Docker Engine And Protocol Validation
+
+Issue #47 extended the dedicated upstream experiment on 2026-07-13 with the
+cached `shell-docker` template and its private Docker Engine. The test used one
+uniquely named disposable sandbox, the same command-scoped HTTP upstream shape,
+and a disposable Mihomo process chained to the credential-free host loopback
+proxy. It did not change host routes or policy and did not inspect Clash
+configuration, subscriptions, nodes, or credentials.
+
+Confirmed paths:
+
+- Agent and private Engine container HTTP and HTTPS observed public IP
+  `144.168.60.76`, matching the expected upstream egress. Mihomo recorded the
+  corresponding `api.ipify.org` HTTP and HTTPS connections.
+- `docker pull alpine:3.20` inside the sandbox's private Docker Engine traversed
+  Mihomo. Logs included `registry-1.docker.io`, `auth.docker.io`, and
+  `production.cloudfront.docker.com`.
+- This differs from host sandboxd template transfer. The #43 uncached
+  `shell-docker-0.2.0` template pull contacted the registry outside Mihomo,
+  while the #47 private Engine pull was part of the dedicated workload path.
+- Direct external UDP DNS to `1.1.1.1:53` and ICMP to `1.1.1.1` were blocked.
+  `sbx policy log` classified them as `<udp proxy policy>` and
+  `<icmp proxy policy>` decisions.
+- With Mihomo stopped, agent and container HTTP/HTTPS failed through the
+  managed proxy, and an uncached private Engine `docker pull busybox:1.36.1`
+  failed with `Bad Gateway`. These paths did not fall back to host-direct
+  egress.
+
+Unresolved bypasses:
+
+- Container raw TCP to `ssh.github.com:443` succeeded both before and after the
+  disposable Mihomo process stopped. Agent raw TCP using Bash `/dev/tcp` also
+  succeeded after gateway loss. Mihomo recorded neither connection.
+- Agent and container lookups of unique `nip.io` names continued to resolve
+  after gateway loss through Docker Sandbox's internal resolver. The successful
+  queries did not appear in Mihomo logs.
+- `sbx policy log` recorded the blocked UDP and ICMP requests and the managed
+  HTTP paths, but it did not record the successful raw TCP connection.
+
+The HTTP `DOCKER_SANDBOXES_PROXY` contract therefore covers managed HTTP(S),
+private Engine image pulls, and their failure behavior, but it does not prove a
+fail-closed workload contract for generic TCP or internal DNS. Dedicated mode
+must not claim full workload egress isolation until blocker #51 either routes
+these paths through the dedicated gateway or rejects them during startup. The
+strict repeatable acceptance procedure is in `tests/manual-test-plan.md`.
+
+Cleanup removed the disposable sandbox and its private Engine image state,
+stopped the disposable gateway, restored normal sandboxd without
+`DOCKER_SANDBOXES_PROXY`, and left the preexisting `claude-sbx` present and
+stopped.
+
 ### Sandbox-Local Herdr Prototype
 
 Issue #15 validated the sandbox-local Herdr startup contract against a real
