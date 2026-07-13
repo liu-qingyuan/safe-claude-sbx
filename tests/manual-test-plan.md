@@ -783,11 +783,39 @@ Expected result:
 ## 20. Dedicated private Docker Engine and protocol acceptance
 
 This scenario is a strict gate for `dedicated-gateway`; it is not a routine
-launcher smoke test. Run it only with a disposable sandbox name, a cached
-`shell-docker` template, an operator-managed disposable gateway, and an approved
-public test endpoint. Record hostnames, status classes, and expected public IPs
-only. Do not record proxy configuration, subscriptions, node names, credentials,
-controller secrets, or response bodies other than the public IP result.
+launcher smoke test. The first section is the stable startup acceptance seam.
+The disposable protocol matrix is only for a future Docker Sandbox release that
+the Adapter explicitly recognizes as protocol-complete. Record hostnames,
+status classes, and expected public IPs only. Do not record proxy configuration,
+subscriptions, node names, credentials, controller secrets, or response bodies
+other than the public IP result.
+
+### Current startup gate for `sbx v0.34.0`
+
+1. Record `sbx version`. If a normal sandboxd is already active, record
+   `sbx ls`; do not start it solely for this check.
+2. Configure `network.egress.mode: dedicated-gateway` with credential-free
+   loopback URLs and a controller secret reference. The controller does not need
+   to be started for this capability check.
+3. Run `safe-claude-sbx doctor --config config.yaml`.
+4. Confirm the launcher did not run `sbx ls` or any daemon/sandbox mutation. If
+   a normal sandboxd was already active, compare its sandbox list with the
+   initial list.
+
+Expected result:
+
+- Doctor exits non-zero with `dedicated protocol isolation unsupported: sbx
+  v0.34.0 provides HTTP upstream only; generic TCP and DNS are not fail closed`.
+- The failure occurs before any controller request, `sbx ls`, `sbx daemon stop`,
+  `sbx daemon start`, `sbx create`, `sbx exec`, attach, or watchdog entry.
+- No controller secret, command environment, or raw backend output is printed.
+- Preexisting sandboxes keep the same names and states.
+
+### Future backend protocol revalidation
+
+Do not run the remaining steps unless the production Adapter explicitly
+recognizes the tested Docker Sandbox release. Until then, startup rejection is
+the passing fail-closed behavior.
 
 Prerequisites:
 
@@ -851,4 +879,7 @@ Observed `sbx v0.34.0` result on 2026-07-13:
 - HTTP/HTTPS and private Engine pulls met the fail-closed conditions.
 - Direct external UDP DNS and ICMP were blocked.
 - Agent/container unique DNS lookups and raw TCP remained available after
-  gateway loss, so the overall scenario failed. See blocker #51.
+  gateway loss, so the protocol matrix failed.
+- The #51 startup capability gate now rejects this version before daemon or
+  sandbox mutation. That rejection is the current passing acceptance result;
+  it does not turn the failed protocol matrix into positive isolation evidence.

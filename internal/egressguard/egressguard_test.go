@@ -50,6 +50,52 @@ func TestHostInheritedAdapterThroughEgressGuardInterface(t *testing.T) {
 	}
 }
 
+func TestDedicatedGatewayAdapterRejectsUnsupportedProtocolIsolationBeforeLease(t *testing.T) {
+	executor := newFakeCommandExecutor()
+	guard := newDedicatedGatewayAdapter(
+		dedicatedConfig("http://127.0.0.1:19090"),
+		&fakeMainSandbox{},
+		executor,
+		&http.Client{Timeout: time.Second},
+	)
+
+	_, err := guard.Acquire(context.Background())
+
+	if err == nil || !strings.Contains(err.Error(), "dedicated protocol isolation unsupported: sbx v0.34.0 provides HTTP upstream only; generic TCP and DNS are not fail closed") {
+		t.Fatalf("expected protocol capability failure, got %v", err)
+	}
+	if got := executor.commandLog(); got != "sbx version" {
+		t.Fatalf("expected capability check before lease side effects, got:\n%s", got)
+	}
+	if executor.started {
+		t.Fatal("unsupported protocol isolation must not start sandboxd")
+	}
+}
+
+func TestDedicatedGatewayAdapterRejectsUnknownProtocolCapabilityWithoutAssumingItsBehavior(t *testing.T) {
+	executor := newFakeCommandExecutor()
+	executor.version = "sbx version: v9.9.9 future-build\n"
+	guard := newDedicatedGatewayAdapter(
+		dedicatedConfig("http://127.0.0.1:19090"),
+		&fakeMainSandbox{},
+		executor,
+		&http.Client{Timeout: time.Second},
+	)
+
+	_, err := guard.Acquire(context.Background())
+
+	want := "dedicated protocol isolation unsupported: sbx v9.9.9 has no validated generic TCP and DNS contract"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected unknown capability failure %q, got %v", want, err)
+	}
+	if strings.Contains(err.Error(), "provides HTTP upstream only") {
+		t.Fatalf("unknown version diagnostic assumed unsupported behavior: %v", err)
+	}
+	if got := executor.commandLog(); got != "sbx version" {
+		t.Fatalf("expected capability check before lease side effects, got:\n%s", got)
+	}
+}
+
 func TestDedicatedGatewayAdapterSuccessThroughEgressGuardInterface(t *testing.T) {
 	const secret = "controller-secret-value"
 	t.Setenv("SAFE_CLAUDE_SBX_MIHOMO_SECRET", secret)
@@ -70,7 +116,7 @@ func TestDedicatedGatewayAdapterSuccessThroughEgressGuardInterface(t *testing.T)
 	main := &fakeMainSandbox{}
 	executor := newFakeCommandExecutor()
 	cfg := dedicatedConfig(controller.URL)
-	var guard EgressGuard = newDedicatedGatewayAdapter(cfg, main, executor, controller.Client())
+	var guard EgressGuard = newSupportedDedicatedGatewayAdapter(cfg, main, executor, controller.Client())
 
 	acquired, err := guard.Acquire(context.Background())
 	if err != nil {
@@ -127,7 +173,7 @@ func TestDedicatedGatewayAdapterFailsWhenOwnedDaemonExits(t *testing.T) {
 	}))
 	t.Cleanup(controller.Close)
 	executor := newFakeCommandExecutor()
-	guard := newDedicatedGatewayAdapter(dedicatedConfig(controller.URL), &fakeMainSandbox{}, executor, controller.Client())
+	guard := newSupportedDedicatedGatewayAdapter(dedicatedConfig(controller.URL), &fakeMainSandbox{}, executor, controller.Client())
 
 	if _, err := guard.Acquire(context.Background()); err != nil {
 		t.Fatalf("acquire dedicated lease: %v", err)
@@ -155,7 +201,7 @@ func TestDedicatedGatewayAdapterFailsWhenControllerStopsAfterAcquire(t *testing.
 		fmt.Fprintln(w, `{"version":"v1.19.28"}`)
 	}))
 	executor := newFakeCommandExecutor()
-	guard := newDedicatedGatewayAdapter(dedicatedConfig(controller.URL), &fakeMainSandbox{}, executor, controller.Client())
+	guard := newSupportedDedicatedGatewayAdapter(dedicatedConfig(controller.URL), &fakeMainSandbox{}, executor, controller.Client())
 	if _, err := guard.Acquire(context.Background()); err != nil {
 		controller.Close()
 		t.Fatalf("acquire dedicated lease: %v", err)
@@ -186,7 +232,7 @@ func TestDedicatedGatewayAdapterRestoresExistingRunningMain(t *testing.T) {
 	executor.listOutput = "SANDBOX AGENT STATUS PORTS WORKSPACE\nclaude-sbx claude running - .\n"
 	cfg := dedicatedConfig(controller.URL)
 	cfg.Workspace.Mount = "."
-	guard := newDedicatedGatewayAdapter(cfg, &fakeMainSandbox{}, executor, controller.Client())
+	guard := newSupportedDedicatedGatewayAdapter(cfg, &fakeMainSandbox{}, executor, controller.Client())
 
 	if _, err := guard.Acquire(context.Background()); err != nil {
 		t.Fatalf("acquire with existing main: %v", err)
@@ -216,7 +262,7 @@ func TestDedicatedGatewayAdapterFailsClosedOnScopeDrift(t *testing.T) {
 	}))
 	t.Cleanup(controller.Close)
 	executor := &scopeDriftExecutor{fakeCommandExecutor: newFakeCommandExecutor()}
-	guard := newDedicatedGatewayAdapter(dedicatedConfig(controller.URL), &fakeMainSandbox{}, executor, controller.Client())
+	guard := newSupportedDedicatedGatewayAdapter(dedicatedConfig(controller.URL), &fakeMainSandbox{}, executor, controller.Client())
 
 	if _, err := guard.Acquire(context.Background()); err != nil {
 		t.Fatalf("acquire dedicated lease: %v", err)
@@ -280,7 +326,7 @@ func TestDedicatedGatewayAdapterReportsRestoreFailureAfterStartError(t *testing.
 	}))
 	t.Cleanup(controller.Close)
 	executor := &startRestoreFailureExecutor{}
-	guard := newDedicatedGatewayAdapter(dedicatedConfig(controller.URL), &fakeMainSandbox{}, executor, controller.Client())
+	guard := newSupportedDedicatedGatewayAdapter(dedicatedConfig(controller.URL), &fakeMainSandbox{}, executor, controller.Client())
 
 	_, err := guard.Acquire(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "restore normal daemon failed") {
@@ -308,6 +354,21 @@ func dedicatedConfig(controllerURL string) config.Config {
 	}
 }
 
+func newSupportedDedicatedGatewayAdapter(
+	cfg config.Config,
+	main MainSandbox,
+	executor commandExecutor,
+	client *http.Client,
+) EgressGuard {
+	return newDedicatedGatewayAdapterWithProtocolCheck(
+		cfg,
+		main,
+		executor,
+		client,
+		func(context.Context) error { return nil },
+	)
+}
+
 type fakeMainSandbox struct {
 	endpoint string
 	err      error
@@ -325,6 +386,7 @@ type fakeCommandExecutor struct {
 	process    *fakeProcess
 	started    bool
 	listOutput string
+	version    string
 }
 
 type scopeDriftExecutor struct {
@@ -365,7 +427,11 @@ func (*startRestoreFailureExecutor) Start(env []string, name string, args ...str
 }
 
 func newFakeCommandExecutor() *fakeCommandExecutor {
-	return &fakeCommandExecutor{process: newFakeProcess(), listOutput: "No sandboxes found.\n"}
+	return &fakeCommandExecutor{
+		process:    newFakeProcess(),
+		listOutput: "No sandboxes found.\n",
+		version:    "sbx version: v0.34.0 test-build\n",
+	}
 }
 
 func (f *fakeCommandExecutor) Run(ctx context.Context, env []string, name string, args ...string) (commandResult, error) {
@@ -378,6 +444,9 @@ func (f *fakeCommandExecutor) Run(ctx context.Context, env []string, name string
 	}
 	if command == "sbx ls" {
 		return commandResult{stdout: f.listOutput}, nil
+	}
+	if command == "sbx version" {
+		return commandResult{stdout: f.version}, nil
 	}
 	return commandResult{}, nil
 }

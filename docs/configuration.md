@@ -55,10 +55,12 @@ network:
     timeout_seconds: 60
 ```
 
-`dedicated-gateway` is currently a doctor-only vertical slice. Mihomo and
-MetaCubeXD remain operator-managed external processes; the launcher does not
-install, start, stop, or update them, and MetaCubeXD availability is not a
-startup gate. Configure only the facts the launcher needs:
+`dedicated-gateway` is a capability-gated research mode. Mihomo and MetaCubeXD
+remain operator-managed external processes; the launcher does not install,
+start, stop, or update them. The configuration is accepted so operators can
+record the intended gateway contract, but startup proceeds only when the Docker
+Sandbox backend has an explicitly validated protocol-complete upstream for
+managed HTTP(S), generic TCP, and DNS:
 
 ```yaml
 network:
@@ -76,22 +78,21 @@ network:
 
 Set the referenced controller secret in the doctor process environment. The
 secret itself does not belong in YAML. Both URLs must be credential-free
-loopback HTTP endpoints with explicit ports. The upstream transport is limited
-to HTTP for the validated `sbx v0.34.0` contract.
+loopback HTTP endpoints with explicit ports.
 
-Dedicated doctor validates authenticated controller health, refuses an
-exclusive lease when any unrelated sandbox is present, starts a foreground
-sandboxd with command-scoped `DOCKER_SANDBOXES_PROXY`, reuses the existing main
-sandbox preflight, rechecks the exclusive scope, and verifies the controller is
-unreachable from main both through the direct `host.docker.internal` route and
-through an explicitly selected Docker-managed proxy. A configured main that
-was already running is reloaded under the dedicated daemon for inspection and
-restored under the normal daemon afterward; doctor never cleans that
-preexisting main. Doctor then revokes the lease and restores a normal daemon
-before cleaning main state that doctor created. It never sets generic
-`HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` on sandboxd. `safe-claude-sbx`
-launch and `safe-herdr` reject this mode until dedicated runtime supervision is
-implemented.
+`sbx v0.34.0` is not protocol-complete. Its `DOCKER_SANDBOXES_PROXY` contract is
+HTTP-only, while its scoped network policy matches hostnames, domains, IPs, and
+optional ports rather than protocols. It cannot preserve managed HTTP(S) while
+separately denying generic TCP and internal DNS. Dedicated doctor therefore
+fails with `dedicated protocol isolation unsupported` after reading only
+`sbx version` and before controller access, daemon stop/start, sandbox
+creation, or main attach. Unknown Docker Sandbox versions also fail closed
+until their protocol contract is explicitly validated and added to the Adapter.
+
+The existing controller, exclusive lease, main preflight, and ordered cleanup
+implementation remains behind this capability gate for a future supported
+backend. It never sets generic `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` on
+sandboxd. `safe-claude-sbx` launch and `safe-herdr` also reject this mode.
 
 ## Supervision Examples
 
@@ -281,8 +282,9 @@ Startup remains the deep validation point. In `host-inherited`, before the main
 sandbox is attached, the launcher validates Clash Verge TUN declarations, the
 live macOS route and startup TUN interface, host egress, Docker Sandbox
 availability, sandbox egress, workspace visibility, and sandbox environment
-policy. Dedicated launch/watchdog behavior is not enabled by this doctor-only
-slice.
+policy. Dedicated doctor is capability-gated and rejects the current
+`sbx v0.34.0` backend before mutation; dedicated launch/watchdog behavior is not
+enabled.
 
 Runtime supervision is intentionally lighter. The watchdog merges macOS route
 monitor events and Clash Verge app-home file metadata events, debounces the

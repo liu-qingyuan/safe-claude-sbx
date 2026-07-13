@@ -57,15 +57,6 @@ func runDoctor(configPath string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	sandbox := backend.NewDockerSandbox()
-	if cfg.Network.Egress.Mode == "dedicated-gateway" {
-		precheckCtx, cancelPrecheck := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
-		availability, precheckErr := sandbox.CheckAvailability(precheckCtx)
-		cancelPrecheck()
-		if precheckErr != nil {
-			fmt.Fprintf(stderr, "sandbox backend invalid: %s\n", backendAvailabilityError(availability, precheckErr))
-			return 1
-		}
-	}
 	guard, err := egressguard.New(cfg, sandbox)
 	if err != nil {
 		fmt.Fprintf(stderr, "egress guard invalid: %v\n", err)

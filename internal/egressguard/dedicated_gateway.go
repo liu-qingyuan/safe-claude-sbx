@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -32,11 +33,14 @@ type runningProcess interface {
 	Kill() error
 }
 
+type protocolCapabilityCheck func(context.Context) error
+
 type dedicatedGatewayAdapter struct {
-	cfg      config.Config
-	main     MainSandbox
-	executor commandExecutor
-	client   *http.Client
+	cfg                     config.Config
+	main                    MainSandbox
+	executor                commandExecutor
+	client                  *http.Client
+	checkProtocolCapability protocolCapabilityCheck
 
 	mu                 sync.Mutex
 	process            runningProcess
@@ -46,7 +50,29 @@ type dedicatedGatewayAdapter struct {
 }
 
 func newDedicatedGatewayAdapter(cfg config.Config, main MainSandbox, executor commandExecutor, client *http.Client) EgressGuard {
-	return &dedicatedGatewayAdapter{cfg: cfg, main: main, executor: executor, client: client}
+	return newDedicatedGatewayAdapterWithProtocolCheck(
+		cfg,
+		main,
+		executor,
+		client,
+		dockerSandboxProtocolCheck(executor),
+	)
+}
+
+func newDedicatedGatewayAdapterWithProtocolCheck(
+	cfg config.Config,
+	main MainSandbox,
+	executor commandExecutor,
+	client *http.Client,
+	check protocolCapabilityCheck,
+) EgressGuard {
+	return &dedicatedGatewayAdapter{
+		cfg:                     cfg,
+		main:                    main,
+		executor:                executor,
+		client:                  client,
+		checkProtocolCapability: check,
+	}
 }
 
 func (a *dedicatedGatewayAdapter) Acquire(ctx context.Context) (Result, error) {
@@ -54,6 +80,9 @@ func (a *dedicatedGatewayAdapter) Acquire(ctx context.Context) (Result, error) {
 	defer a.mu.Unlock()
 	if a.acquired {
 		return Result{}, fmt.Errorf("sandboxd lease invalid: lease already acquired")
+	}
+	if err := a.checkProtocolCapability(ctx); err != nil {
+		return Result{}, err
 	}
 	if err := a.checkController(ctx); err != nil {
 		return Result{}, err
@@ -108,6 +137,40 @@ func (a *dedicatedGatewayAdapter) Acquire(ctx context.Context) (Result, error) {
 		},
 		CleanupCreatedMain: true,
 	}, nil
+}
+
+var sbxVersionPattern = regexp.MustCompile(`(?m)\bsbx version:\s+(v[0-9]+\.[0-9]+\.[0-9]+)\b`)
+
+func dockerSandboxProtocolCheck(executor commandExecutor) protocolCapabilityCheck {
+	return func(ctx context.Context) error {
+		result, err := executor.Run(ctx, commandEnvironment(""), "sbx", "version")
+		if err != nil {
+			return fmt.Errorf("dedicated protocol isolation unsupported: cannot inspect Docker Sandbox version")
+		}
+		matches := sbxVersionPattern.FindStringSubmatch(result.stdout)
+		if len(matches) != 2 {
+			return fmt.Errorf("dedicated protocol isolation unsupported: unrecognized Docker Sandbox version output")
+		}
+
+		return validateDockerSandboxProtocolSupport(matches[1])
+	}
+}
+
+func validateDockerSandboxProtocolSupport(version string) error {
+	// No released Docker Sandbox version has a validated upstream contract for
+	// managed HTTP(S), generic TCP, and DNS together.
+	switch version {
+	case "v0.34.0":
+		return fmt.Errorf(
+			"dedicated protocol isolation unsupported: sbx %s provides HTTP upstream only; generic TCP and DNS are not fail closed",
+			version,
+		)
+	default:
+		return fmt.Errorf(
+			"dedicated protocol isolation unsupported: sbx %s has no validated generic TCP and DNS contract",
+			version,
+		)
+	}
 }
 
 func (a *dedicatedGatewayAdapter) ValidateMain(ctx context.Context) (Result, error) {

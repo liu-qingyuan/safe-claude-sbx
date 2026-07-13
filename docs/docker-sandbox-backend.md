@@ -543,15 +543,50 @@ Unresolved bypasses:
 
 The HTTP `DOCKER_SANDBOXES_PROXY` contract therefore covers managed HTTP(S),
 private Engine image pulls, and their failure behavior, but it does not prove a
-fail-closed workload contract for generic TCP or internal DNS. Dedicated mode
-must not claim full workload egress isolation until blocker #51 either routes
-these paths through the dedicated gateway or rejects them during startup. The
+fail-closed workload contract for generic TCP or internal DNS. Issue #51 closes
+that unsafe startup path by rejecting unsupported Docker Sandbox protocol
+capabilities before a dedicated daemon lease or main sandbox operation. The
 strict repeatable acceptance procedure is in `tests/manual-test-plan.md`.
 
 Cleanup removed the disposable sandbox and its private Engine image state,
 stopped the disposable gateway, restored normal sandboxd without
 `DOCKER_SANDBOXES_PROXY`, and left the preexisting `claude-sbx` present and
 stopped.
+
+### Dedicated Protocol Capability Gate
+
+Issue #51 rechecked the official `sbx v0.34.0` command surface on 2026-07-13:
+
+- `sbx daemon start` accepts only `--policy allow-all|balanced|deny-all`; it has
+  no transparent upstream or DNS upstream option.
+- `sbx policy allow network` and `sbx policy deny network` can be scoped to one
+  sandbox, but resources are hostnames, domains, IP addresses, and optional
+  ports. Rules do not select HTTP, generic TCP, or DNS as separate protocols.
+- Deny rules take precedence. A scoped `deny **` would also block the managed
+  HTTP(S) and private Engine paths that must remain available, so it cannot be
+  combined with an allow rule to express the dedicated contract.
+- Policy profiles come from remote governance; `v0.34.0` exposes no local
+  profile creation mechanism that supplies a protocol-complete upstream.
+
+The dedicated `EgressGuard` now reads `sbx version` through its existing
+command seam before controller health or lease acquisition. The production
+support matrix is intentionally empty because no tested release has a validated
+combined contract for managed HTTP(S), generic TCP, and DNS. `v0.34.0`, command
+failure, malformed version output, and unknown versions all fail closed without
+printing controller secrets or backend output. The diagnostic for the tested
+release is:
+
+```text
+dedicated protocol isolation unsupported: sbx v0.34.0 provides HTTP upstream only; generic TCP and DNS are not fail closed
+```
+
+Doctor performs this capability check before general backend availability so
+`sbx ls` cannot auto-start a normal daemon on an unsupported version. The
+failure occurs before controller requests, `sbx ls`, `sbx daemon stop`,
+`sbx daemon start`, `sbx create`, or `sbx exec`. The deeper
+controller, exclusive lease, main validation, and cleanup implementation remains
+covered through an internal test Adapter so a future explicitly supported
+backend can reuse it without a parallel gateway path.
 
 ### Sandbox-Local Herdr Prototype
 
