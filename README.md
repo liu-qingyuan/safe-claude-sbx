@@ -42,6 +42,7 @@ This repository is implementing the Docker Sandbox / `sbx` MVP described in:
 
 - `docs/prds/safe-claude-sbx-prd.md`
 - `docs/decision-maps/safe-claude-sbx.md`
+- `docs/dedicated-gateway-operations.md`
 - `tests/manual-test-plan.md`
 
 ## 日常命令 / Daily Commands

@@ -783,7 +783,8 @@ Expected result:
 ## 20. Dedicated private Docker Engine and protocol acceptance
 
 This scenario is a strict gate for `dedicated-gateway`; it is not a routine
-launcher smoke test. The first section is the stable startup acceptance seam.
+launcher smoke test. Read `docs/dedicated-gateway-operations.md` before running
+it. The first section is the stable startup acceptance seam.
 The disposable protocol matrix is only for a future Docker Sandbox release that
 the Adapter explicitly recognizes as protocol-complete. Record hostnames,
 status classes, and expected public IPs only. Do not record proxy configuration,
@@ -883,3 +884,33 @@ Observed `sbx v0.34.0` result on 2026-07-13:
 - The #51 startup capability gate now rejects this version before daemon or
   sandbox mutation. That rejection is the current passing acceptance result;
   it does not turn the failed protocol matrix into positive isolation evidence.
+
+### Final operator acceptance record (2026-07-14)
+
+Issue #50 repeated the production entrypoint checks with installed
+`sbx v0.34.0` and a valid dedicated configuration:
+
+- `safe-claude-sbx doctor --config ...` rejected with the expected protocol
+  isolation diagnostic after configuration validation.
+- `safe-herdr --config ...` rejected with the same diagnostic before main
+  preflight, attach, or watchdog entry.
+- plain `safe-claude-sbx --config ...` rejected dedicated direct-Claude launch
+  at configuration validation; dedicated launch remains scoped to the guarded
+  Herdr path.
+- the existing sandboxd PID was unchanged before and after all three commands.
+  No disposable sandbox or temporary configuration file was created.
+
+The supported-path acceptance remains test-seam evidence until a Docker
+Sandbox release enters the production support matrix. The repository tests
+cover doctor and safe-herdr startup ordering, existing/new main behavior,
+controller and lease failures, dedicated egress drift, watchdog cancellation,
+revoke-before-cleanup, cleanup-once, and secret-safe capability diagnostics.
+The 2026-07-13 disposable results above remain the no-fallback and private
+Docker Engine evidence for `sbx v0.34.0`.
+
+Verification completed for this record:
+
+- dedicated command, launcher, EgressGuard, and watchdog target tests passed;
+- `go test -race ./internal/egressguard ./internal/launcher
+  ./internal/watchdog -count=1` passed;
+- `go test ./... -count=1` and `go vet ./...` passed.

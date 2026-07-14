@@ -93,6 +93,9 @@ The existing controller, exclusive lease, main preflight, and ordered cleanup
 implementation remains behind this capability gate for a future supported
 backend. It never sets generic `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` on
 sandboxd. `safe-claude-sbx` launch and `safe-herdr` also reject this mode.
+See `docs/dedicated-gateway-operations.md` for the ownership boundary, startup
+evidence, failure handling, host-inherited recovery, and disposable acceptance
+procedure.
 
 ## Supervision Examples
 
