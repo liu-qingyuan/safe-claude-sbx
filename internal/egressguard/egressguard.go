@@ -51,6 +51,20 @@ func New(cfg config.Config, main MainSandbox) (EgressGuard, error) {
 	}
 }
 
+// NewWithProtocolCheck constructs the real dedicated Adapter with an injected
+// capability check. It exists for cross-package lifecycle tests; production
+// callers must use New so the release support matrix remains authoritative.
+func NewWithProtocolCheck(cfg config.Config, main MainSandbox, check func(context.Context) error) (EgressGuard, error) {
+	if cfg.Network.Egress.Mode != "dedicated-gateway" {
+		return nil, fmt.Errorf("protocol check injection requires dedicated-gateway mode")
+	}
+	if check == nil {
+		return nil, fmt.Errorf("protocol capability check is required")
+	}
+	client := &http.Client{Timeout: time.Duration(cfg.Network.EgressIP.TimeoutSeconds) * time.Second}
+	return newDedicatedGatewayAdapterWithProtocolCheck(cfg, main, osCommandExecutor{}, client, check), nil
+}
+
 type hostInheritedAdapter struct {
 	cfg         config.Config
 	routeEvents runtimeEventSource

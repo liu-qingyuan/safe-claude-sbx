@@ -475,6 +475,20 @@ func TestDedicatedGatewayAdapterFencesThenRecoversWithoutRestartingExistingMain(
 	}
 }
 
+func TestDedicatedGatewayAdapterRecoverRequiresSuccessfulFence(t *testing.T) {
+	controller := newAuthenticatedController(t)
+	executor := newFakeCommandExecutor()
+	guard := newSupportedDedicatedGatewayAdapter(dedicatedConfig(controller.URL), &fakeMainSandbox{}, executor, controller.Client())
+
+	if _, err := guard.Acquire(context.Background()); err != nil {
+		t.Fatalf("acquire dedicated lease: %v", err)
+	}
+	if _, err := guard.Recover(context.Background()); err == nil || !strings.Contains(err.Error(), "dedicated egress is not fenced") {
+		t.Fatalf("expected recovery to require a successful fence, got %v", err)
+	}
+	fenceAndRecoverTestGuard(t, guard)
+}
+
 func TestDedicatedGatewayAdapterFailsClosedOnScopeDrift(t *testing.T) {
 	const secret = "controller-secret-value"
 	t.Setenv("SAFE_CLAUDE_SBX_MIHOMO_SECRET", secret)

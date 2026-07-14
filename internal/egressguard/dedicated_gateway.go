@@ -53,6 +53,7 @@ type dedicatedGatewayAdapter struct {
 	process         runningProcess
 	processExit     <-chan error
 	acquired        bool
+	fenced          bool
 	runtimeInterval time.Duration
 }
 
@@ -110,6 +111,7 @@ func (a *dedicatedGatewayAdapter) Acquire(ctx context.Context) (Result, error) {
 		return Result{}, fmt.Errorf("sandboxd lease invalid: stop existing daemon failed")
 	}
 	a.acquired = true
+	a.fenced = false
 
 	upstream := a.cfg.Network.Egress.DedicatedGateway.UpstreamURL
 	process, err := a.executor.Start(commandEnvironment(upstream), "sbx", "daemon", "start")
@@ -325,9 +327,13 @@ func (a *dedicatedGatewayAdapter) Fence(ctx context.Context) (Result, error) {
 	if !a.acquired {
 		return Result{}, nil
 	}
+	if a.fenced {
+		return Result{Messages: []string{"sandboxd lease fenced: dedicated egress stopped"}}, nil
+	}
 	if err := a.stopOwnedDaemon(ctx); err != nil {
 		return Result{}, fmt.Errorf("sandboxd lease fence invalid: %w", err)
 	}
+	a.fenced = true
 	return Result{Messages: []string{"sandboxd lease fenced: dedicated egress stopped"}}, nil
 }
 
@@ -337,12 +343,16 @@ func (a *dedicatedGatewayAdapter) Recover(ctx context.Context) (Result, error) {
 	if !a.acquired {
 		return Result{}, nil
 	}
+	if !a.fenced {
+		return Result{}, fmt.Errorf("sandboxd lease recovery invalid: dedicated egress is not fenced")
+	}
 	if err := a.restoreNormalDaemon(ctx); err != nil {
 		return Result{}, fmt.Errorf("sandboxd lease recovery invalid: %w", err)
 	}
 	a.acquired = false
 	a.process = nil
 	a.processExit = nil
+	a.fenced = false
 	return Result{Messages: []string{"sandboxd lease recovered: normal daemon restored with main stopped"}}, nil
 }
 
@@ -389,14 +399,19 @@ func (a *dedicatedGatewayAdapter) restoreAfterFailedAcquire() error {
 	ctx, cancel := context.WithTimeout(context.Background(), a.cleanupTimeout())
 	defer cancel()
 	stopErr := a.stopOwnedDaemon(ctx)
+	if stopErr != nil {
+		return fmt.Errorf("restore normal daemon failed: %w", stopErr)
+	}
+	a.fenced = true
 	restoreErr := a.restoreNormalDaemon(ctx)
-	if stopErr == nil && restoreErr == nil {
+	if restoreErr == nil {
 		a.acquired = false
 		a.process = nil
 		a.processExit = nil
+		a.fenced = false
 		return nil
 	}
-	return fmt.Errorf("restore normal daemon failed: %w", errors.Join(stopErr, restoreErr))
+	return fmt.Errorf("restore normal daemon failed: %w", restoreErr)
 }
 
 func (a *dedicatedGatewayAdapter) restoreNormalDaemon(ctx context.Context) error {

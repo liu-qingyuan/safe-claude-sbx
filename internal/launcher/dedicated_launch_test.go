@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -124,6 +126,64 @@ func TestDedicatedDirectClaudeUsesValidatedMainAndSharedTeardown(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesRealDedicatedAdapterToFenceRecoverAndStopMain(t *testing.T) {
+	const secret = "controller-secret-value"
+	t.Setenv("SAFE_CLAUDE_SBX_MIHOMO_SECRET", secret)
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+secret {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		fmt.Fprintln(w, `{"version":"v1.19.28"}`)
+	}))
+	t.Cleanup(controller.Close)
+
+	configPath := writeLauncherDedicatedDirectConfig(t)
+	setLauncherConfigText(t, configPath, "http://127.0.0.1:19090", controller.URL)
+	setLauncherConfigBool(t, configPath, "stop_main_sandbox", false)
+	commandLog := writeStatefulDedicatedSBX(t)
+	var stdout synchronizedBuffer
+	var stderr bytes.Buffer
+	launcher := Runner{
+		sandbox: backend.DockerSandbox{Runner: backend.ExecRunner{}, Binary: "sbx"},
+		newGuard: func(cfg config.Config, main egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+			return egressguard.NewWithProtocolCheck(cfg, main, func(context.Context) error { return nil })
+		},
+	}
+
+	code := launcher.Run(Request{
+		Target:     DirectClaudeTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+
+	if code != 0 {
+		t.Fatalf("real dedicated Adapter launch failed with code %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	logText, err := os.ReadFile(commandLog)
+	if err != nil {
+		t.Fatalf("read command log: %v", err)
+	}
+	log := strings.Split(strings.TrimSpace(string(logText)), "\n")
+	lastDaemonStop := lastLogIndex(log, "daemon stop")
+	recoveryList := firstLogIndexAfter(log, "ls", lastDaemonStop)
+	mainStop := firstLogIndexAfter(log, "stop claude-sbx", recoveryList)
+	if lastDaemonStop < 0 || recoveryList < 0 || mainStop < 0 {
+		t.Fatalf("expected real Adapter fence, recovery, and main stop order:\n%s", string(logText))
+	}
+	if firstLogIndexAfter(log, "exec claude-sbx true", lastDaemonStop) >= 0 {
+		t.Fatalf("real Adapter restarted main after fence:\n%s", string(logText))
+	}
+	if !strings.Contains(stdout.String(), "sandboxd lease recovered: normal daemon restored with main stopped") {
+		t.Fatalf("expected real Adapter recovery output, got:\n%s", stdout.String())
+	}
+}
+
 func TestDedicatedDirectClaudeCleanupHonorsOwnershipWithoutLeavingMainRunning(t *testing.T) {
 	tests := []struct {
 		name              string
@@ -235,6 +295,42 @@ func TestDedicatedDirectClaudeCleanupFailureStillFencesAndRecoversOnce(t *testin
 		t.Fatalf("cleanup failure repeated guard finalization:\n%s", strings.Join(log, "\n"))
 	}
 	assertLogOrder(t, log, "guard fence", "guard recover", "sbx stop claude-sbx")
+}
+
+func TestDedicatedDirectClaudeFenceFailureSkipsRecoveryButStillStopsMain(t *testing.T) {
+	configPath := writeLauncherDedicatedDirectConfig(t)
+	log := make([]string, 0, 32)
+	writeAttachedSBX(t)
+	runner := &launchTestRunner{
+		log:        &log,
+		egressIP:   "203.0.113.10",
+		mainExists: true,
+		mainStatus: "running",
+	}
+	guard := &failingFenceGuard{log: &log}
+	launcher := Runner{
+		sandbox: backend.DockerSandbox{Runner: runner, Binary: "sbx"},
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+			return guard, nil
+		},
+	}
+	var stdout synchronizedBuffer
+	var stderr bytes.Buffer
+
+	code := launcher.Run(Request{
+		Target:     DirectClaudeTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+
+	if code == 0 || !strings.Contains(stderr.String(), "sandboxd lease fence invalid") {
+		t.Fatalf("expected fence failure, got code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
+	}
+	if countLogEntry(log, "guard recover") != 0 {
+		t.Fatalf("recovery ran after failed fence:\n%s", strings.Join(log, "\n"))
+	}
+	assertLogOrder(t, log, "guard fence", "sbx stop claude-sbx")
 }
 
 func TestDedicatedSafeHerdrRevalidatesExistingMainAndFencesBeforeCleanup(t *testing.T) {
@@ -650,6 +746,10 @@ type fenceOrderingGuard struct {
 	attachedPIDPath string
 }
 
+type failingFenceGuard struct {
+	log *[]string
+}
+
 type hostLaunchGuard struct {
 	log *[]string
 }
@@ -722,6 +822,30 @@ func (g *fenceOrderingGuard) Fence(context.Context) (egressguard.Result, error) 
 }
 
 func (g *fenceOrderingGuard) Recover(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard recover")
+	return egressguard.Result{}, nil
+}
+
+func (g *failingFenceGuard) Acquire(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard acquire")
+	return egressguard.Result{}, nil
+}
+
+func (g *failingFenceGuard) ValidateMain(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard validate")
+	return egressguard.Result{}, nil
+}
+
+func (*failingFenceGuard) Watch(context.Context, egressguard.WatchInput) egressguard.RuntimeWatch {
+	return egressguard.RuntimeWatch{}
+}
+
+func (g *failingFenceGuard) Fence(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard fence")
+	return egressguard.Result{}, fmt.Errorf("sandboxd lease fence invalid: injected failure")
+}
+
+func (g *failingFenceGuard) Recover(context.Context) (egressguard.Result, error) {
 	*g.log = append(*g.log, "guard recover")
 	return egressguard.Result{}, nil
 }
@@ -1049,6 +1173,114 @@ func setLauncherConfigBool(t *testing.T, path, key string, value bool) {
 	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+}
+
+func setLauncherConfigText(t *testing.T, path, oldValue, newValue string) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	updated := strings.Replace(string(body), oldValue, newValue, 1)
+	if updated == string(body) {
+		t.Fatalf("config value %q not found", oldValue)
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}
+
+func writeStatefulDedicatedSBX(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	commandLog := filepath.Join(dir, "commands.log")
+	statePath := filepath.Join(dir, "main.state")
+	pidPath := filepath.Join(dir, "daemon.pid")
+	if err := os.WriteFile(statePath, []byte("running\n"), 0o600); err != nil {
+		t.Fatalf("write main state: %v", err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+log_path=%s
+state_path=%s
+pid_path=%s
+printf '%%s\n' "$*" >> "$log_path"
+case "$1 $2" in
+  "daemon start")
+    printf '%%s' "$$" > "$pid_path"
+    trap 'exit 0' TERM INT
+    while :; do sleep 1; done
+    ;;
+  "daemon stop")
+    if [ -f "$pid_path" ]; then
+      pid=$(cat "$pid_path")
+      kill "$pid" 2>/dev/null || true
+      rm -f "$pid_path"
+    fi
+    printf 'stopped\n' > "$state_path"
+    exit 0
+    ;;
+  "daemon status")
+    exit 0
+    ;;
+esac
+case "$1" in
+  version)
+    printf 'sbx version: v0.34.0 fake\n'
+    ;;
+  ls)
+    state=$(cat "$state_path")
+    printf 'SANDBOX AGENT STATUS PORTS WORKSPACE\nclaude-sbx claude %%s - .\n' "$state"
+    ;;
+  create)
+    printf 'running\n' > "$state_path"
+    ;;
+  stop)
+    printf 'stopped\n' > "$state_path"
+    ;;
+  rm)
+    rm -f "$state_path"
+    ;;
+  exec)
+    case " $* " in
+      *" exec -it claude-sbx claude "*) printf 'attached argv:%%s\n' "$*" ;;
+      *" workspace="*) printf 'ok\n' ;;
+      *" curl -fsS "*) printf '203.0.113.10\n' ;;
+      *" env "*) printf 'PATH=/usr/bin\nTZ=America/Chicago\nLANG=en_US.UTF-8\nLC_ALL=en_US.UTF-8\nHTTP_PROXY=http://gateway.docker.internal:3128\nHTTPS_PROXY=http://gateway.docker.internal:3128\nNO_PROXY=localhost,127.0.0.1,gateway.docker.internal\n' ;;
+      *" pwd "*) printf '/workspace\n' ;;
+      *" mount "*) printf '/dev/disk1 on /workspace type virtiofs\n' ;;
+      *" date "*) printf 'Sun Jul  5 12:00:00 UTC 2026\n' ;;
+      *" locale "*) printf 'LANG=en_US.UTF-8\nLC_ALL=en_US.UTF-8\n' ;;
+      *" true "*) printf 'running\n' > "$state_path" ;;
+      *" sh -lc "*) exit 0 ;;
+    esac
+    ;;
+esac
+exit 0
+`, strconv.Quote(commandLog), strconv.Quote(statePath), strconv.Quote(pidPath))
+	path := filepath.Join(dir, "sbx")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write stateful sbx: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return commandLog
+}
+
+func lastLogIndex(log []string, command string) int {
+	for i := len(log) - 1; i >= 0; i-- {
+		if log[i] == command {
+			return i
+		}
+	}
+	return -1
+}
+
+func firstLogIndexAfter(log []string, command string, after int) int {
+	for i := after + 1; i < len(log); i++ {
+		if log[i] == command {
+			return i
+		}
+	}
+	return -1
 }
 
 func writeLauncherHostLaunchConfig(t *testing.T) string {

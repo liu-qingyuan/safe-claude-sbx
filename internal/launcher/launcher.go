@@ -211,12 +211,15 @@ func finalizeEgressGuard(guard egressguard.EgressGuard, cfg config.Config, outpu
 	fenced, fenceErr := guard.Fence(fenceCtx)
 	cancelFence()
 	printEgressGuardMessages(output, fenced)
+	if fenceErr != nil {
+		return fenceErr
+	}
 
 	recoverCtx, cancelRecover := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
 	recovered, recoverErr := guard.Recover(recoverCtx)
 	cancelRecover()
 	printEgressGuardMessages(output, recovered)
-	return errors.Join(fenceErr, recoverErr)
+	return recoverErr
 }
 
 func mainCleanupConfig(cfg config.Config, mainCreatedByCommand bool) config.Config {

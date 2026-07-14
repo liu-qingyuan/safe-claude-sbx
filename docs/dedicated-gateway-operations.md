@@ -187,7 +187,7 @@ metadata without the dedicated upstream.
 | Lease drift or owned sandboxd exit | Watchdog fails closed and starts ordered cleanup | Do not reuse the session; restore normal sandboxd, then rerun doctor |
 | Startup or runtime egress mismatch | Reject or stop without accepting the observed IP | Fix the gateway route or the approved expected IP source; do not change policy merely to match an unexpected observation |
 | Controller reachable from main | Reject before attach | Correct host binding and Docker exposure; never mount controller sockets or config into main |
-| Fence failure | Report `sandboxd lease fence invalid`; recovery and main cleanup are still attempted | Treat dedicated daemon state as unknown and follow the explicit host-inherited recovery below |
+| Fence failure | Report `sandboxd lease fence invalid`; skip automatic recovery but still attempt main cleanup | Treat dedicated daemon state as unknown and follow the explicit host-inherited recovery below |
 | Recover failure | Report `sandboxd lease recovery invalid`; main cleanup is still attempted | Treat normal daemon state as unknown and follow the explicit host-inherited recovery below |
 | Main cleanup failure | Report cleanup failure after fence/recovery attempts | Verify main state by name; stop it, but do not remove a preexisting main |
 
