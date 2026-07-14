@@ -44,7 +44,19 @@ func RunSafeHerdr(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	return 2
 }
 
+type doctorGuardFactory func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error)
+
 func runDoctor(configPath string, stdout, stderr io.Writer) int {
+	sandbox := backend.NewDockerSandbox()
+	return runDoctorWithAdapters(configPath, stdout, stderr, sandbox, egressguard.New)
+}
+
+func runDoctorWithAdapters(
+	configPath string,
+	stdout, stderr io.Writer,
+	sandbox backend.DockerSandbox,
+	newGuard doctorGuardFactory,
+) int {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
@@ -56,8 +68,7 @@ func runDoctor(configPath string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "sandbox backend invalid: unsupported backend %q\n", cfg.Sandbox.Backend)
 		return 1
 	}
-	sandbox := backend.NewDockerSandbox()
-	guard, err := egressguard.New(cfg, sandbox)
+	guard, err := newGuard(cfg, sandbox)
 	if err != nil {
 		fmt.Fprintf(stderr, "egress guard invalid: %v\n", err)
 		return 1
