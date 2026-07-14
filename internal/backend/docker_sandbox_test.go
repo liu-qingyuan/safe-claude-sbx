@@ -574,8 +574,8 @@ func TestDockerSandboxPreflightMainSandboxPreservesExistingMainOnFailure(t *test
 	if err == nil {
 		t.Fatalf("main preflight unexpectedly passed")
 	}
-	if result.CreatedByCommand || ShouldCleanupMainAfterStartError(err) {
-		t.Fatalf("existing failed main sandbox must not be caller-cleaned, result=%#v err=%v", result, err)
+	if result.CreatedByCommand || !result.Preexisting || ShouldCleanupMainAfterStartError(err) {
+		t.Fatalf("existing failed main sandbox must retain preexisting ownership, result=%#v err=%v", result, err)
 	}
 	got := strings.Join(calls, "\n")
 	if strings.Contains(got, "sbx create") || strings.Contains(got, "sbx stop main-sbx") || strings.Contains(got, "sbx rm --force main-sbx") {

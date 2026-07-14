@@ -36,6 +36,8 @@ mode-specific rules:
   cleanup, then `Fence` dedicated egress, `Recover` normal sandboxd without
   restarting main, and only then retain or remove the stopped main according
   to ownership policy;
+- if `Fence` fails, skip `Recover` because normal sandboxd cannot be restored
+  safely, but still attempt to stop main; never remove a preexisting main;
 - observe the operator-managed Mihomo process only through its controller and
   never start, stop, or reconfigure it.
 

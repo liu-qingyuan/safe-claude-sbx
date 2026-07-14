@@ -59,6 +59,7 @@ type ProbeResult struct {
 type MainSandboxPreflightResult struct {
 	SandboxName      string
 	CreatedByCommand bool
+	Preexisting      bool
 	Egress           network.EgressResult
 	Inspection       InspectionObservation
 }
@@ -283,6 +284,7 @@ func (b DockerSandbox) PreflightMainSandbox(ctx context.Context, cfg config.Conf
 		return result, preserveExistingMainError{err: err}
 	}
 	if state.Exists {
+		result.Preexisting = true
 		if err := validateExistingMainForPreflight(state, plan); err != nil {
 			return result, preserveExistingMainError{err: err}
 		}

@@ -186,7 +186,7 @@ func TestDoctorSupportedDedicatedAdapterPreservesExistingMainAfterInspectionFail
 		env:        "PATH=/usr/bin\nTZ=America/Chicago\nLANG=en_US.UTF-8\nLC_ALL=C.UTF-8\nOPENAI_API_KEY=" + inspectionSecret + "\n",
 	}
 	sandbox := backend.DockerSandbox{Runner: runner, Binary: "sbx"}
-	guard := &doctorScenarioGuard{log: &log}
+	guard := &failingFenceGuard{log: &log}
 	var stdout, stderr bytes.Buffer
 
 	launcher := Runner{
@@ -202,18 +202,63 @@ func TestDoctorSupportedDedicatedAdapterPreservesExistingMainAfterInspectionFail
 		Stderr:     &stderr,
 	})
 
-	if code == 0 || !strings.Contains(stderr.String(), "main sandbox inspection invalid") {
+	if code == 0 || !strings.Contains(stderr.String(), "main sandbox inspection invalid") || !strings.Contains(stderr.String(), "sandboxd lease fence invalid") {
 		t.Fatalf("expected existing main inspection failure, got code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
 	}
 	if strings.Contains(stderr.String(), inspectionSecret) {
 		t.Fatalf("inspection failure leaked secret:\n%s", stderr.String())
 	}
 	for _, entry := range log {
-		if strings.HasPrefix(entry, "sbx create ") || entry == "sbx stop claude-sbx" || strings.HasPrefix(entry, "sbx rm ") {
+		if strings.HasPrefix(entry, "sbx create ") || strings.HasPrefix(entry, "sbx rm ") {
 			t.Fatalf("doctor destructively changed existing main with %q:\n%s", entry, strings.Join(log, "\n"))
 		}
 	}
-	assertLogOrder(t, log, "guard acquire", "sbx version", "guard fence", "guard recover")
+	if countLogEntry(log, "guard recover") != 0 || countLogEntry(log, "sbx stop claude-sbx") != 1 {
+		t.Fatalf("doctor did not retain existing main stopped after fence failure:\n%s", strings.Join(log, "\n"))
+	}
+	assertLogOrder(t, log, "guard acquire", "sbx version", "guard fence", "sbx stop claude-sbx")
+}
+
+func TestDoctorFenceFailureStillStopsAndRetainsPreexistingMain(t *testing.T) {
+	configPath := writeLauncherDedicatedDoctorConfig(t)
+	setLauncherConfigBool(t, configPath, "stop_main_sandbox", false)
+	setLauncherConfigBool(t, configPath, "remove_main_sandbox", true)
+	log := make([]string, 0, 16)
+	runner := &doctorTestRunner{
+		log:        &log,
+		egressIP:   "203.0.113.10",
+		mainExists: true,
+		mainStatus: "running",
+	}
+	guard := &failingFenceGuard{log: &log}
+	launcher := Runner{
+		sandbox: backend.DockerSandbox{Runner: runner, Binary: "sbx"},
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+			return guard, nil
+		},
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := launcher.Run(Request{
+		Target:     DoctorTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+
+	if code == 0 || !strings.Contains(stderr.String(), "sandboxd lease fence invalid") {
+		t.Fatalf("expected fence failure, got code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
+	}
+	if countLogEntry(log, "guard recover") != 0 {
+		t.Fatalf("recovery ran after failed fence:\n%s", strings.Join(log, "\n"))
+	}
+	if countLogEntry(log, "sbx stop claude-sbx") != 1 {
+		t.Fatalf("preexisting main was not stopped exactly once:\n%s", strings.Join(log, "\n"))
+	}
+	if containsLogEntry(log, "sbx rm --force claude-sbx") {
+		t.Fatalf("doctor removed preexisting main:\n%s", strings.Join(log, "\n"))
+	}
+	assertLogOrder(t, log, "guard fence", "sbx stop claude-sbx")
 }
 
 func TestDoctorSupportedDedicatedAdapterRuntimeFailuresFenceBeforeCleanup(t *testing.T) {
