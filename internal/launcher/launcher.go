@@ -146,13 +146,14 @@ func (r Runner) runDoctor(cfg config.Config, guard egressguard.EgressGuard, stdo
 		return 1
 	}
 	printEgressGuardMessages(stdout, acquisition)
+	finalization := finalizationForMain(cfg, false)
 
 	ctx, cancel := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
 	defer cancel()
 
 	availability, err := sandbox.CheckAvailability(ctx)
 	if err != nil {
-		cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, mainFinalization{}, stdout)
+		cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, finalization, stdout)
 		if cleanupErr != nil {
 			fmt.Fprintf(stderr, "sandbox backend invalid: %s; cleanup failed: %v\n", backendAvailabilityError(availability, err), cleanupErr)
 			return 1
@@ -163,12 +164,8 @@ func (r Runner) runDoctor(cfg config.Config, guard egressguard.EgressGuard, stdo
 	fmt.Fprintf(stdout, "sandbox backend ok: %s\n", availability.Version)
 
 	preflight, err := sandbox.PreflightMainSandbox(ctx, cfg)
+	finalization = finalizationAfterMainPreflight(cfg, finalization, preflight, err)
 	if err != nil {
-		cleanupMain := backend.ShouldCleanupMainAfterStartError(err)
-		finalization := mainFinalization{}
-		if cleanupMain || (cfg.Network.Egress.Mode == "dedicated-gateway" && preflight.Preexisting) {
-			finalization = finalizationForMain(cfg, preflight.CreatedByCommand)
-		}
 		if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, finalization, stdout); cleanupErr != nil {
 			fmt.Fprintf(stderr, "main sandbox preflight invalid: %v; cleanup failed: %v\n", err, cleanupErr)
 			return 1
@@ -177,7 +174,6 @@ func (r Runner) runDoctor(cfg config.Config, guard egressguard.EgressGuard, stdo
 		return 1
 	}
 	fmt.Fprintf(stdout, "sandbox egress ok: observed IP %s\n", preflight.Egress.ObservedIP)
-	finalization := finalizationForMain(cfg, preflight.CreatedByCommand)
 	validation, err := guard.ValidateMain(ctx)
 	if err != nil {
 		if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, finalization, stdout); cleanupErr != nil {
@@ -217,6 +213,13 @@ func finalizationForMain(cfg config.Config, createdByLauncher bool) mainFinaliza
 		createdByLauncher: createdByLauncher,
 		allowRemove:       cfg.Cleanup.RemoveMainSandbox,
 	}
+}
+
+func finalizationAfterMainPreflight(cfg config.Config, current mainFinalization, preflight backend.MainSandboxPreflightResult, err error) mainFinalization {
+	if !current.mustStop && !preflight.CreatedByCommand && !backend.ShouldCleanupMainAfterStartError(err) {
+		return current
+	}
+	return finalizationForMain(cfg, preflight.CreatedByCommand)
 }
 
 func (f mainFinalization) requiresCleanup() bool {
@@ -311,13 +314,14 @@ func (r Runner) runLaunch(
 		return 1
 	}
 	printEgressGuardMessages(stdout, acquisition)
+	mainState := finalizationForMain(cfg, false)
 
 	ctx, cancel := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
 	defer cancel()
 
 	availability, err := sandbox.CheckAvailability(ctx)
 	if err != nil {
-		cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, mainFinalization{}, stdout)
+		cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, mainState, stdout)
 		if cleanupErr != nil {
 			fmt.Fprintf(stderr, "sandbox backend invalid: %s; cleanup failed: %v\n", backendAvailabilityError(availability, err), cleanupErr)
 			return 1
@@ -331,24 +335,18 @@ func (r Runner) runLaunch(
 	defer stopMainCommand()
 
 	plan := backend.NewStartPlan(cfg)
-	mainState := mainFinalization{}
 	mainPreflightRequired := target == herdrTUITarget || cfg.Network.Egress.Mode == "dedicated-gateway"
 	if mainPreflightRequired {
 		preflight, err := sandbox.PreflightMainSandbox(ctx, cfg)
+		mainState = finalizationAfterMainPreflight(cfg, mainState, preflight, err)
 		if err != nil {
-			cleanupMain := backend.ShouldCleanupMainAfterStartError(err)
-			finalization := mainFinalization{}
-			if cleanupMain || (cfg.Network.Egress.Mode == "dedicated-gateway" && preflight.Preexisting) {
-				finalization = finalizationForMain(cfg, preflight.CreatedByCommand)
-			}
-			if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, finalization, stdout); cleanupErr != nil {
+			if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, mainState, stdout); cleanupErr != nil {
 				fmt.Fprintf(stderr, "main sandbox preflight invalid: %v; cleanup failed: %v\n", err, cleanupErr)
 				return 1
 			}
 			fmt.Fprintf(stderr, "main sandbox preflight invalid: %v\n", err)
 			return 1
 		}
-		mainState = finalizationForMain(cfg, preflight.CreatedByCommand)
 		fmt.Fprintf(stdout, "sandbox egress ok: observed IP %s\n", preflight.Egress.ObservedIP)
 		validation, err := guard.ValidateMain(ctx)
 		if err != nil {
