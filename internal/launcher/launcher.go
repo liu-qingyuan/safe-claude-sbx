@@ -23,12 +23,102 @@ const (
 	herdrTUITarget
 )
 
+type Target int
+
+const (
+	DoctorTarget Target = iota
+	DirectClaudeTarget
+	HerdrTarget
+)
+
+type Request struct {
+	Target     Target
+	ConfigPath string
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
+}
+
+type Runner struct {
+	sandbox  backend.DockerSandbox
+	newGuard doctorGuardFactory
+	platform launchPlatform
+}
+
+func NewRunner() Runner {
+	return Runner{
+		sandbox:  backend.NewDockerSandbox(),
+		newGuard: egressguard.New,
+		platform: defaultLaunchPlatform(),
+	}
+}
+
+func (r Runner) Run(request Request) int {
+	stdout := request.Stdout
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	stderr := request.Stderr
+	if stderr == nil {
+		stderr = io.Discard
+	}
+
+	cfg, err := config.Load(request.ConfigPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
+		return 1
+	}
+
+	isDoctor := false
+	var target launchTarget
+	switch request.Target {
+	case DoctorTarget:
+		isDoctor = true
+	case DirectClaudeTarget:
+		if cfg.Network.Egress.Mode == "dedicated-gateway" {
+			fmt.Fprintln(stderr, "configuration invalid: dedicated-gateway launch is not available until dedicated runtime supervision is configured")
+			return 1
+		}
+		target = mainSandboxTarget
+	case HerdrTarget:
+		if cfg.Sandbox.Supervision.Mode != "sandbox-local-herdr" {
+			fmt.Fprintln(stderr, "configuration invalid: safe-herdr requires sandbox.supervision.mode \"sandbox-local-herdr\"")
+			return 1
+		}
+		target = herdrTUITarget
+	default:
+		fmt.Fprintln(stderr, "configuration invalid: unsupported launcher target")
+		return 1
+	}
+	fmt.Fprintln(stdout, "configuration ok")
+	if cfg.Sandbox.Backend != "docker-sandbox" {
+		fmt.Fprintf(stderr, "sandbox backend invalid: unsupported backend %q\n", cfg.Sandbox.Backend)
+		return 1
+	}
+
+	newGuard := r.newGuard
+	if newGuard == nil {
+		newGuard = egressguard.New
+	}
+	guard, err := newGuard(cfg, r.sandbox)
+	if err != nil {
+		fmt.Fprintf(stderr, "egress guard invalid: %v\n", err)
+		return 1
+	}
+
+	if isDoctor {
+		return r.runDoctor(cfg, guard, stdout, stderr)
+	}
+	return r.runLaunch(cfg, target, guard, request.Stdin, stdout, stderr)
+}
+
 func RunSafeClaudeSBX(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	runner := NewRunner()
 	if len(args) == 3 && args[0] == "doctor" && args[1] == "--config" {
-		return runDoctor(args[2], stdout, stderr)
+		return runner.Run(Request{Target: DoctorTarget, ConfigPath: args[2], Stdin: stdin, Stdout: stdout, Stderr: stderr})
 	}
 	if len(args) == 2 && args[0] == "--config" {
-		return runLaunch(args[1], mainSandboxTarget, stdin, stdout, stderr)
+		return runner.Run(Request{Target: DirectClaudeTarget, ConfigPath: args[1], Stdin: stdin, Stdout: stdout, Stderr: stderr})
 	}
 
 	fmt.Fprintln(stderr, "usage: safe-claude-sbx [doctor] --config <file>")
@@ -37,7 +127,7 @@ func RunSafeClaudeSBX(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 
 func RunSafeHerdr(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 2 && args[0] == "--config" {
-		return runLaunch(args[1], herdrTUITarget, stdin, stdout, stderr)
+		return NewRunner().Run(Request{Target: HerdrTarget, ConfigPath: args[1], Stdin: stdin, Stdout: stdout, Stderr: stderr})
 	}
 
 	fmt.Fprintln(stderr, "usage: safe-herdr --config <file>")
@@ -46,33 +136,8 @@ func RunSafeHerdr(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 
 type doctorGuardFactory func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error)
 
-func runDoctor(configPath string, stdout, stderr io.Writer) int {
-	sandbox := backend.NewDockerSandbox()
-	return runDoctorWithAdapters(configPath, stdout, stderr, sandbox, egressguard.New)
-}
-
-func runDoctorWithAdapters(
-	configPath string,
-	stdout, stderr io.Writer,
-	sandbox backend.DockerSandbox,
-	newGuard doctorGuardFactory,
-) int {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
-		return 1
-	}
-	fmt.Fprintln(stdout, "configuration ok")
-
-	if cfg.Sandbox.Backend != "docker-sandbox" {
-		fmt.Fprintf(stderr, "sandbox backend invalid: unsupported backend %q\n", cfg.Sandbox.Backend)
-		return 1
-	}
-	guard, err := newGuard(cfg, sandbox)
-	if err != nil {
-		fmt.Fprintf(stderr, "egress guard invalid: %v\n", err)
-		return 1
-	}
+func (r Runner) runDoctor(cfg config.Config, guard egressguard.EgressGuard, stdout, stderr io.Writer) int {
+	sandbox := r.sandbox
 	acquireCtx, cancelAcquire := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
 	acquisition, err := guard.Acquire(acquireCtx)
 	cancelAcquire()
@@ -153,22 +218,6 @@ func revokeEgressGuard(guard egressguard.EgressGuard, cfg config.Config, output 
 	return revokeErr
 }
 
-func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, stderr io.Writer) int {
-	sandbox := backend.NewDockerSandbox()
-	return runLaunchWithAdapters(configPath, target, stdin, stdout, stderr, sandbox, egressguard.New)
-}
-
-func runLaunchWithAdapters(
-	configPath string,
-	target launchTarget,
-	stdin io.Reader,
-	stdout, stderr io.Writer,
-	sandbox backend.DockerSandbox,
-	newGuard doctorGuardFactory,
-) int {
-	return runLaunchWithPlatformAdapters(configPath, target, stdin, stdout, stderr, sandbox, newGuard, defaultLaunchPlatform())
-}
-
 type launchPlatform struct {
 	checkTUN      func(config.ClashVerge) (network.TUNPreflightResult, error)
 	signalContext func() (context.Context, context.CancelFunc)
@@ -185,49 +234,30 @@ func defaultLaunchPlatform() launchPlatform {
 	}
 }
 
-func runLaunchWithPlatformAdapters(
-	configPath string,
+func (r Runner) runLaunch(
+	cfg config.Config,
 	target launchTarget,
+	guard egressguard.EgressGuard,
 	stdin io.Reader,
 	stdout, stderr io.Writer,
-	sandbox backend.DockerSandbox,
-	newGuard doctorGuardFactory,
-	platform launchPlatform,
 ) int {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
-		return 1
-	}
-	if cfg.Network.Egress.Mode == "dedicated-gateway" && target != herdrTUITarget {
-		fmt.Fprintln(stderr, "configuration invalid: dedicated-gateway launch is not available until dedicated runtime supervision is configured")
-		return 1
-	}
-	if target == herdrTUITarget && cfg.Sandbox.Supervision.Mode != "sandbox-local-herdr" {
-		fmt.Fprintln(stderr, "configuration invalid: safe-herdr requires sandbox.supervision.mode \"sandbox-local-herdr\"")
-		return 1
-	}
-	fmt.Fprintln(stdout, "configuration ok")
-
+	sandbox := r.sandbox
+	platform := r.platform
 	var tun network.TUNPreflightResult
 	if cfg.Network.Egress.Mode == "host-inherited" {
 		checkTUN := platform.checkTUN
 		if checkTUN == nil {
 			checkTUN = defaultLaunchPlatform().checkTUN
 		}
-		tun, err = checkTUN(cfg.Network.ClashVerge)
+		checkedTUN, err := checkTUN(cfg.Network.ClashVerge)
 		if err != nil {
 			fmt.Fprintf(stderr, "TUN preflight invalid: %v\n", err)
 			return 1
 		}
+		tun = checkedTUN
 		fmt.Fprintf(stdout, "TUN preflight ok: startup interface %s\n", tun.StartupTUNInterface)
 	}
 
-	guard, err := newGuard(cfg, sandbox)
-	if err != nil {
-		fmt.Fprintf(stderr, "egress guard invalid: %v\n", err)
-		return 1
-	}
 	acquireCtx, cancelAcquire := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
 	acquisition, err := guard.Acquire(acquireCtx)
 	cancelAcquire()
@@ -241,15 +271,6 @@ func runLaunchWithPlatformAdapters(
 	}
 	printEgressGuardMessages(stdout, acquisition)
 
-	if cfg.Sandbox.Backend != "docker-sandbox" {
-		cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, false, stdout)
-		if cleanupErr != nil {
-			fmt.Fprintf(stderr, "sandbox backend invalid: unsupported backend %q; cleanup failed: %v\n", cfg.Sandbox.Backend, cleanupErr)
-			return 1
-		}
-		fmt.Fprintf(stderr, "sandbox backend invalid: unsupported backend %q\n", cfg.Sandbox.Backend)
-		return 1
-	}
 	ctx, cancel := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
 	defer cancel()
 

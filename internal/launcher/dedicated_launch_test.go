@@ -37,6 +37,32 @@ func (b *synchronizedBuffer) String() string {
 	return b.Buffer.String()
 }
 
+func TestRunnerRejectsDedicatedDirectClaudeBeforeCreatingEgressGuard(t *testing.T) {
+	configPath := writeLauncherDedicatedLaunchConfig(t)
+	guardCreated := false
+	launcher := Runner{
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+			guardCreated = true
+			return nil, fmt.Errorf("must not create guard")
+		},
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := launcher.Run(Request{
+		Target:     DirectClaudeTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+
+	if code == 0 || !strings.Contains(stderr.String(), "dedicated-gateway launch is not available") {
+		t.Fatalf("expected dedicated direct Claude rejection, got code %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if guardCreated {
+		t.Fatal("dedicated direct Claude rejection reached egress guard creation")
+	}
+}
+
 func TestDedicatedSafeHerdrRevalidatesExistingMainAndRevokesBeforeCleanup(t *testing.T) {
 	configPath := writeLauncherDedicatedLaunchConfig(t)
 	log := make([]string, 0, 32)
@@ -52,17 +78,18 @@ func TestDedicatedSafeHerdrRevalidatesExistingMainAndRevokesBeforeCleanup(t *tes
 	var stdout synchronizedBuffer
 	var stderr bytes.Buffer
 
-	code := runLaunchWithAdapters(
-		configPath,
-		herdrTUITarget,
-		nil,
-		&stdout,
-		&stderr,
-		sandbox,
-		func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+	launcher := Runner{
+		sandbox: sandbox,
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
 			return guard, nil
 		},
-	)
+	}
+	code := launcher.Run(Request{
+		Target:     HerdrTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
 
 	if code != 0 {
 		t.Fatalf("dedicated safe-herdr failed with code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
@@ -107,17 +134,18 @@ func TestDedicatedSafeHerdrCreatesNewMainAndRevokesBeforeOwnedCleanup(t *testing
 	var stdout synchronizedBuffer
 	var stderr bytes.Buffer
 
-	code := runLaunchWithAdapters(
-		configPath,
-		herdrTUITarget,
-		nil,
-		&stdout,
-		&stderr,
-		sandbox,
-		func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+	launcher := Runner{
+		sandbox: sandbox,
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
 			return guard, nil
 		},
-	)
+	}
+	code := launcher.Run(Request{
+		Target:     HerdrTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
 
 	if code != 0 {
 		t.Fatalf("dedicated safe-herdr failed with code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
@@ -147,17 +175,18 @@ func TestDedicatedSafeHerdrAttachesExpectedCommand(t *testing.T) {
 	var stdout synchronizedBuffer
 	var stderr bytes.Buffer
 
-	code := runLaunchWithAdapters(
-		configPath,
-		herdrTUITarget,
-		nil,
-		&stdout,
-		&stderr,
-		sandbox,
-		func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+	launcher := Runner{
+		sandbox: sandbox,
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
 			return guard, nil
 		},
-	)
+	}
+	code := launcher.Run(Request{
+		Target:     HerdrTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
 
 	if code != 0 {
 		t.Fatalf("dedicated safe-herdr failed with code %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
@@ -245,17 +274,18 @@ func TestDedicatedSafeHerdrFailsClosedBeforeAttach(t *testing.T) {
 			guard := &launchTestGuard{log: &log, acquireErr: tt.acquireErr, validateErr: tt.validateErr}
 			var stdout, stderr bytes.Buffer
 
-			code := runLaunchWithAdapters(
-				configPath,
-				herdrTUITarget,
-				nil,
-				&stdout,
-				&stderr,
-				sandbox,
-				func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+			launcher := Runner{
+				sandbox: sandbox,
+				newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
 					return guard, nil
 				},
-			)
+			}
+			code := launcher.Run(Request{
+				Target:     HerdrTarget,
+				ConfigPath: configPath,
+				Stdout:     &stdout,
+				Stderr:     &stderr,
+			})
 
 			if code == 0 || !strings.Contains(stderr.String(), tt.wantError) {
 				t.Fatalf("expected %q failure, got code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", tt.wantError, code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
@@ -294,17 +324,12 @@ func TestDedicatedSafeHerdrRevokesBeforeCancelingAttachedProcess(t *testing.T) {
 	guard := &launchOrderingGuard{log: &log, attachedPIDPath: pidPath}
 	var stdout, stderr bytes.Buffer
 
-	code := runLaunchWithPlatformAdapters(
-		configPath,
-		herdrTUITarget,
-		nil,
-		&stdout,
-		&stderr,
-		sandbox,
-		func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+	launcher := Runner{
+		sandbox: sandbox,
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
 			return guard, nil
 		},
-		launchPlatform{
+		platform: launchPlatform{
 			signalContext: func() (context.Context, context.CancelFunc) {
 				waitForFile(t, pidPath)
 				ctx, cancel := context.WithCancel(context.Background())
@@ -312,7 +337,13 @@ func TestDedicatedSafeHerdrRevokesBeforeCancelingAttachedProcess(t *testing.T) {
 				return ctx, func() {}
 			},
 		},
-	)
+	}
+	code := launcher.Run(Request{
+		Target:     HerdrTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
 
 	if code != 130 {
 		t.Fatalf("expected signal exit 130, got %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
@@ -338,17 +369,12 @@ func TestHostInheritedSafeHerdrKeepsPlatformPreflightAndRuntimeWatchdog(t *testi
 	guard := &hostLaunchGuard{log: &log}
 	var stdout, stderr bytes.Buffer
 
-	code := runLaunchWithPlatformAdapters(
-		configPath,
-		herdrTUITarget,
-		nil,
-		&stdout,
-		&stderr,
-		sandbox,
-		func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+	launcher := Runner{
+		sandbox: sandbox,
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
 			return guard, nil
 		},
-		launchPlatform{
+		platform: launchPlatform{
 			checkTUN: func(config.ClashVerge) (network.TUNPreflightResult, error) {
 				log = append(log, "platform TUN preflight")
 				return network.TUNPreflightResult{StartupTUNInterface: "utun9"}, nil
@@ -357,7 +383,13 @@ func TestHostInheritedSafeHerdrKeepsPlatformPreflightAndRuntimeWatchdog(t *testi
 				return context.WithCancel(context.Background())
 			},
 		},
-	)
+	}
+	code := launcher.Run(Request{
+		Target:     HerdrTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
 
 	if code == 0 || !strings.Contains(stderr.String(), "host-route runtime policy failed: host route drift") {
 		t.Fatalf("expected host runtime failure, got code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
@@ -401,20 +433,21 @@ func TestDedicatedSafeHerdrRuntimeFailureRevokesBeforeCleanupOnce(t *testing.T) 
 	}
 	var stdout, stderr bytes.Buffer
 
-	code := runLaunchWithPlatformAdapters(
-		configPath,
-		herdrTUITarget,
-		nil,
-		&stdout,
-		&stderr,
-		sandbox,
-		func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+	launcher := Runner{
+		sandbox: sandbox,
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
 			return guard, nil
 		},
-		launchPlatform{signalContext: func() (context.Context, context.CancelFunc) {
+		platform: launchPlatform{signalContext: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(context.Background())
 		}},
-	)
+	}
+	code := launcher.Run(Request{
+		Target:     HerdrTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
 
 	if code == 0 || !strings.Contains(stderr.String(), "dedicated-health runtime policy failed: dedicated egress drift") {
 		t.Fatalf("expected dedicated runtime failure, got code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))

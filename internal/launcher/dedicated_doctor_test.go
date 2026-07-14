@@ -14,6 +14,42 @@ import (
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/egressguard"
 )
 
+func TestRunnerRejectsUnsupportedBackendBeforeCreatingEgressGuard(t *testing.T) {
+	configPath := writeLauncherDedicatedDoctorConfig(t)
+	contents, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = []byte(strings.Replace(string(contents), `backend: "docker-sandbox"`, `backend: "unsupported"`, 1))
+	if err := os.WriteFile(configPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	guardCreated := false
+	runner := Runner{
+		sandbox: backend.DockerSandbox{},
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+			guardCreated = true
+			return nil, fmt.Errorf("must not create guard")
+		},
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := runner.Run(Request{
+		Target:     DoctorTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+
+	if code == 0 || !strings.Contains(stderr.String(), `sandbox backend invalid: unsupported backend "unsupported"`) {
+		t.Fatalf("expected unsupported backend failure, got code %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if guardCreated {
+		t.Fatal("unsupported backend reached egress guard creation")
+	}
+}
+
 func TestDoctorSupportedDedicatedAdapterRunsThroughLauncherAndCleansUpInOrder(t *testing.T) {
 	configPath := writeLauncherDedicatedDoctorConfig(t)
 	log := make([]string, 0, 16)
@@ -22,15 +58,18 @@ func TestDoctorSupportedDedicatedAdapterRunsThroughLauncherAndCleansUpInOrder(t 
 	guard := &doctorTestGuard{log: &log}
 	var stdout, stderr bytes.Buffer
 
-	code := runDoctorWithAdapters(
-		configPath,
-		&stdout,
-		&stderr,
-		sandbox,
-		func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+	launcher := Runner{
+		sandbox: sandbox,
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
 			return guard, nil
 		},
-	)
+	}
+	code := launcher.Run(Request{
+		Target:     DoctorTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
 
 	if code != 0 {
 		t.Fatalf("doctor failed with code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
@@ -104,8 +143,17 @@ func TestDoctorSupportedDedicatedAdapterFailsClosed(t *testing.T) {
 			guard := &doctorScenarioGuard{log: &log, acquireErr: tt.acquireErr, validateErr: tt.validateErr}
 			var stdout, stderr bytes.Buffer
 
-			code := runDoctorWithAdapters(configPath, &stdout, &stderr, sandbox, func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
-				return guard, nil
+			launcher := Runner{
+				sandbox: sandbox,
+				newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+					return guard, nil
+				},
+			}
+			code := launcher.Run(Request{
+				Target:     DoctorTarget,
+				ConfigPath: configPath,
+				Stdout:     &stdout,
+				Stderr:     &stderr,
 			})
 
 			if code == 0 || !strings.Contains(stderr.String(), tt.wantError) {
@@ -139,8 +187,17 @@ func TestDoctorSupportedDedicatedAdapterPreservesExistingMainAfterInspectionFail
 	guard := &doctorScenarioGuard{log: &log}
 	var stdout, stderr bytes.Buffer
 
-	code := runDoctorWithAdapters(configPath, &stdout, &stderr, sandbox, func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
-		return guard, nil
+	launcher := Runner{
+		sandbox: sandbox,
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+			return guard, nil
+		},
+	}
+	code := launcher.Run(Request{
+		Target:     DoctorTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
 	})
 
 	if code == 0 || !strings.Contains(stderr.String(), "main sandbox inspection invalid") {
@@ -171,8 +228,17 @@ func TestDoctorSupportedDedicatedAdapterRuntimeFailuresRevokeBeforeCleanup(t *te
 			guard := &doctorScenarioGuard{log: &log, validateErr: fmt.Errorf("%s", wantError)}
 			var stdout, stderr bytes.Buffer
 
-			code := runDoctorWithAdapters(configPath, &stdout, &stderr, sandbox, func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
-				return guard, nil
+			launcher := Runner{
+				sandbox: sandbox,
+				newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+					return guard, nil
+				},
+			}
+			code := launcher.Run(Request{
+				Target:     DoctorTarget,
+				ConfigPath: configPath,
+				Stdout:     &stdout,
+				Stderr:     &stderr,
 			})
 
 			if code == 0 || !strings.Contains(stderr.String(), wantError) {
