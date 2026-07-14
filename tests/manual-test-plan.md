@@ -798,14 +798,21 @@ other than the public IP result.
 2. Configure `network.egress.mode: dedicated-gateway` with credential-free
    loopback URLs and a controller secret reference. The controller does not need
    to be started for this capability check.
-3. Run `safe-claude-sbx doctor --config config.yaml`.
-4. Confirm the launcher did not run `sbx ls` or any daemon/sandbox mutation. If
+3. Run all three production entrypoints separately:
+
+   ```bash
+   safe-claude-sbx doctor --config config.yaml
+   safe-claude-sbx --config config.yaml
+   safe-herdr --config config.yaml
+   ```
+
+4. Confirm none of the entrypoints ran `sbx ls` or any daemon/sandbox mutation. If
    a normal sandboxd was already active, compare its sandbox list with the
    initial list.
 
 Expected result:
 
-- Doctor exits non-zero with `dedicated protocol isolation unsupported: sbx
+- Each entrypoint exits non-zero with `dedicated protocol isolation unsupported: sbx
   v0.34.0 provides HTTP upstream only; generic TCP and DNS are not fail closed`.
 - The failure occurs before any controller request, `sbx ls`, `sbx daemon stop`,
   `sbx daemon start`, `sbx create`, `sbx exec`, attach, or watchdog entry.
@@ -885,7 +892,7 @@ Observed `sbx v0.34.0` result on 2026-07-13:
   sandbox mutation. That rejection is the current passing acceptance result;
   it does not turn the failed protocol matrix into positive isolation evidence.
 
-### Final operator acceptance record (2026-07-14)
+### Operator acceptance record and current contract (2026-07-14)
 
 Issue #50 repeated the production entrypoint checks with installed
 `sbx v0.34.0` and a valid dedicated configuration:
@@ -894,17 +901,24 @@ Issue #50 repeated the production entrypoint checks with installed
   isolation diagnostic after configuration validation.
 - `safe-herdr --config ...` rejected with the same diagnostic before main
   preflight, attach, or watchdog entry.
-- plain `safe-claude-sbx --config ...` rejected dedicated direct-Claude launch
-  at configuration validation; dedicated launch remains scoped to the guarded
-  Herdr path.
+- plain `safe-claude-sbx --config ...` was then rejected at configuration
+  validation because the direct path had not yet joined the dedicated Runner
+  flow.
 - the existing sandboxd PID was unchanged before and after all three commands.
   No disposable sandbox or temporary configuration file was created.
 
+Issue #55 supersedes that direct-path limitation: direct Claude now enters the
+same capability gate as doctor and Herdr, so the current expected `sbx v0.34.0`
+result is the same protocol diagnostic before controller, daemon, main, or
+attach operations. This is covered by automated tests and should be repeated on
+the installed CLI before a release acceptance record is updated.
+
 The supported-path acceptance remains test-seam evidence until a Docker
 Sandbox release enters the production support matrix. The repository tests
-cover doctor and safe-herdr startup ordering, existing/new main behavior,
-controller and lease failures, dedicated egress drift, watchdog cancellation,
-revoke-before-cleanup, cleanup-once, and secret-safe capability diagnostics.
+cover doctor, direct Claude, and safe-herdr startup ordering, existing/new main
+ownership, controller and lease failures, dedicated egress drift, watchdog
+cancellation, `Fence`/`Recover` ordering, cleanup-once, and secret-safe
+capability diagnostics.
 The 2026-07-13 disposable results above remain the no-fallback and private
 Docker Engine evidence for `sbx v0.34.0`.
 

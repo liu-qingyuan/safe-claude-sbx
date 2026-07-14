@@ -75,10 +75,6 @@ func (r Runner) Run(request Request) int {
 	case DoctorTarget:
 		isDoctor = true
 	case DirectClaudeTarget:
-		if cfg.Network.Egress.Mode == "dedicated-gateway" {
-			fmt.Fprintln(stderr, "configuration invalid: dedicated-gateway launch is not available until dedicated runtime supervision is configured")
-			return 1
-		}
 		target = mainSandboxTarget
 	case HerdrTarget:
 		if cfg.Sandbox.Supervision.Mode != "sandbox-local-herdr" {
@@ -203,19 +199,38 @@ func printEgressGuardMessages(output io.Writer, result egressguard.Result) {
 }
 
 func finalizeDoctorGuard(guard egressguard.EgressGuard, sandbox backend.DockerSandbox, cfg config.Config, cleanupMain bool, output io.Writer) error {
-	revokeErr := revokeEgressGuard(guard, cfg, output)
+	guardErr := finalizeEgressGuard(guard, cfg, output)
 	if !cleanupMain {
-		return revokeErr
+		return guardErr
 	}
-	return errors.Join(revokeErr, sandbox.CleanupMain(context.Background(), cfg))
+	return errors.Join(guardErr, sandbox.CleanupMain(context.Background(), mainCleanupConfig(cfg, true)))
 }
 
-func revokeEgressGuard(guard egressguard.EgressGuard, cfg config.Config, output io.Writer) error {
-	cleanupCtx, cancel := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
-	defer cancel()
-	revoked, revokeErr := guard.Revoke(cleanupCtx)
-	printEgressGuardMessages(output, revoked)
-	return revokeErr
+func finalizeEgressGuard(guard egressguard.EgressGuard, cfg config.Config, output io.Writer) error {
+	fenceCtx, cancelFence := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+	fenced, fenceErr := guard.Fence(fenceCtx)
+	cancelFence()
+	printEgressGuardMessages(output, fenced)
+
+	recoverCtx, cancelRecover := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+	recovered, recoverErr := guard.Recover(recoverCtx)
+	cancelRecover()
+	printEgressGuardMessages(output, recovered)
+	return errors.Join(fenceErr, recoverErr)
+}
+
+func mainCleanupConfig(cfg config.Config, mainCreatedByCommand bool) config.Config {
+	if cfg.Network.Egress.Mode != "dedicated-gateway" {
+		return cfg
+	}
+	cfg.Cleanup.StopMainSandbox = true
+	if !mainCreatedByCommand {
+		cfg.Cleanup.RemoveMainSandbox = false
+	}
+	// Fence already stopped the dedicated daemon. Do not restart main through
+	// an in-sandbox Herdr cleanup command after normal sandboxd is recovered.
+	cfg.Sandbox.Supervision.Mode = "direct-claude"
+	return cfg
 }
 
 type launchPlatform struct {
@@ -291,7 +306,8 @@ func (r Runner) runLaunch(
 
 	plan := backend.NewStartPlan(cfg)
 	mainCreatedByCommand := false
-	if target == herdrTUITarget {
+	mainPreflightRequired := target == herdrTUITarget || cfg.Network.Egress.Mode == "dedicated-gateway"
+	if mainPreflightRequired {
 		preflight, err := sandbox.PreflightMainSandbox(ctx, cfg)
 		mainCreatedByCommand = preflight.CreatedByCommand
 		if err != nil {
@@ -329,7 +345,7 @@ func (r Runner) runLaunch(
 		fmt.Fprintln(stdout, "sandbox inspection ok")
 	}
 
-	start, backendExit, err := startAttachedTarget(sandbox, target, mainCtx, cfg, plan, stdin, stdout, stderr)
+	start, backendExit, err := startAttachedTarget(sandbox, target, mainPreflightRequired, mainCtx, cfg, plan, stdin, stdout, stderr)
 	if err != nil {
 		stopMainCommand()
 		cleanupMain := backend.ShouldCleanupMainAfterStartError(err) || mainCreatedByCommand
@@ -351,13 +367,13 @@ func (r Runner) runLaunch(
 
 	runtime := guard.Watch(signalCtx, egressguard.WatchInput{StartupTUNInterface: tun.StartupTUNInterface})
 	cleanup := watchdog.CleanupFunc(func(ctx context.Context) error {
-		revokeErr := revokeEgressGuard(guard, cfg, stdout)
 		stopMainCommand()
-		cleanupErr := sandbox.CleanupMain(ctx, cfg)
-		if target == herdrTUITarget {
-			return errors.Join(revokeErr, cleanupErr)
+		guardErr := finalizeEgressGuard(guard, cfg, stdout)
+		cleanupErr := sandbox.CleanupMain(ctx, mainCleanupConfig(cfg, mainCreatedByCommand))
+		if target == herdrTUITarget || cfg.Network.Egress.Mode == "dedicated-gateway" {
+			return errors.Join(guardErr, cleanupErr)
 		}
-		return errors.Join(revokeErr, cleanupErr, sandbox.CleanupProbe(ctx, cfg))
+		return errors.Join(guardErr, cleanupErr, sandbox.CleanupProbe(ctx, cfg))
 	})
 	supervisor := watchdog.Supervisor{
 		Events:        runtime.Events,
@@ -379,7 +395,7 @@ func (r Runner) runLaunch(
 	return 0
 }
 
-func startAttachedTarget(sandbox backend.DockerSandbox, target launchTarget, ctx context.Context, cfg config.Config, plan backend.StartPlan, stdin io.Reader, stdout, stderr io.Writer) (backend.StartResult, <-chan error, error) {
+func startAttachedTarget(sandbox backend.DockerSandbox, target launchTarget, attachValidatedMain bool, ctx context.Context, cfg config.Config, plan backend.StartPlan, stdin io.Reader, stdout, stderr io.Writer) (backend.StartResult, <-chan error, error) {
 	if target == herdrTUITarget {
 		start := backend.StartResult{
 			SandboxName: plan.SandboxName,
@@ -396,6 +412,21 @@ func startAttachedTarget(sandbox backend.DockerSandbox, target launchTarget, ctx
 		if err != nil {
 			return start, nil, err
 		}
+		return start, wait, nil
+	}
+	if attachValidatedMain {
+		start := backend.StartResult{
+			SandboxName: plan.SandboxName,
+			Agent:       plan.Agent,
+			Workspace:   plan.Workspace,
+			Timezone:    plan.Timezone,
+			Locale:      plan.Locale,
+		}
+		wait, err := sandbox.AttachMain(ctx, plan, stdin, stdout, stderr)
+		if err != nil {
+			return start, nil, err
+		}
+		fmt.Fprintln(stdout, "main sandbox inspection ok")
 		return start, wait, nil
 	}
 	start, wait, err := sandbox.StartMainAttached(ctx, plan, stdin, stdout, stderr)

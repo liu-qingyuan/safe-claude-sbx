@@ -37,13 +37,18 @@ func (b *synchronizedBuffer) String() string {
 	return b.Buffer.String()
 }
 
-func TestRunnerRejectsDedicatedDirectClaudeBeforeCreatingEgressGuard(t *testing.T) {
-	configPath := writeLauncherDedicatedLaunchConfig(t)
-	guardCreated := false
+func TestDedicatedDirectClaudeCapabilityFailureStopsBeforeMainAndAttach(t *testing.T) {
+	configPath := writeLauncherDedicatedDirectConfig(t)
+	log := make([]string, 0, 8)
+	runner := &launchTestRunner{log: &log}
+	guard := &launchTestGuard{
+		log:        &log,
+		acquireErr: fmt.Errorf("dedicated protocol isolation unsupported: sbx v0.34.0 provides HTTP upstream only"),
+	}
 	launcher := Runner{
+		sandbox: backend.DockerSandbox{Runner: runner, Binary: "sbx"},
 		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
-			guardCreated = true
-			return nil, fmt.Errorf("must not create guard")
+			return guard, nil
 		},
 	}
 	var stdout, stderr bytes.Buffer
@@ -55,15 +60,184 @@ func TestRunnerRejectsDedicatedDirectClaudeBeforeCreatingEgressGuard(t *testing.
 		Stderr:     &stderr,
 	})
 
-	if code == 0 || !strings.Contains(stderr.String(), "dedicated-gateway launch is not available") {
-		t.Fatalf("expected dedicated direct Claude rejection, got code %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	if code == 0 || !strings.Contains(stderr.String(), "dedicated protocol isolation unsupported") {
+		t.Fatalf("expected dedicated capability rejection, got code %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
-	if guardCreated {
-		t.Fatal("dedicated direct Claude rejection reached egress guard creation")
+	assertLogOrder(t, log, "guard acquire", "guard fence", "guard recover")
+	if containsLogEntry(log, "sbx") {
+		t.Fatalf("capability rejection reached backend side effects:\n%s", strings.Join(log, "\n"))
 	}
 }
 
-func TestDedicatedSafeHerdrRevalidatesExistingMainAndRevokesBeforeCleanup(t *testing.T) {
+func TestDedicatedDirectClaudeUsesValidatedMainAndSharedTeardown(t *testing.T) {
+	configPath := writeLauncherDedicatedDirectConfig(t)
+	log := make([]string, 0, 32)
+	writeAttachedSBX(t)
+	runner := &launchTestRunner{
+		log:        &log,
+		egressIP:   "203.0.113.10",
+		mainExists: true,
+		mainStatus: "running",
+	}
+	sandbox := backend.DockerSandbox{Runner: runner, Binary: "sbx"}
+	guard := &launchTestGuard{log: &log}
+	var stdout synchronizedBuffer
+	var stderr bytes.Buffer
+
+	launcher := Runner{
+		sandbox: sandbox,
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+			return guard, nil
+		},
+	}
+	code := launcher.Run(Request{
+		Target:     DirectClaudeTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+
+	if code != 0 {
+		t.Fatalf("dedicated direct Claude failed with code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
+	}
+	for _, want := range []string{
+		"sandbox egress ok: observed IP 203.0.113.10",
+		"controller isolation ok: endpoint unreachable from main sandbox",
+		"sandbox started: claude-sbx",
+		"attached argv:exec -it claude-sbx claude",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("expected output %q, got:\n%s", want, stdout.String())
+		}
+	}
+	assertLogOrder(t, log,
+		"guard acquire",
+		"guard validate",
+		"guard fence",
+		"guard recover",
+		"sbx stop claude-sbx",
+	)
+	for _, forbidden := range []string{"sbx create", "sbx rm", "sbx create --name claude-sbx-probe"} {
+		if containsLogEntry(log, forbidden) {
+			t.Fatalf("dedicated direct Claude used forbidden command %q:\n%s", forbidden, strings.Join(log, "\n"))
+		}
+	}
+}
+
+func TestDedicatedDirectClaudeCleanupHonorsOwnershipWithoutLeavingMainRunning(t *testing.T) {
+	tests := []struct {
+		name              string
+		mainExists        bool
+		stopMainSandbox   bool
+		removeMainSandbox bool
+		wantCreate        bool
+		wantRemove        bool
+	}{
+		{
+			name:            "preexisting main is stopped even when stop policy is false",
+			mainExists:      true,
+			stopMainSandbox: false,
+		},
+		{
+			name:              "preexisting main is retained when remove policy is true",
+			mainExists:        true,
+			stopMainSandbox:   true,
+			removeMainSandbox: true,
+		},
+		{
+			name:              "launcher-created main follows remove policy after stop",
+			stopMainSandbox:   true,
+			removeMainSandbox: true,
+			wantCreate:        true,
+			wantRemove:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := writeLauncherDedicatedDirectConfig(t)
+			setLauncherConfigBool(t, configPath, "stop_main_sandbox", tt.stopMainSandbox)
+			setLauncherConfigBool(t, configPath, "remove_main_sandbox", tt.removeMainSandbox)
+			log := make([]string, 0, 32)
+			writeAttachedSBX(t)
+			runner := &launchTestRunner{
+				log:        &log,
+				egressIP:   "203.0.113.10",
+				mainExists: tt.mainExists,
+				mainStatus: "running",
+			}
+			guard := &launchTestGuard{log: &log}
+			launcher := Runner{
+				sandbox: backend.DockerSandbox{Runner: runner, Binary: "sbx"},
+				newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+					return guard, nil
+				},
+			}
+			var stdout synchronizedBuffer
+			var stderr bytes.Buffer
+
+			code := launcher.Run(Request{
+				Target:     DirectClaudeTarget,
+				ConfigPath: configPath,
+				Stdout:     &stdout,
+				Stderr:     &stderr,
+			})
+
+			if code != 0 {
+				t.Fatalf("dedicated direct Claude failed with code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
+			}
+			if containsLogEntry(log, "sbx create") != tt.wantCreate {
+				t.Fatalf("unexpected main creation:\n%s", strings.Join(log, "\n"))
+			}
+			if countLogEntry(log, "sbx stop claude-sbx") != 1 {
+				t.Fatalf("dedicated main was not stopped exactly once:\n%s", strings.Join(log, "\n"))
+			}
+			if containsLogEntry(log, "sbx rm --force claude-sbx") != tt.wantRemove {
+				t.Fatalf("unexpected main removal behavior:\n%s", strings.Join(log, "\n"))
+			}
+			assertLogOrder(t, log, "guard fence", "guard recover", "sbx stop claude-sbx")
+		})
+	}
+}
+
+func TestDedicatedDirectClaudeCleanupFailureStillFencesAndRecoversOnce(t *testing.T) {
+	configPath := writeLauncherDedicatedDirectConfig(t)
+	log := make([]string, 0, 32)
+	writeAttachedSBX(t)
+	runner := &launchTestRunner{
+		log:         &log,
+		egressIP:    "203.0.113.10",
+		mainExists:  true,
+		mainStatus:  "running",
+		failCommand: "sbx stop claude-sbx",
+	}
+	guard := &launchTestGuard{log: &log}
+	launcher := Runner{
+		sandbox: backend.DockerSandbox{Runner: runner, Binary: "sbx"},
+		newGuard: func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+			return guard, nil
+		},
+	}
+	var stdout synchronizedBuffer
+	var stderr bytes.Buffer
+
+	code := launcher.Run(Request{
+		Target:     DirectClaudeTarget,
+		ConfigPath: configPath,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+
+	if code == 0 || !strings.Contains(stderr.String(), "stop main sandbox") {
+		t.Fatalf("expected cleanup failure, got code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
+	}
+	if countLogEntry(log, "guard fence") != 1 || countLogEntry(log, "guard recover") != 1 {
+		t.Fatalf("cleanup failure repeated guard finalization:\n%s", strings.Join(log, "\n"))
+	}
+	assertLogOrder(t, log, "guard fence", "guard recover", "sbx stop claude-sbx")
+}
+
+func TestDedicatedSafeHerdrRevalidatesExistingMainAndFencesBeforeCleanup(t *testing.T) {
 	configPath := writeLauncherDedicatedLaunchConfig(t)
 	log := make([]string, 0, 32)
 	writeAttachedSBX(t)
@@ -111,8 +285,8 @@ func TestDedicatedSafeHerdrRevalidatesExistingMainAndRevokesBeforeCleanup(t *tes
 		"guard acquire",
 		"sbx version",
 		"guard validate",
-		"guard revoke",
-		"sbx exec claude-sbx herdr server stop",
+		"guard fence",
+		"guard recover",
 		"sbx stop claude-sbx",
 	)
 	for _, forbidden := range []string{"sbx create", "sbx rm"} {
@@ -124,7 +298,7 @@ func TestDedicatedSafeHerdrRevalidatesExistingMainAndRevokesBeforeCleanup(t *tes
 	}
 }
 
-func TestDedicatedSafeHerdrCreatesNewMainAndRevokesBeforeOwnedCleanup(t *testing.T) {
+func TestDedicatedSafeHerdrCreatesNewMainAndFencesBeforeOwnedCleanup(t *testing.T) {
 	configPath := writeLauncherDedicatedLaunchConfig(t)
 	log := make([]string, 0, 32)
 	writeAttachedSBX(t)
@@ -154,8 +328,8 @@ func TestDedicatedSafeHerdrCreatesNewMainAndRevokesBeforeOwnedCleanup(t *testing
 		"guard acquire",
 		"sbx create --name claude-sbx --template safe-claude-sbx-herdr:latest claude .",
 		"guard validate",
-		"guard revoke",
-		"sbx exec claude-sbx herdr server stop",
+		"guard fence",
+		"guard recover",
 		"sbx stop claude-sbx",
 	)
 }
@@ -302,15 +476,15 @@ func TestDedicatedSafeHerdrFailsClosedBeforeAttach(t *testing.T) {
 			if containsLogEntry(log, "sbx stop claude-sbx") != tt.wantMainClean {
 				t.Fatalf("unexpected main cleanup behavior:\n%s", strings.Join(log, "\n"))
 			}
-			assertLogOrder(t, log, "guard acquire", "guard revoke")
+			assertLogOrder(t, log, "guard acquire", "guard fence", "guard recover")
 			if tt.wantMainClean {
-				assertLogOrder(t, log, "guard revoke", "sbx exec claude-sbx herdr server stop", "sbx stop claude-sbx")
+				assertLogOrder(t, log, "guard recover", "sbx stop claude-sbx")
 			}
 		})
 	}
 }
 
-func TestDedicatedSafeHerdrRevokesBeforeCancelingAttachedProcess(t *testing.T) {
+func TestDedicatedSafeHerdrCancelsAttachedProcessBeforeFenceAndRecover(t *testing.T) {
 	configPath := writeLauncherDedicatedLaunchConfig(t)
 	log := make([]string, 0, 32)
 	pidPath := writeBlockingSBX(t)
@@ -321,7 +495,7 @@ func TestDedicatedSafeHerdrRevokesBeforeCancelingAttachedProcess(t *testing.T) {
 		mainStatus: "running",
 	}
 	sandbox := backend.DockerSandbox{Runner: runner, Binary: "sbx"}
-	guard := &launchOrderingGuard{log: &log, attachedPIDPath: pidPath}
+	guard := &fenceOrderingGuard{log: &log, attachedPIDPath: pidPath}
 	var stdout, stderr bytes.Buffer
 
 	launcher := Runner{
@@ -349,10 +523,13 @@ func TestDedicatedSafeHerdrRevokesBeforeCancelingAttachedProcess(t *testing.T) {
 		t.Fatalf("expected signal exit 130, got %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
 	}
 	assertLogOrder(t, log,
-		"guard revoke",
-		"sbx exec claude-sbx herdr server stop",
+		"guard fence",
+		"guard recover",
 		"sbx stop claude-sbx",
 	)
+	if containsLogEntry(log, "sbx exec claude-sbx herdr server stop") {
+		t.Fatalf("dedicated cleanup restarted Herdr after recovery:\n%s", strings.Join(log, "\n"))
+	}
 }
 
 func TestHostInheritedSafeHerdrKeepsPlatformPreflightAndRuntimeWatchdog(t *testing.T) {
@@ -408,13 +585,14 @@ func TestHostInheritedSafeHerdrKeepsPlatformPreflightAndRuntimeWatchdog(t *testi
 		"guard validate",
 		"guard runtime start",
 		"guard runtime check",
-		"guard revoke",
+		"guard fence",
+		"guard recover",
 		"sbx exec claude-sbx herdr server stop",
 		"sbx stop claude-sbx",
 	)
 }
 
-func TestDedicatedSafeHerdrRuntimeFailureRevokesBeforeCleanupOnce(t *testing.T) {
+func TestDedicatedSafeHerdrRuntimeFailureFencesAndRecoversBeforeCleanupOnce(t *testing.T) {
 	configPath := writeLauncherDedicatedLaunchConfig(t)
 	log := make([]string, 0, 32)
 	writeBlockingSBX(t)
@@ -452,8 +630,8 @@ func TestDedicatedSafeHerdrRuntimeFailureRevokesBeforeCleanupOnce(t *testing.T) 
 	if code == 0 || !strings.Contains(stderr.String(), "dedicated-health runtime policy failed: dedicated egress drift") {
 		t.Fatalf("expected dedicated runtime failure, got code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
 	}
-	if countLogEntry(log, "guard revoke") != 1 {
-		t.Fatalf("expected one egress revoke, got:\n%s", strings.Join(log, "\n"))
+	if countLogEntry(log, "guard fence") != 1 || countLogEntry(log, "guard recover") != 1 {
+		t.Fatalf("expected one egress fence and recovery, got:\n%s", strings.Join(log, "\n"))
 	}
 	if countLogEntry(log, "sbx stop claude-sbx") != 1 {
 		t.Fatalf("expected one main cleanup, got:\n%s", strings.Join(log, "\n"))
@@ -461,13 +639,13 @@ func TestDedicatedSafeHerdrRuntimeFailureRevokesBeforeCleanupOnce(t *testing.T) 
 	assertLogOrder(t, log,
 		"guard runtime start",
 		"guard runtime check",
-		"guard revoke",
-		"sbx exec claude-sbx herdr server stop",
+		"guard fence",
+		"guard recover",
 		"sbx stop claude-sbx",
 	)
 }
 
-type launchOrderingGuard struct {
+type fenceOrderingGuard struct {
 	log             *[]string
 	attachedPIDPath string
 }
@@ -499,27 +677,31 @@ func (g *hostLaunchGuard) Watch(context.Context, egressguard.WatchInput) egressg
 	}
 }
 
-func (g *hostLaunchGuard) Revoke(context.Context) (egressguard.Result, error) {
-	*g.log = append(*g.log, "guard revoke")
+func (g *hostLaunchGuard) Fence(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard fence")
 	return egressguard.Result{}, nil
 }
 
-func (g *launchOrderingGuard) Acquire(context.Context) (egressguard.Result, error) {
+func (g *hostLaunchGuard) Recover(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard recover")
+	return egressguard.Result{}, nil
+}
+
+func (g *fenceOrderingGuard) Acquire(context.Context) (egressguard.Result, error) {
 	*g.log = append(*g.log, "guard acquire")
 	return egressguard.Result{}, nil
 }
 
-func (g *launchOrderingGuard) ValidateMain(context.Context) (egressguard.Result, error) {
+func (g *fenceOrderingGuard) ValidateMain(context.Context) (egressguard.Result, error) {
 	*g.log = append(*g.log, "guard validate")
 	return egressguard.Result{}, nil
 }
 
-func (*launchOrderingGuard) Watch(context.Context, egressguard.WatchInput) egressguard.RuntimeWatch {
+func (*fenceOrderingGuard) Watch(context.Context, egressguard.WatchInput) egressguard.RuntimeWatch {
 	return egressguard.RuntimeWatch{}
 }
 
-func (g *launchOrderingGuard) Revoke(context.Context) (egressguard.Result, error) {
-	*g.log = append(*g.log, "guard revoke")
+func (g *fenceOrderingGuard) Fence(context.Context) (egressguard.Result, error) {
 	pidText, err := os.ReadFile(g.attachedPIDPath)
 	if err != nil {
 		return egressguard.Result{}, fmt.Errorf("read attached process PID: %w", err)
@@ -528,9 +710,19 @@ func (g *launchOrderingGuard) Revoke(context.Context) (egressguard.Result, error
 	if err != nil {
 		return egressguard.Result{}, fmt.Errorf("parse attached process PID: %w", err)
 	}
-	if err := syscall.Kill(pid, 0); err != nil {
-		return egressguard.Result{}, fmt.Errorf("attached Herdr stopped before egress revoke: %w", err)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			*g.log = append(*g.log, "guard fence")
+			return egressguard.Result{}, nil
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	return egressguard.Result{}, fmt.Errorf("attached Herdr still running before fence")
+}
+
+func (g *fenceOrderingGuard) Recover(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard recover")
 	return egressguard.Result{}, nil
 }
 
@@ -578,9 +770,14 @@ func (g *launchTestGuard) Watch(context.Context, egressguard.WatchInput) egressg
 	}
 }
 
-func (g *launchTestGuard) Revoke(context.Context) (egressguard.Result, error) {
-	*g.log = append(*g.log, "guard revoke")
-	return egressguard.Result{Messages: []string{"sandboxd lease revoked: launcher-owned daemon state restored"}}, nil
+func (g *launchTestGuard) Fence(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard fence")
+	return egressguard.Result{Messages: []string{"sandboxd lease fenced: dedicated egress stopped"}}, nil
+}
+
+func (g *launchTestGuard) Recover(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard recover")
+	return egressguard.Result{Messages: []string{"sandboxd lease recovered: normal daemon restored with main stopped"}}, nil
 }
 
 type launchTestRunner struct {
@@ -782,6 +979,76 @@ cleanup:
 		t.Fatalf("write config: %v", err)
 	}
 	return path
+}
+
+func writeLauncherDedicatedDirectConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := `network:
+  egress:
+    mode: "dedicated-gateway"
+    dedicated_gateway:
+      upstream_url: "http://127.0.0.1:17890"
+      controller_url: "http://127.0.0.1:19090"
+      controller_secret_env: "SAFE_CLAUDE_SBX_MIHOMO_SECRET"
+  egress_ip:
+    expected_ip: "203.0.113.10"
+    sandbox_check_url: "https://api.ipify.org"
+    timeout_seconds: 3
+sandbox:
+  backend: "docker-sandbox"
+  main_name: "claude-sbx"
+  probe_name: "claude-sbx-probe"
+  agent: "claude"
+  supervision:
+    mode: "direct-claude"
+workspace:
+  mount: "."
+  use_clone_mode: false
+  forbidden_paths:
+    - "~"
+    - "~/.ssh"
+environment:
+  timezone: "America/Chicago"
+  locale: "en_US.UTF-8"
+  forbidden_env_vars:
+    - HTTP_PROXY
+    - HTTPS_PROXY
+    - ALL_PROXY
+    - NO_PROXY
+watchdog:
+  enabled: true
+  log_level: "info"
+  log_file: ""
+cleanup:
+  stop_main_sandbox: true
+  remove_probe_sandbox: true
+  remove_main_sandbox: false
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+func setLauncherConfigBool(t *testing.T, path, key string, value bool) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	newValue := key + ": " + strconv.FormatBool(value)
+	if strings.Contains(string(body), newValue) {
+		return
+	}
+	oldValue := key + ": " + strconv.FormatBool(!value)
+	if !strings.Contains(string(body), oldValue) {
+		t.Fatalf("config key %s not found", key)
+	}
+	updated := strings.Replace(string(body), oldValue, newValue, 1)
+	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
 }
 
 func writeLauncherHostLaunchConfig(t *testing.T) string {

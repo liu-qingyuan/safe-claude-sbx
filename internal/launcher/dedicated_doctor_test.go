@@ -80,7 +80,8 @@ func TestDoctorSupportedDedicatedAdapterRunsThroughLauncherAndCleansUpInOrder(t 
 		"sandbox backend ok: sbx version: v0.34.0 fake",
 		"sandbox egress ok: observed IP 203.0.113.10",
 		"controller isolation ok: endpoint unreachable from main sandbox",
-		"sandboxd lease revoked: launcher-owned daemon state restored",
+		"sandboxd lease fenced: dedicated egress stopped",
+		"sandboxd lease recovered: normal daemon restored with main stopped",
 		"sandbox inspection ok",
 	} {
 		if !strings.Contains(stdout.String(), want) {
@@ -92,7 +93,8 @@ func TestDoctorSupportedDedicatedAdapterRunsThroughLauncherAndCleansUpInOrder(t 
 		"sbx version",
 		"sbx create --name claude-sbx claude .",
 		"guard validate",
-		"guard revoke",
+		"guard fence",
+		"guard recover",
 		"sbx stop claude-sbx",
 	)
 }
@@ -160,7 +162,7 @@ func TestDoctorSupportedDedicatedAdapterFailsClosed(t *testing.T) {
 				t.Fatalf("expected %q failure, got code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", tt.wantError, code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
 			}
 			if tt.wantPreflight {
-				assertLogOrder(t, log, "guard acquire", "sbx create --name claude-sbx claude .", "guard revoke", "sbx stop claude-sbx")
+				assertLogOrder(t, log, "guard acquire", "sbx create --name claude-sbx claude .", "guard fence", "guard recover", "sbx stop claude-sbx")
 				return
 			}
 			for _, entry := range log {
@@ -211,10 +213,10 @@ func TestDoctorSupportedDedicatedAdapterPreservesExistingMainAfterInspectionFail
 			t.Fatalf("doctor destructively changed existing main with %q:\n%s", entry, strings.Join(log, "\n"))
 		}
 	}
-	assertLogOrder(t, log, "guard acquire", "sbx version", "guard revoke")
+	assertLogOrder(t, log, "guard acquire", "sbx version", "guard fence", "guard recover")
 }
 
-func TestDoctorSupportedDedicatedAdapterRuntimeFailuresRevokeBeforeCleanup(t *testing.T) {
+func TestDoctorSupportedDedicatedAdapterRuntimeFailuresFenceBeforeCleanup(t *testing.T) {
 	for _, wantError := range []string{
 		"gateway controller invalid: authenticated health request failed",
 		"sandboxd lease invalid: dedicated daemon exited",
@@ -244,7 +246,7 @@ func TestDoctorSupportedDedicatedAdapterRuntimeFailuresRevokeBeforeCleanup(t *te
 			if code == 0 || !strings.Contains(stderr.String(), wantError) {
 				t.Fatalf("expected %q failure, got code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", wantError, code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
 			}
-			assertLogOrder(t, log, "guard acquire", "guard validate", "guard revoke", "sbx stop claude-sbx")
+			assertLogOrder(t, log, "guard acquire", "guard validate", "guard fence", "guard recover", "sbx stop claude-sbx")
 		})
 	}
 }
@@ -273,9 +275,14 @@ func (*doctorTestGuard) Watch(context.Context, egressguard.WatchInput) egressgua
 	return egressguard.RuntimeWatch{}
 }
 
-func (g *doctorTestGuard) Revoke(context.Context) (egressguard.Result, error) {
-	*g.log = append(*g.log, "guard revoke")
-	return egressguard.Result{Messages: []string{"sandboxd lease revoked: launcher-owned daemon state restored"}}, nil
+func (g *doctorTestGuard) Fence(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard fence")
+	return egressguard.Result{Messages: []string{"sandboxd lease fenced: dedicated egress stopped"}}, nil
+}
+
+func (g *doctorTestGuard) Recover(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard recover")
+	return egressguard.Result{Messages: []string{"sandboxd lease recovered: normal daemon restored with main stopped"}}, nil
 }
 
 type doctorScenarioGuard struct {
@@ -301,8 +308,13 @@ func (*doctorScenarioGuard) Watch(context.Context, egressguard.WatchInput) egres
 	return egressguard.RuntimeWatch{}
 }
 
-func (g *doctorScenarioGuard) Revoke(context.Context) (egressguard.Result, error) {
-	*g.log = append(*g.log, "guard revoke")
+func (g *doctorScenarioGuard) Fence(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard fence")
+	return egressguard.Result{}, nil
+}
+
+func (g *doctorScenarioGuard) Recover(context.Context) (egressguard.Result, error) {
+	*g.log = append(*g.log, "guard recover")
 	return egressguard.Result{}, nil
 }
 

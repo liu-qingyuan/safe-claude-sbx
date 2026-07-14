@@ -665,6 +665,17 @@ func (b DockerSandbox) StartMainAttached(ctx context.Context, plan StartPlan, st
 	return start, wait, nil
 }
 
+func (b DockerSandbox) AttachMain(ctx context.Context, plan StartPlan, stdin io.Reader, stdout, stderr io.Writer) (<-chan error, error) {
+	return b.startAttachedCommand(
+		ctx,
+		[]string{"exec", "-it", plan.SandboxName, plan.Agent},
+		"attach main sandbox",
+		stdin,
+		stdout,
+		stderr,
+	)
+}
+
 func (b DockerSandbox) StartHerdrTUIAttached(ctx context.Context, plan StartPlan, stdin io.Reader, stdout, stderr io.Writer) (StartResult, <-chan error, error) {
 	start := StartResult{
 		SandboxName: plan.SandboxName,

@@ -92,7 +92,10 @@ until their protocol contract is explicitly validated and added to the Adapter.
 The existing controller, exclusive lease, main preflight, and ordered cleanup
 implementation remains behind this capability gate for a future supported
 backend. It never sets generic `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` on
-sandboxd. `safe-claude-sbx` launch and `safe-herdr` also reject this mode.
+sandboxd. Doctor, direct `safe-claude-sbx --config`, and `safe-herdr` all enter
+the same capability gate; `sbx v0.34.0`, unknown versions, and capability
+inspection failures are rejected before controller, daemon, main, or attach
+operations.
 See `docs/dedicated-gateway-operations.md` for the ownership boundary, startup
 evidence, failure handling, host-inherited recovery, and disposable acceptance
 procedure.
@@ -215,11 +218,14 @@ Herdr state, host Herdr sockets, or host `HERDR_*` values to Docker Sandbox.
   - `log_level`: Launcher log level.
   - `log_file`: Optional log file path. Empty string means stderr/stdout only.
 - `cleanup`
-  - `stop_main_sandbox`: Stop the main sandbox on normal shutdown or watchdog failure.
+  - `stop_main_sandbox`: Stop the main sandbox on normal shutdown or watchdog
+    failure. Dedicated teardown always leaves main stopped even when this value
+    is `false`, because a main cannot outlive its validated egress lease.
   - `remove_probe_sandbox`: Legacy compatibility cleanup flag for temporary
     probe diagnostics. It no longer affects the `doctor` or `safe-herdr` hot
     path.
-  - `remove_main_sandbox`: Remove the main sandbox on exit. The default is `false`.
+  - `remove_main_sandbox`: Remove a launcher-created main sandbox on exit. The
+    default is `false`; dedicated teardown never removes a preexisting main.
 
 ## Validation
 
@@ -286,8 +292,10 @@ sandbox is attached, the launcher validates Clash Verge TUN declarations, the
 live macOS route and startup TUN interface, host egress, Docker Sandbox
 availability, sandbox egress, workspace visibility, and sandbox environment
 policy. Dedicated doctor is capability-gated and rejects the current
-`sbx v0.34.0` backend before mutation; dedicated launch/watchdog behavior is not
-enabled.
+`sbx v0.34.0` backend before mutation. The future-supported doctor, direct
+Claude, and Herdr paths share main preflight, controller isolation, the
+dedicated watchdog, and `Fence`/`Recover` teardown, but no released backend is
+enabled in the production support matrix.
 
 Runtime supervision is intentionally lighter. The watchdog merges macOS route
 monitor events and Clash Verge app-home file metadata events, debounces the

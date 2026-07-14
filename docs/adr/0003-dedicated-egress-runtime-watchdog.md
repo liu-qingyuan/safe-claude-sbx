@@ -32,8 +32,10 @@ mode-specific rules:
   `CheckRuntimeEgress` probe against the configured sandbox egress endpoint;
 - bound the entire health check, including sandboxd commands and the egress
   probe, by `network.egress_ip.timeout_seconds`;
-- let the Supervisor cancel any active check before cleanup, then revoke the
-  sandboxd lease before stopping or cleaning the main sandbox;
+- let the Supervisor cancel active checks and the attached target before
+  cleanup, then `Fence` dedicated egress, `Recover` normal sandboxd without
+  restarting main, and only then retain or remove the stopped main according
+  to ownership policy;
 - observe the operator-managed Mihomo process only through its controller and
   never start, stop, or reconfigure it.
 
@@ -51,6 +53,8 @@ event handling.
 - Controller or lease failures avoid the sandbox egress probe and fail closed
   from host-observable evidence first.
 - A stalled sandboxd command or sandbox egress probe is canceled before
-  `Revoke`, so cleanup does not wait indefinitely for the runtime checker lock.
+  `Fence`, so cleanup does not wait indefinitely for the runtime checker lock.
+- `Recover` starts normal sandboxd without `DOCKER_SANDBOXES_PROXY` and never
+  restarts a main that was running before the dedicated lease.
 - The existing Supervisor continues to own debounce, backend exit,
   cancellation, error reporting, and cleanup-once behavior for both modes.

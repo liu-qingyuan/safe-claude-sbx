@@ -49,12 +49,11 @@ type dedicatedGatewayAdapter struct {
 	client                  *http.Client
 	checkProtocolCapability protocolCapabilityCheck
 
-	mu                 sync.Mutex
-	process            runningProcess
-	processExit        <-chan error
-	restoreMainRunning bool
-	acquired           bool
-	runtimeInterval    time.Duration
+	mu              sync.Mutex
+	process         runningProcess
+	processExit     <-chan error
+	acquired        bool
+	runtimeInterval time.Duration
 }
 
 func newDedicatedGatewayAdapter(cfg config.Config, main MainSandbox, executor commandExecutor, client *http.Client) EgressGuard {
@@ -111,12 +110,11 @@ func (a *dedicatedGatewayAdapter) Acquire(ctx context.Context) (Result, error) {
 		return Result{}, fmt.Errorf("sandboxd lease invalid: stop existing daemon failed")
 	}
 	a.acquired = true
-	a.restoreMainRunning = scope.mainWasRunning
 
 	upstream := a.cfg.Network.Egress.DedicatedGateway.UpstreamURL
 	process, err := a.executor.Start(commandEnvironment(upstream), "sbx", "daemon", "start")
 	if err != nil {
-		restoreErr := a.restoreAfterFailedAcquire(scope.mainWasRunning)
+		restoreErr := a.restoreAfterFailedAcquire()
 		return Result{}, errors.Join(fmt.Errorf("sandboxd lease invalid: start dedicated daemon failed"), restoreErr)
 	}
 	exit := make(chan error, 1)
@@ -127,13 +125,13 @@ func (a *dedicatedGatewayAdapter) Acquire(ctx context.Context) (Result, error) {
 	a.process = process
 	a.processExit = exit
 	if err := a.waitForDaemon(ctx); err != nil {
-		return Result{}, errors.Join(err, a.restoreAfterFailedAcquire(scope.mainWasRunning))
+		return Result{}, errors.Join(err, a.restoreAfterFailedAcquire())
 	}
 	if scope.mainWasRunning {
 		if _, err := a.executor.Run(ctx, commandEnvironment(""), "sbx", "exec", a.cfg.Sandbox.MainName, "true"); err != nil {
 			return Result{}, errors.Join(
 				fmt.Errorf("sandboxd lease invalid: restore configured main under dedicated daemon failed"),
-				a.restoreAfterFailedAcquire(true),
+				a.restoreAfterFailedAcquire(),
 			)
 		}
 	}
@@ -321,22 +319,31 @@ func dedicatedRuntimeFailure(format string, args ...any) (watchdog.CheckResult, 
 	return watchdog.CheckResult{OK: false, Reason: reason}, fmt.Errorf("%s", reason)
 }
 
-func (a *dedicatedGatewayAdapter) Revoke(ctx context.Context) (Result, error) {
+func (a *dedicatedGatewayAdapter) Fence(ctx context.Context) (Result, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if !a.acquired {
 		return Result{}, nil
 	}
-	stopErr := a.stopOwnedDaemon(ctx)
-	restoreErr := a.restoreNormalDaemon(ctx, a.restoreMainRunning)
-	if stopErr != nil || restoreErr != nil {
-		return Result{}, fmt.Errorf("sandboxd lease revoke invalid: %w", errors.Join(stopErr, restoreErr))
+	if err := a.stopOwnedDaemon(ctx); err != nil {
+		return Result{}, fmt.Errorf("sandboxd lease fence invalid: %w", err)
+	}
+	return Result{Messages: []string{"sandboxd lease fenced: dedicated egress stopped"}}, nil
+}
+
+func (a *dedicatedGatewayAdapter) Recover(ctx context.Context) (Result, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.acquired {
+		return Result{}, nil
+	}
+	if err := a.restoreNormalDaemon(ctx); err != nil {
+		return Result{}, fmt.Errorf("sandboxd lease recovery invalid: %w", err)
 	}
 	a.acquired = false
 	a.process = nil
 	a.processExit = nil
-	a.restoreMainRunning = false
-	return Result{Messages: []string{"sandboxd lease revoked: launcher-owned daemon state restored"}}, nil
+	return Result{Messages: []string{"sandboxd lease recovered: normal daemon restored with main stopped"}}, nil
 }
 
 func (a *dedicatedGatewayAdapter) waitForDaemon(ctx context.Context) error {
@@ -378,29 +385,23 @@ func (a *dedicatedGatewayAdapter) stopOwnedDaemon(ctx context.Context) error {
 	}
 }
 
-func (a *dedicatedGatewayAdapter) restoreAfterFailedAcquire(restoreMain bool) error {
+func (a *dedicatedGatewayAdapter) restoreAfterFailedAcquire() error {
 	ctx, cancel := context.WithTimeout(context.Background(), a.cleanupTimeout())
 	defer cancel()
 	stopErr := a.stopOwnedDaemon(ctx)
-	restoreErr := a.restoreNormalDaemon(ctx, restoreMain)
+	restoreErr := a.restoreNormalDaemon(ctx)
 	if stopErr == nil && restoreErr == nil {
 		a.acquired = false
 		a.process = nil
 		a.processExit = nil
-		a.restoreMainRunning = false
 		return nil
 	}
 	return fmt.Errorf("restore normal daemon failed: %w", errors.Join(stopErr, restoreErr))
 }
 
-func (a *dedicatedGatewayAdapter) restoreNormalDaemon(ctx context.Context, restoreMain bool) error {
+func (a *dedicatedGatewayAdapter) restoreNormalDaemon(ctx context.Context) error {
 	if _, err := a.executor.Run(ctx, commandEnvironment(""), "sbx", "ls"); err != nil {
 		return fmt.Errorf("start normal daemon: %w", err)
-	}
-	if restoreMain {
-		if _, err := a.executor.Run(ctx, commandEnvironment(""), "sbx", "exec", a.cfg.Sandbox.MainName, "true"); err != nil {
-			return fmt.Errorf("restore configured main: %w", err)
-		}
 	}
 	return nil
 }

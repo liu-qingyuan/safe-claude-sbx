@@ -20,7 +20,8 @@ type EgressGuard interface {
 	Acquire(ctx context.Context) (Result, error)
 	ValidateMain(ctx context.Context) (Result, error)
 	Watch(ctx context.Context, input WatchInput) RuntimeWatch
-	Revoke(ctx context.Context) (Result, error)
+	Fence(ctx context.Context) (Result, error)
+	Recover(ctx context.Context) (Result, error)
 }
 
 type WatchInput struct {
@@ -102,7 +103,11 @@ func (a hostInheritedAdapter) Watch(ctx context.Context, input WatchInput) Runti
 	}
 }
 
-func (hostInheritedAdapter) Revoke(context.Context) (Result, error) {
+func (hostInheritedAdapter) Fence(context.Context) (Result, error) {
+	return Result{}, nil
+}
+
+func (hostInheritedAdapter) Recover(context.Context) (Result, error) {
 	return Result{}, nil
 }
 

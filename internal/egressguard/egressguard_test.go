@@ -2,6 +2,7 @@ package egressguard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -47,9 +48,7 @@ func TestHostInheritedAdapterThroughEgressGuardInterface(t *testing.T) {
 	if _, err := guard.ValidateMain(context.Background()); err != nil {
 		t.Fatalf("validate host main: %v", err)
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("revoke host lease: %v", err)
-	}
+	fenceAndRecoverTestGuard(t, guard)
 }
 
 func TestHostInheritedAdapterWatchProvidesExistingEventsAndChecker(t *testing.T) {
@@ -189,15 +188,15 @@ func TestDedicatedGatewayAdapterSuccessThroughEgressGuardInterface(t *testing.T)
 		t.Fatalf("expected controller isolation endpoint %q, got %q", controller.URL, main.endpoint)
 	}
 
-	revoked, err := guard.Revoke(context.Background())
-	if err != nil {
-		t.Fatalf("revoke dedicated lease: %v", err)
+	fenced, recovered := fenceAndRecoverTestGuard(t, guard)
+	if !containsMessage(fenced.Messages, "sandboxd lease fenced") {
+		t.Fatalf("unexpected fence messages %#v", fenced.Messages)
 	}
-	if !containsMessage(revoked.Messages, "sandboxd lease revoked") {
-		t.Fatalf("unexpected revoke messages %#v", revoked.Messages)
+	if !containsMessage(recovered.Messages, "sandboxd lease recovered") {
+		t.Fatalf("unexpected recovery messages %#v", recovered.Messages)
 	}
 	if got := executor.commandLog(); !strings.HasSuffix(got, "sbx daemon stop\nsbx ls") {
-		t.Fatalf("expected revoke then normal daemon restoration, got:\n%s", got)
+		t.Fatalf("expected fence then normal daemon recovery, got:\n%s", got)
 	}
 }
 
@@ -225,9 +224,7 @@ func TestDedicatedGatewayAdapterFailsWhenOwnedDaemonExits(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "sandboxd lease invalid: dedicated daemon exited") {
 		t.Fatalf("expected daemon drift failure, got %v", err)
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("revoke after daemon exit: %v", err)
-	}
+	fenceAndRecoverTestGuard(t, guard)
 }
 
 func TestDedicatedGatewayAdapterWatchFailsImmediatelyWhenOwnedDaemonExits(t *testing.T) {
@@ -255,9 +252,7 @@ func TestDedicatedGatewayAdapterWatchFailsImmediatelyWhenOwnedDaemonExits(t *tes
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for dedicated daemon exit event")
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("revoke after daemon exit: %v", err)
-	}
+	fenceAndRecoverTestGuard(t, guard)
 }
 
 func TestDedicatedGatewayAdapterWatchChecksLeaseAndControllerBeforeDedicatedEgress(t *testing.T) {
@@ -297,9 +292,7 @@ func TestDedicatedGatewayAdapterWatchChecksLeaseAndControllerBeforeDedicatedEgre
 	if !strings.Contains(log, "sbx daemon status") || strings.Count(log, "sbx ls") < 2 {
 		t.Fatalf("expected daemon and lease checks before egress, got:\n%s", log)
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("revoke dedicated lease: %v", err)
-	}
+	fenceAndRecoverTestGuard(t, guard)
 }
 
 func TestDedicatedGatewayAdapterWatchBoundsSandboxdHealthCheck(t *testing.T) {
@@ -325,9 +318,7 @@ func TestDedicatedGatewayAdapterWatchBoundsSandboxdHealthCheck(t *testing.T) {
 	if main.egressCalls != 0 {
 		t.Fatalf("stalled daemon status should fail before egress, got %d calls", main.egressCalls)
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("revoke after bounded health failure: %v", err)
-	}
+	fenceAndRecoverTestGuard(t, guard)
 }
 
 func TestDedicatedGatewayAdapterWatchStopsBeforeEgressWhenControllerIsLost(t *testing.T) {
@@ -354,9 +345,7 @@ func TestDedicatedGatewayAdapterWatchStopsBeforeEgressWhenControllerIsLost(t *te
 	if main.egressCalls != 0 {
 		t.Fatalf("controller loss should fail before dedicated egress check, got %d calls", main.egressCalls)
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("revoke after controller loss: %v", err)
-	}
+	fenceAndRecoverTestGuard(t, guard)
 }
 
 func TestDedicatedGatewayAdapterWatchStopsBeforeEgressWhenLeaseDrifts(t *testing.T) {
@@ -381,9 +370,7 @@ func TestDedicatedGatewayAdapterWatchStopsBeforeEgressWhenLeaseDrifts(t *testing
 	if main.egressCalls != 0 {
 		t.Fatalf("lease drift should fail before dedicated egress check, got %d calls", main.egressCalls)
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("revoke after lease drift: %v", err)
-	}
+	fenceAndRecoverTestGuard(t, guard)
 }
 
 func TestDedicatedGatewayAdapterWatchFailsOnDedicatedEgressDrift(t *testing.T) {
@@ -417,9 +404,7 @@ func TestDedicatedGatewayAdapterWatchFailsOnDedicatedEgressDrift(t *testing.T) {
 	if main.egressCalls != 1 {
 		t.Fatalf("expected one bounded dedicated egress check, got %d", main.egressCalls)
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("revoke after egress drift: %v", err)
-	}
+	fenceAndRecoverTestGuard(t, guard)
 }
 
 func TestDedicatedGatewayAdapterFailsWhenControllerStopsAfterAcquire(t *testing.T) {
@@ -444,12 +429,10 @@ func TestDedicatedGatewayAdapterFailsWhenControllerStopsAfterAcquire(t *testing.
 	if err == nil || !strings.Contains(err.Error(), "gateway controller invalid: loopback controller unavailable") {
 		t.Fatalf("expected stopped controller failure, got %v", err)
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("revoke after controller stop: %v", err)
-	}
+	fenceAndRecoverTestGuard(t, guard)
 }
 
-func TestDedicatedGatewayAdapterRestoresExistingRunningMain(t *testing.T) {
+func TestDedicatedGatewayAdapterFencesThenRecoversWithoutRestartingExistingMain(t *testing.T) {
 	const secret = "controller-secret-value"
 	t.Setenv("SAFE_CLAUDE_SBX_MIHOMO_SECRET", secret)
 	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -469,16 +452,26 @@ func TestDedicatedGatewayAdapterRestoresExistingRunningMain(t *testing.T) {
 	if _, err := guard.Acquire(context.Background()); err != nil {
 		t.Fatalf("acquire with existing main: %v", err)
 	}
-	if _, err := guard.ValidateMain(context.Background()); err != nil {
-		t.Fatalf("validate existing main: %v", err)
+	lease, ok := guard.(interface {
+		Fence(context.Context) (Result, error)
+		Recover(context.Context) (Result, error)
+	})
+	if !ok {
+		t.Fatal("dedicated egress guard does not expose Fence and Recover")
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("revoke existing main lease: %v", err)
+	if _, err := lease.Fence(context.Background()); err != nil {
+		t.Fatalf("fence dedicated lease: %v", err)
+	}
+	if _, err := lease.Recover(context.Background()); err != nil {
+		t.Fatalf("recover normal daemon: %v", err)
 	}
 
 	log := executor.commandLog()
-	if strings.Count(log, "sbx exec claude-sbx true") != 2 {
-		t.Fatalf("expected existing main reload under dedicated and restored daemon, got:\n%s", log)
+	if strings.Count(log, "sbx exec claude-sbx true") != 1 {
+		t.Fatalf("expected existing main to start only under dedicated daemon, got:\n%s", log)
+	}
+	if !strings.HasSuffix(log, "sbx daemon stop\nsbx ls") {
+		t.Fatalf("expected fence followed by normal daemon recovery, got:\n%s", log)
 	}
 }
 
@@ -503,9 +496,7 @@ func TestDedicatedGatewayAdapterFailsClosedOnScopeDrift(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unrelated sandbox conflict: late-sbx") {
 		t.Fatalf("expected scope drift failure, got %v", err)
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("revoke after scope drift: %v", err)
-	}
+	fenceAndRecoverTestGuard(t, guard)
 }
 
 func TestInspectLeaseScopeRejectsMalformedSandboxRows(t *testing.T) {
@@ -564,9 +555,17 @@ func TestDedicatedGatewayAdapterReportsRestoreFailureAfterStartError(t *testing.
 	if err == nil || !strings.Contains(err.Error(), "restore normal daemon failed") {
 		t.Fatalf("expected surfaced restore failure, got %v", err)
 	}
-	if _, err := guard.Revoke(context.Background()); err != nil {
-		t.Fatalf("expected restore retry to succeed, got %v", err)
+	fenceAndRecoverTestGuard(t, guard)
+}
+
+func fenceAndRecoverTestGuard(t *testing.T, guard EgressGuard) (Result, Result) {
+	t.Helper()
+	fenced, fenceErr := guard.Fence(context.Background())
+	recovered, recoverErr := guard.Recover(context.Background())
+	if err := errors.Join(fenceErr, recoverErr); err != nil {
+		t.Fatalf("finalize egress guard: %v", err)
 	}
+	return fenced, recovered
 }
 
 func dedicatedConfig(controllerURL string) config.Config {
