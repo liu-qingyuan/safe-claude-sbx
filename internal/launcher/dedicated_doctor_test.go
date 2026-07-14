@@ -203,6 +203,10 @@ func (g *doctorTestGuard) ValidateMain(context.Context) (egressguard.Result, err
 	return egressguard.Result{Messages: []string{"controller isolation ok: endpoint unreachable from main sandbox"}}, nil
 }
 
+func (*doctorTestGuard) Watch(context.Context, egressguard.WatchInput) egressguard.RuntimeWatch {
+	return egressguard.RuntimeWatch{}
+}
+
 func (g *doctorTestGuard) Revoke(context.Context) (egressguard.Result, error) {
 	*g.log = append(*g.log, "guard revoke")
 	return egressguard.Result{Messages: []string{"sandboxd lease revoked: launcher-owned daemon state restored"}}, nil
@@ -225,6 +229,10 @@ func (g *doctorScenarioGuard) Acquire(context.Context) (egressguard.Result, erro
 func (g *doctorScenarioGuard) ValidateMain(context.Context) (egressguard.Result, error) {
 	*g.log = append(*g.log, "guard validate")
 	return egressguard.Result{}, g.validateErr
+}
+
+func (*doctorScenarioGuard) Watch(context.Context, egressguard.WatchInput) egressguard.RuntimeWatch {
+	return egressguard.RuntimeWatch{}
 }
 
 func (g *doctorScenarioGuard) Revoke(context.Context) (egressguard.Result, error) {

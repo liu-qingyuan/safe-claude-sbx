@@ -17,6 +17,13 @@ import (
 
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/config"
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/policy"
+	"github.com/liu-qingyuan/safe-claude-sbx/internal/watchdog"
+)
+
+const (
+	DedicatedDaemonEventSource      = "dedicated-daemon"
+	DedicatedHealthEventSource      = "dedicated-health"
+	defaultDedicatedRuntimeInterval = 5 * time.Second
 )
 
 type commandResult struct {
@@ -47,6 +54,7 @@ type dedicatedGatewayAdapter struct {
 	processExit        <-chan error
 	restoreMainRunning bool
 	acquired           bool
+	runtimeInterval    time.Duration
 }
 
 func newDedicatedGatewayAdapter(cfg config.Config, main MainSandbox, executor commandExecutor, client *http.Client) EgressGuard {
@@ -209,6 +217,108 @@ func (a *dedicatedGatewayAdapter) ValidateMain(ctx context.Context) (Result, err
 		return Result{}, fmt.Errorf("controller isolation invalid: %w", err)
 	}
 	return Result{Messages: []string{"controller isolation ok: endpoint unreachable from main sandbox"}}, nil
+}
+
+func (a *dedicatedGatewayAdapter) Watch(ctx context.Context, _ WatchInput) RuntimeWatch {
+	a.mu.Lock()
+	processExit := a.processExit
+	interval := a.runtimeInterval
+	a.mu.Unlock()
+	if interval <= 0 {
+		interval = defaultDedicatedRuntimeInterval
+	}
+	events := make(chan watchdog.Event, 1)
+	go func() {
+		defer close(events)
+		if processExit == nil {
+			return
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case err := <-processExit:
+				detail := "dedicated daemon exited"
+				if err != nil {
+					detail = err.Error()
+				}
+				select {
+				case <-ctx.Done():
+				case events <- watchdog.Event{Source: DedicatedDaemonEventSource, Detail: detail}:
+				}
+				return
+			case <-ticker.C:
+				select {
+				case <-ctx.Done():
+					return
+				case events <- watchdog.Event{Source: DedicatedHealthEventSource, Detail: "scheduled runtime validation"}:
+				}
+			}
+		}
+	}()
+	return RuntimeWatch{
+		Events:  events,
+		Checker: watchdog.CheckFunc(a.checkRuntimeEvent),
+	}
+}
+
+func (a *dedicatedGatewayAdapter) checkRuntimeEvent(ctx context.Context, event watchdog.Event) (watchdog.CheckResult, error) {
+	if event.Source == DedicatedDaemonEventSource {
+		return dedicatedRuntimeFailure("sandboxd lease invalid: dedicated daemon exited")
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, a.cleanupTimeout())
+	defer cancel()
+	return a.checkRuntimeHealth(checkCtx)
+}
+
+func (a *dedicatedGatewayAdapter) checkRuntimeHealth(ctx context.Context) (watchdog.CheckResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.acquired {
+		return dedicatedRuntimeFailure("sandboxd lease invalid: lease is not active")
+	}
+	if _, err := a.executor.Run(ctx, commandEnvironment(""), "sbx", "daemon", "status"); err != nil {
+		return dedicatedRuntimeFailure("sandboxd lease invalid: dedicated daemon status failed")
+	}
+	if err := a.checkController(ctx); err != nil {
+		return dedicatedRuntimeFailure("%v", err)
+	}
+	list, err := a.executor.Run(ctx, commandEnvironment(""), "sbx", "ls")
+	if err != nil {
+		return dedicatedRuntimeFailure("sandboxd lease invalid: inspect running sandboxes failed")
+	}
+	scope, err := inspectLeaseScope(list.stdout, a.cfg.Sandbox.MainName, a.cfg.Sandbox.Agent, a.cfg.Workspace.Mount)
+	if err != nil {
+		return dedicatedRuntimeFailure("sandboxd lease invalid: %v", err)
+	}
+	if len(scope.conflicts) > 0 {
+		return dedicatedRuntimeFailure("sandboxd lease invalid: unrelated sandbox conflict: %s", strings.Join(scope.conflicts, ", "))
+	}
+	if a.main == nil {
+		return dedicatedRuntimeFailure("dedicated egress invalid: main sandbox checker unavailable")
+	}
+	egress, err := a.main.CheckRuntimeEgress(ctx, a.cfg)
+	if err != nil || !egress.OK {
+		reason := strings.TrimSpace(egress.FailureReason)
+		if reason == "" && err != nil {
+			reason = err.Error()
+		}
+		if reason == "" {
+			reason = "unknown dedicated egress failure"
+		}
+		if egress.FailureKind == "sandbox-egress-mismatch" {
+			return dedicatedRuntimeFailure("dedicated egress drift: %s", reason)
+		}
+		return dedicatedRuntimeFailure("dedicated egress check failed: %s", reason)
+	}
+	return watchdog.CheckResult{OK: true}, nil
+}
+
+func dedicatedRuntimeFailure(format string, args ...any) (watchdog.CheckResult, error) {
+	reason := fmt.Sprintf(format, args...)
+	return watchdog.CheckResult{OK: false, Reason: reason}, fmt.Errorf("%s", reason)
 }
 
 func (a *dedicatedGatewayAdapter) Revoke(ctx context.Context) (Result, error) {

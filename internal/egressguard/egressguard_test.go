@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/liu-qingyuan/safe-claude-sbx/internal/config"
+	"github.com/liu-qingyuan/safe-claude-sbx/internal/network"
+	"github.com/liu-qingyuan/safe-claude-sbx/internal/watchdog"
 )
 
 func TestHostInheritedAdapterThroughEgressGuardInterface(t *testing.T) {
@@ -47,6 +49,44 @@ func TestHostInheritedAdapterThroughEgressGuardInterface(t *testing.T) {
 	}
 	if _, err := guard.Revoke(context.Background()); err != nil {
 		t.Fatalf("revoke host lease: %v", err)
+	}
+}
+
+func TestHostInheritedAdapterWatchProvidesExistingEventsAndChecker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "203.0.113.10")
+	}))
+	t.Cleanup(server.Close)
+	routeEvents := make(chan watchdog.Event, 1)
+	routeErrors := make(chan error)
+	clashEvents := make(chan watchdog.Event)
+	clashErrors := make(chan error)
+	guard := hostInheritedAdapter{
+		cfg: config.Config{Network: config.Network{
+			ClashVerge: config.ClashVerge{RouteCheckTarget: "1.1.1.1"},
+			EgressIP: config.EgressIP{
+				ExpectedIP:     "203.0.113.10",
+				HostCheckURL:   server.URL,
+				TimeoutSeconds: 1,
+			},
+		}},
+		routeEvents: fakeRuntimeEventSource{events: routeEvents, errs: routeErrors},
+		clashEvents: fakeRuntimeEventSource{events: clashEvents, errs: clashErrors},
+		routeRunner: hostRuntimeRouteRunner{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := guard.Watch(ctx, WatchInput{StartupTUNInterface: "utun9"})
+	routeEvents <- watchdog.Event{Source: "route-monitor", Detail: "route changed"}
+
+	event := <-runtime.Events
+	if event.Source != "route-monitor" {
+		t.Fatalf("expected route event, got %#v", event)
+	}
+	result, err := runtime.Checker.Check(ctx, event)
+	if err != nil || !result.OK {
+		t.Fatalf("expected host runtime check to pass, result=%#v err=%v", result, err)
 	}
 }
 
@@ -187,6 +227,198 @@ func TestDedicatedGatewayAdapterFailsWhenOwnedDaemonExits(t *testing.T) {
 	}
 	if _, err := guard.Revoke(context.Background()); err != nil {
 		t.Fatalf("revoke after daemon exit: %v", err)
+	}
+}
+
+func TestDedicatedGatewayAdapterWatchFailsImmediatelyWhenOwnedDaemonExits(t *testing.T) {
+	controller := newAuthenticatedController(t)
+	executor := newFakeCommandExecutor()
+	guard := newSupportedDedicatedGatewayAdapter(dedicatedConfig(controller.URL), &fakeMainSandbox{}, executor, controller.Client())
+	if _, err := guard.Acquire(context.Background()); err != nil {
+		t.Fatalf("acquire dedicated lease: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := guard.Watch(ctx, WatchInput{})
+	executor.process.finish(fmt.Errorf("daemon exited"))
+
+	select {
+	case event := <-runtime.Events:
+		if event.Source != DedicatedDaemonEventSource {
+			t.Fatalf("expected dedicated daemon event, got %#v", event)
+		}
+		result, err := runtime.Checker.Check(ctx, event)
+		if err == nil || result.OK || !strings.Contains(result.Reason, "dedicated daemon exited") {
+			t.Fatalf("expected daemon exit runtime failure, result=%#v err=%v", result, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for dedicated daemon exit event")
+	}
+	if _, err := guard.Revoke(context.Background()); err != nil {
+		t.Fatalf("revoke after daemon exit: %v", err)
+	}
+}
+
+func TestDedicatedGatewayAdapterWatchChecksLeaseAndControllerBeforeDedicatedEgress(t *testing.T) {
+	controller := newAuthenticatedController(t)
+	executor := newFakeCommandExecutor()
+	main := &fakeMainSandbox{egress: network.EgressResult{
+		OK:         true,
+		ExpectedIP: "203.0.113.10",
+		ObservedIP: "203.0.113.10",
+	}}
+	guard := newSupportedDedicatedGatewayAdapter(dedicatedConfig(controller.URL), main, executor, controller.Client())
+	adapter := guard.(*dedicatedGatewayAdapter)
+	adapter.runtimeInterval = 5 * time.Millisecond
+	if _, err := guard.Acquire(context.Background()); err != nil {
+		t.Fatalf("acquire dedicated lease: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := guard.Watch(ctx, WatchInput{})
+	select {
+	case event := <-runtime.Events:
+		if event.Source != DedicatedHealthEventSource {
+			t.Fatalf("expected dedicated health event, got %#v", event)
+		}
+		result, err := runtime.Checker.Check(ctx, event)
+		if err != nil || !result.OK {
+			t.Fatalf("expected dedicated runtime check to pass, result=%#v err=%v", result, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for dedicated health event")
+	}
+	if main.egressCalls != 1 {
+		t.Fatalf("expected one bounded dedicated egress check, got %d", main.egressCalls)
+	}
+	log := executor.commandLog()
+	if !strings.Contains(log, "sbx daemon status") || strings.Count(log, "sbx ls") < 2 {
+		t.Fatalf("expected daemon and lease checks before egress, got:\n%s", log)
+	}
+	if _, err := guard.Revoke(context.Background()); err != nil {
+		t.Fatalf("revoke dedicated lease: %v", err)
+	}
+}
+
+func TestDedicatedGatewayAdapterWatchBoundsSandboxdHealthCheck(t *testing.T) {
+	controller := newAuthenticatedController(t)
+	executor := &blockingRuntimeStatusExecutor{fakeCommandExecutor: newFakeCommandExecutor()}
+	main := &fakeMainSandbox{egress: network.EgressResult{OK: true}}
+	cfg := dedicatedConfig(controller.URL)
+	cfg.Network.EgressIP.TimeoutSeconds = 1
+	guard := newSupportedDedicatedGatewayAdapter(cfg, main, executor, controller.Client())
+	if _, err := guard.Acquire(context.Background()); err != nil {
+		t.Fatalf("acquire dedicated lease: %v", err)
+	}
+
+	runtime := guard.Watch(context.Background(), WatchInput{})
+	started := time.Now()
+	result, err := runtime.Checker.Check(context.Background(), watchdog.Event{Source: DedicatedHealthEventSource})
+	if err == nil || result.OK || !strings.Contains(result.Reason, "dedicated daemon status failed") {
+		t.Fatalf("expected bounded daemon status failure, result=%#v err=%v", result, err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("runtime health check exceeded configured timeout: %s", elapsed)
+	}
+	if main.egressCalls != 0 {
+		t.Fatalf("stalled daemon status should fail before egress, got %d calls", main.egressCalls)
+	}
+	if _, err := guard.Revoke(context.Background()); err != nil {
+		t.Fatalf("revoke after bounded health failure: %v", err)
+	}
+}
+
+func TestDedicatedGatewayAdapterWatchStopsBeforeEgressWhenControllerIsLost(t *testing.T) {
+	controller := newAuthenticatedController(t)
+	executor := newFakeCommandExecutor()
+	main := &fakeMainSandbox{egress: network.EgressResult{OK: true}}
+	guard := newSupportedDedicatedGatewayAdapter(dedicatedConfig(controller.URL), main, executor, controller.Client())
+	adapter := guard.(*dedicatedGatewayAdapter)
+	adapter.runtimeInterval = 5 * time.Millisecond
+	if _, err := guard.Acquire(context.Background()); err != nil {
+		controller.Close()
+		t.Fatalf("acquire dedicated lease: %v", err)
+	}
+	controller.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := guard.Watch(ctx, WatchInput{})
+	event := <-runtime.Events
+	result, err := runtime.Checker.Check(ctx, event)
+	if err == nil || result.OK || !strings.Contains(result.Reason, "gateway controller invalid") {
+		t.Fatalf("expected controller loss runtime failure, result=%#v err=%v", result, err)
+	}
+	if main.egressCalls != 0 {
+		t.Fatalf("controller loss should fail before dedicated egress check, got %d calls", main.egressCalls)
+	}
+	if _, err := guard.Revoke(context.Background()); err != nil {
+		t.Fatalf("revoke after controller loss: %v", err)
+	}
+}
+
+func TestDedicatedGatewayAdapterWatchStopsBeforeEgressWhenLeaseDrifts(t *testing.T) {
+	controller := newAuthenticatedController(t)
+	executor := &scopeDriftExecutor{fakeCommandExecutor: newFakeCommandExecutor()}
+	main := &fakeMainSandbox{egress: network.EgressResult{OK: true}}
+	guard := newSupportedDedicatedGatewayAdapter(dedicatedConfig(controller.URL), main, executor, controller.Client())
+	adapter := guard.(*dedicatedGatewayAdapter)
+	adapter.runtimeInterval = 5 * time.Millisecond
+	if _, err := guard.Acquire(context.Background()); err != nil {
+		t.Fatalf("acquire dedicated lease: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := guard.Watch(ctx, WatchInput{})
+	event := <-runtime.Events
+	result, err := runtime.Checker.Check(ctx, event)
+	if err == nil || result.OK || !strings.Contains(result.Reason, "unrelated sandbox conflict: late-sbx") {
+		t.Fatalf("expected exclusive lease runtime failure, result=%#v err=%v", result, err)
+	}
+	if main.egressCalls != 0 {
+		t.Fatalf("lease drift should fail before dedicated egress check, got %d calls", main.egressCalls)
+	}
+	if _, err := guard.Revoke(context.Background()); err != nil {
+		t.Fatalf("revoke after lease drift: %v", err)
+	}
+}
+
+func TestDedicatedGatewayAdapterWatchFailsOnDedicatedEgressDrift(t *testing.T) {
+	controller := newAuthenticatedController(t)
+	executor := newFakeCommandExecutor()
+	main := &fakeMainSandbox{
+		egress: network.EgressResult{
+			OK:            false,
+			ExpectedIP:    "203.0.113.10",
+			ObservedIP:    "198.51.100.77",
+			FailureKind:   "sandbox-egress-mismatch",
+			FailureReason: "sandbox egress observed IP 198.51.100.77 does not match expected IP 203.0.113.10",
+		},
+		egressErr: fmt.Errorf("sandbox-egress-mismatch: observed IP mismatch"),
+	}
+	guard := newSupportedDedicatedGatewayAdapter(dedicatedConfig(controller.URL), main, executor, controller.Client())
+	adapter := guard.(*dedicatedGatewayAdapter)
+	adapter.runtimeInterval = 5 * time.Millisecond
+	if _, err := guard.Acquire(context.Background()); err != nil {
+		t.Fatalf("acquire dedicated lease: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := guard.Watch(ctx, WatchInput{})
+	event := <-runtime.Events
+	result, err := runtime.Checker.Check(ctx, event)
+	if err == nil || result.OK || !strings.Contains(result.Reason, "dedicated egress drift") {
+		t.Fatalf("expected dedicated egress drift failure, result=%#v err=%v", result, err)
+	}
+	if main.egressCalls != 1 {
+		t.Fatalf("expected one bounded dedicated egress check, got %d", main.egressCalls)
+	}
+	if _, err := guard.Revoke(context.Background()); err != nil {
+		t.Fatalf("revoke after egress drift: %v", err)
 	}
 }
 
@@ -354,6 +586,21 @@ func dedicatedConfig(controllerURL string) config.Config {
 	}
 }
 
+func newAuthenticatedController(t *testing.T) *httptest.Server {
+	t.Helper()
+	const secret = "controller-secret-value"
+	t.Setenv("SAFE_CLAUDE_SBX_MIHOMO_SECRET", secret)
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		fmt.Fprintln(w, `{"version":"v1.19.28"}`)
+	}))
+	t.Cleanup(controller.Close)
+	return controller
+}
+
 func newSupportedDedicatedGatewayAdapter(
 	cfg config.Config,
 	main MainSandbox,
@@ -370,13 +617,44 @@ func newSupportedDedicatedGatewayAdapter(
 }
 
 type fakeMainSandbox struct {
-	endpoint string
-	err      error
+	endpoint    string
+	err         error
+	egress      network.EgressResult
+	egressErr   error
+	egressCalls int
+}
+
+type fakeRuntimeEventSource struct {
+	events <-chan watchdog.Event
+	errs   <-chan error
+}
+
+func (s fakeRuntimeEventSource) Start(context.Context) (<-chan watchdog.Event, <-chan error) {
+	return s.events, s.errs
+}
+
+type hostRuntimeRouteRunner struct{}
+
+func (hostRuntimeRouteRunner) Run(name string, args ...string) (string, error) {
+	command := strings.TrimSpace(name + " " + strings.Join(args, " "))
+	switch command {
+	case "route get 1.1.1.1":
+		return "interface: utun9\n", nil
+	case "ifconfig utun9":
+		return "utun9: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST>", nil
+	default:
+		return "", fmt.Errorf("unexpected route command %q", command)
+	}
 }
 
 func (f *fakeMainSandbox) CheckMainEndpointIsolation(ctx context.Context, sandboxName, endpoint string) error {
 	f.endpoint = endpoint
 	return f.err
+}
+
+func (f *fakeMainSandbox) CheckRuntimeEgress(context.Context, config.Config) (network.EgressResult, error) {
+	f.egressCalls++
+	return f.egress, f.egressErr
 }
 
 type fakeCommandExecutor struct {
@@ -392,6 +670,26 @@ type fakeCommandExecutor struct {
 type scopeDriftExecutor struct {
 	*fakeCommandExecutor
 	listCalls int
+}
+
+type blockingRuntimeStatusExecutor struct {
+	*fakeCommandExecutor
+	statusMu    sync.Mutex
+	statusCalls int
+}
+
+func (e *blockingRuntimeStatusExecutor) Run(ctx context.Context, env []string, name string, args ...string) (commandResult, error) {
+	if name == "sbx" && strings.Join(args, " ") == "daemon status" {
+		e.statusMu.Lock()
+		e.statusCalls++
+		calls := e.statusCalls
+		e.statusMu.Unlock()
+		if calls > 1 {
+			<-ctx.Done()
+			return commandResult{}, ctx.Err()
+		}
+	}
+	return e.fakeCommandExecutor.Run(ctx, env, name, args...)
 }
 
 func (e *scopeDriftExecutor) Run(ctx context.Context, env []string, name string, args ...string) (commandResult, error) {

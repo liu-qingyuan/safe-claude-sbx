@@ -391,21 +391,17 @@ func mainInspectionPolicy(cfg config.Config) policy.InspectionPolicy {
 	}
 }
 
-func (b DockerSandbox) CheckRuntimeEgress(ctx context.Context, cfg config.Config) (ProbeResult, error) {
+func (b DockerSandbox) CheckRuntimeEgress(ctx context.Context, cfg config.Config) (network.EgressResult, error) {
 	egressCtx, cancel := egressTimeoutContext(ctx, cfg.Network.EgressIP.TimeoutSeconds)
 	defer cancel()
 
 	egressText, err := b.execRuntimeMain(egressCtx, cfg, "curl", "-fsS", cfg.Network.EgressIP.SandboxCheckURL)
 	if err != nil {
 		egress, classifyErr := runtimeEgressIndeterminate(cfg.Network.EgressIP, "runtime sandbox egress command failed against configured network.egress_ip.sandbox_check_url: %v", err)
-		return ProbeResult{Egress: egress}, classifyErr
+		return egress, classifyErr
 	}
 	egress, err := compareSandboxEgress(cfg.Network.EgressIP, egressText)
-	result := ProbeResult{Egress: egress}
-	if err != nil {
-		return result, err
-	}
-	return result, nil
+	return egress, err
 }
 
 func (b DockerSandbox) CheckMainWorkspaceVisibility(ctx context.Context, cfg config.Config) (policy.WorkspaceVisibilityObservation, error) {

@@ -353,16 +353,6 @@ func TestHostInheritedSafeHerdrKeepsPlatformPreflightAndRuntimeWatchdog(t *testi
 				log = append(log, "platform TUN preflight")
 				return network.TUNPreflightResult{StartupTUNInterface: "utun9"}, nil
 			},
-			runtime: func(context.Context, config.Config, network.TUNPreflightResult) (<-chan watchdog.Event, <-chan error, watchdog.Checker) {
-				log = append(log, "platform runtime start")
-				events := make(chan watchdog.Event, 1)
-				events <- watchdog.Event{Source: "host-route"}
-				checker := watchdog.CheckFunc(func(context.Context, watchdog.Event) (watchdog.CheckResult, error) {
-					log = append(log, "platform runtime check")
-					return watchdog.CheckResult{OK: false, Reason: "host route drift"}, nil
-				})
-				return events, nil, checker
-			},
 			signalContext: func() (context.Context, context.CancelFunc) {
 				return context.WithCancel(context.Background())
 			},
@@ -384,8 +374,60 @@ func TestHostInheritedSafeHerdrKeepsPlatformPreflightAndRuntimeWatchdog(t *testi
 		"platform TUN preflight",
 		"guard acquire",
 		"guard validate",
-		"platform runtime start",
-		"platform runtime check",
+		"guard runtime start",
+		"guard runtime check",
+		"guard revoke",
+		"sbx exec claude-sbx herdr server stop",
+		"sbx stop claude-sbx",
+	)
+}
+
+func TestDedicatedSafeHerdrRuntimeFailureRevokesBeforeCleanupOnce(t *testing.T) {
+	configPath := writeLauncherDedicatedLaunchConfig(t)
+	log := make([]string, 0, 32)
+	writeBlockingSBX(t)
+	runner := &launchTestRunner{
+		log:        &log,
+		egressIP:   "203.0.113.10",
+		mainExists: true,
+		mainStatus: "running",
+	}
+	sandbox := backend.DockerSandbox{Runner: runner, Binary: "sbx"}
+	event := watchdog.Event{Source: egressguard.DedicatedHealthEventSource, Detail: "scheduled runtime validation"}
+	guard := &launchTestGuard{
+		log:         &log,
+		watchEvent:  &event,
+		watchResult: watchdog.CheckResult{OK: false, Reason: "dedicated egress drift"},
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := runLaunchWithPlatformAdapters(
+		configPath,
+		herdrTUITarget,
+		nil,
+		&stdout,
+		&stderr,
+		sandbox,
+		func(config.Config, egressguard.MainSandbox) (egressguard.EgressGuard, error) {
+			return guard, nil
+		},
+		launchPlatform{signalContext: func() (context.Context, context.CancelFunc) {
+			return context.WithCancel(context.Background())
+		}},
+	)
+
+	if code == 0 || !strings.Contains(stderr.String(), "dedicated-health runtime policy failed: dedicated egress drift") {
+		t.Fatalf("expected dedicated runtime failure, got code %d\nstdout:\n%s\nstderr:\n%s\nlog:\n%s", code, stdout.String(), stderr.String(), strings.Join(log, "\n"))
+	}
+	if countLogEntry(log, "guard revoke") != 1 {
+		t.Fatalf("expected one egress revoke, got:\n%s", strings.Join(log, "\n"))
+	}
+	if countLogEntry(log, "sbx stop claude-sbx") != 1 {
+		t.Fatalf("expected one main cleanup, got:\n%s", strings.Join(log, "\n"))
+	}
+	assertLogOrder(t, log,
+		"guard runtime start",
+		"guard runtime check",
 		"guard revoke",
 		"sbx exec claude-sbx herdr server stop",
 		"sbx stop claude-sbx",
@@ -411,6 +453,19 @@ func (g *hostLaunchGuard) ValidateMain(context.Context) (egressguard.Result, err
 	return egressguard.Result{}, nil
 }
 
+func (g *hostLaunchGuard) Watch(context.Context, egressguard.WatchInput) egressguard.RuntimeWatch {
+	*g.log = append(*g.log, "guard runtime start")
+	events := make(chan watchdog.Event, 1)
+	events <- watchdog.Event{Source: "host-route"}
+	return egressguard.RuntimeWatch{
+		Events: events,
+		Checker: watchdog.CheckFunc(func(context.Context, watchdog.Event) (watchdog.CheckResult, error) {
+			*g.log = append(*g.log, "guard runtime check")
+			return watchdog.CheckResult{OK: false, Reason: "host route drift"}, nil
+		}),
+	}
+}
+
 func (g *hostLaunchGuard) Revoke(context.Context) (egressguard.Result, error) {
 	*g.log = append(*g.log, "guard revoke")
 	return egressguard.Result{}, nil
@@ -424,6 +479,10 @@ func (g *launchOrderingGuard) Acquire(context.Context) (egressguard.Result, erro
 func (g *launchOrderingGuard) ValidateMain(context.Context) (egressguard.Result, error) {
 	*g.log = append(*g.log, "guard validate")
 	return egressguard.Result{}, nil
+}
+
+func (*launchOrderingGuard) Watch(context.Context, egressguard.WatchInput) egressguard.RuntimeWatch {
+	return egressguard.RuntimeWatch{}
 }
 
 func (g *launchOrderingGuard) Revoke(context.Context) (egressguard.Result, error) {
@@ -446,6 +505,9 @@ type launchTestGuard struct {
 	log         *[]string
 	acquireErr  error
 	validateErr error
+	watchEvent  *watchdog.Event
+	watchResult watchdog.CheckResult
+	watchErr    error
 }
 
 func (g *launchTestGuard) Acquire(context.Context) (egressguard.Result, error) {
@@ -465,6 +527,22 @@ func (g *launchTestGuard) ValidateMain(context.Context) (egressguard.Result, err
 		return egressguard.Result{}, g.validateErr
 	}
 	return egressguard.Result{Messages: []string{"controller isolation ok: endpoint unreachable from main sandbox"}}, nil
+}
+
+func (g *launchTestGuard) Watch(context.Context, egressguard.WatchInput) egressguard.RuntimeWatch {
+	if g.watchEvent == nil {
+		return egressguard.RuntimeWatch{}
+	}
+	*g.log = append(*g.log, "guard runtime start")
+	events := make(chan watchdog.Event, 1)
+	events <- *g.watchEvent
+	return egressguard.RuntimeWatch{
+		Events: events,
+		Checker: watchdog.CheckFunc(func(context.Context, watchdog.Event) (watchdog.CheckResult, error) {
+			*g.log = append(*g.log, "guard runtime check")
+			return g.watchResult, g.watchErr
+		}),
+	}
 }
 
 func (g *launchTestGuard) Revoke(context.Context) (egressguard.Result, error) {
@@ -529,6 +607,16 @@ func containsLogEntry(log []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+func countLogEntry(log []string, want string) int {
+	count := 0
+	for _, entry := range log {
+		if entry == want {
+			count++
+		}
+	}
+	return count
 }
 
 func (r *launchTestRunner) exec(args []string) (backend.CommandResult, error) {

@@ -89,6 +89,27 @@ func TestSupervisorStopsAndCleansUpWhenRuntimeCheckFails(t *testing.T) {
 	}
 }
 
+func TestSupervisorReportsRuntimeAndCleanupFailureOnce(t *testing.T) {
+	events := make(chan Event, 1)
+	cleanup := &recordingCleanup{err: errors.New("revoke and main cleanup failed")}
+	supervisor := Supervisor{
+		Events: events,
+		Check: CheckFunc(func(context.Context, Event) (CheckResult, error) {
+			return CheckResult{OK: false, Reason: "dedicated egress drift"}, nil
+		}),
+		Cleanup: cleanup,
+	}
+
+	events <- Event{Source: "dedicated-health"}
+	err := supervisor.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "dedicated egress drift") || !strings.Contains(err.Error(), "cleanup failed: revoke and main cleanup failed") {
+		t.Fatalf("expected runtime and cleanup failure, got %v", err)
+	}
+	if cleanup.calls != 1 {
+		t.Fatalf("expected one cleanup attempt, got %d", cleanup.calls)
+	}
+}
+
 func TestSupervisorDebouncesRouteEvents(t *testing.T) {
 	events := make(chan Event, 2)
 	backendExit := make(chan error)

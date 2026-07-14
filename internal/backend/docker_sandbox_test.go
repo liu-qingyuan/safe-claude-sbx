@@ -224,11 +224,8 @@ func TestDockerSandboxCheckRuntimeEgressUsesMainSandboxAndConfiguredURL(t *testi
 	if err != nil {
 		t.Fatalf("runtime egress check failed: %v", err)
 	}
-	if result.CleanupDone {
-		t.Fatal("runtime egress check should not clean up a probe sandbox")
-	}
-	if !result.Egress.OK || result.Egress.ObservedIP != "203.0.113.10" {
-		t.Fatalf("expected matching sandbox egress, got %#v", result.Egress)
+	if !result.OK || result.ObservedIP != "203.0.113.10" {
+		t.Fatalf("expected matching sandbox egress, got %#v", result)
 	}
 	got := strings.Join(calls, "\n")
 	if got != "sbx exec main-sbx curl -fsS https://example.test/ip" {
@@ -279,11 +276,11 @@ func TestDockerSandboxCheckRuntimeEgressClassifiesTimeoutAsIndeterminate(t *test
 	if err == nil {
 		t.Fatal("expected runtime egress timeout")
 	}
-	if result.Egress.OK {
-		t.Fatalf("runtime egress unexpectedly passed: %#v", result.Egress)
+	if result.OK {
+		t.Fatalf("runtime egress unexpectedly passed: %#v", result)
 	}
-	if result.Egress.FailureKind != "sandbox-egress-indeterminate" {
-		t.Fatalf("expected indeterminate failure kind, got %#v", result.Egress)
+	if result.FailureKind != "sandbox-egress-indeterminate" {
+		t.Fatalf("expected indeterminate failure kind, got %#v", result)
 	}
 	if strings.Contains(err.Error(), "mismatch") {
 		t.Fatalf("timeout should not be reported as IP mismatch: %v", err)

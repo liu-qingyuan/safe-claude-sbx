@@ -171,7 +171,6 @@ func runLaunchWithAdapters(
 
 type launchPlatform struct {
 	checkTUN      func(config.ClashVerge) (network.TUNPreflightResult, error)
-	runtime       func(context.Context, config.Config, network.TUNPreflightResult) (<-chan watchdog.Event, <-chan error, watchdog.Checker)
 	signalContext func() (context.Context, context.CancelFunc)
 }
 
@@ -179,21 +178,6 @@ func defaultLaunchPlatform() launchPlatform {
 	return launchPlatform{
 		checkTUN: func(policy config.ClashVerge) (network.TUNPreflightResult, error) {
 			return network.NewInspector().CheckClashVergeTUN(policy)
-		},
-		runtime: func(ctx context.Context, cfg config.Config, tun network.TUNPreflightResult) (<-chan watchdog.Event, <-chan error, watchdog.Checker) {
-			routeEvents, routeErrors := watchdog.RouteMonitor{}.Start(ctx)
-			clashEvents, clashErrors := watchdog.ClashAppHomeMonitor{Policy: cfg.Network.ClashVerge}.Start(ctx)
-			events, eventErrors := watchdog.MergeEventStreams(
-				ctx,
-				[]<-chan watchdog.Event{routeEvents, clashEvents},
-				[]<-chan error{routeErrors, clashErrors},
-			)
-			checker := watchdog.RuntimeChecker{
-				Config:              cfg,
-				StartupTUNInterface: tun.StartupTUNInterface,
-				RouteRunner:         network.ExecRunner{},
-			}
-			return events, eventErrors, checker
 		},
 		signalContext: func() (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -344,16 +328,7 @@ func runLaunchWithPlatformAdapters(
 	signalCtx, stopSignals := newSignalContext()
 	defer stopSignals()
 
-	var watchdogEvents <-chan watchdog.Event
-	var watchdogErrors <-chan error
-	var runtimeChecker watchdog.Checker
-	if cfg.Network.Egress.Mode == "host-inherited" {
-		newRuntime := platform.runtime
-		if newRuntime == nil {
-			newRuntime = defaultLaunchPlatform().runtime
-		}
-		watchdogEvents, watchdogErrors, runtimeChecker = newRuntime(signalCtx, cfg, tun)
-	}
+	runtime := guard.Watch(signalCtx, egressguard.WatchInput{StartupTUNInterface: tun.StartupTUNInterface})
 	cleanup := watchdog.CleanupFunc(func(ctx context.Context) error {
 		revokeErr := revokeEgressGuard(guard, cfg, stdout)
 		stopMainCommand()
@@ -364,11 +339,11 @@ func runLaunchWithPlatformAdapters(
 		return errors.Join(revokeErr, cleanupErr, sandbox.CleanupProbe(ctx, cfg))
 	})
 	supervisor := watchdog.Supervisor{
-		Events:        watchdogEvents,
-		EventErrors:   watchdogErrors,
+		Events:        runtime.Events,
+		EventErrors:   runtime.EventErrors,
 		BackendExit:   backendExit,
 		EventDebounce: watchdog.DefaultEventDebounce,
-		Check:         runtimeChecker,
+		Check:         runtime.Checker,
 		Cleanup:       cleanup,
 	}
 	if err := supervisor.Run(signalCtx); err != nil {
