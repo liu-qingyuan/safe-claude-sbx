@@ -138,23 +138,84 @@ func printEgressGuardMessages(output io.Writer, result egressguard.Result) {
 }
 
 func finalizeDoctorGuard(guard egressguard.EgressGuard, sandbox backend.DockerSandbox, cfg config.Config, cleanupMain bool, output io.Writer) error {
-	cleanupCtx, cancel := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
-	defer cancel()
-	revoked, revokeErr := guard.Revoke(cleanupCtx)
-	printEgressGuardMessages(output, revoked)
+	revokeErr := revokeEgressGuard(guard, cfg, output)
 	if !cleanupMain {
 		return revokeErr
 	}
 	return errors.Join(revokeErr, sandbox.CleanupMain(context.Background(), cfg))
 }
 
+func revokeEgressGuard(guard egressguard.EgressGuard, cfg config.Config, output io.Writer) error {
+	cleanupCtx, cancel := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+	defer cancel()
+	revoked, revokeErr := guard.Revoke(cleanupCtx)
+	printEgressGuardMessages(output, revoked)
+	return revokeErr
+}
+
 func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, stderr io.Writer) int {
+	sandbox := backend.NewDockerSandbox()
+	return runLaunchWithAdapters(configPath, target, stdin, stdout, stderr, sandbox, egressguard.New)
+}
+
+func runLaunchWithAdapters(
+	configPath string,
+	target launchTarget,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
+	sandbox backend.DockerSandbox,
+	newGuard doctorGuardFactory,
+) int {
+	return runLaunchWithPlatformAdapters(configPath, target, stdin, stdout, stderr, sandbox, newGuard, defaultLaunchPlatform())
+}
+
+type launchPlatform struct {
+	checkTUN      func(config.ClashVerge) (network.TUNPreflightResult, error)
+	runtime       func(context.Context, config.Config, network.TUNPreflightResult) (<-chan watchdog.Event, <-chan error, watchdog.Checker)
+	signalContext func() (context.Context, context.CancelFunc)
+}
+
+func defaultLaunchPlatform() launchPlatform {
+	return launchPlatform{
+		checkTUN: func(policy config.ClashVerge) (network.TUNPreflightResult, error) {
+			return network.NewInspector().CheckClashVergeTUN(policy)
+		},
+		runtime: func(ctx context.Context, cfg config.Config, tun network.TUNPreflightResult) (<-chan watchdog.Event, <-chan error, watchdog.Checker) {
+			routeEvents, routeErrors := watchdog.RouteMonitor{}.Start(ctx)
+			clashEvents, clashErrors := watchdog.ClashAppHomeMonitor{Policy: cfg.Network.ClashVerge}.Start(ctx)
+			events, eventErrors := watchdog.MergeEventStreams(
+				ctx,
+				[]<-chan watchdog.Event{routeEvents, clashEvents},
+				[]<-chan error{routeErrors, clashErrors},
+			)
+			checker := watchdog.RuntimeChecker{
+				Config:              cfg,
+				StartupTUNInterface: tun.StartupTUNInterface,
+				RouteRunner:         network.ExecRunner{},
+			}
+			return events, eventErrors, checker
+		},
+		signalContext: func() (context.Context, context.CancelFunc) {
+			return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		},
+	}
+}
+
+func runLaunchWithPlatformAdapters(
+	configPath string,
+	target launchTarget,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
+	sandbox backend.DockerSandbox,
+	newGuard doctorGuardFactory,
+	platform launchPlatform,
+) int {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
 		return 1
 	}
-	if cfg.Network.Egress.Mode == "dedicated-gateway" {
+	if cfg.Network.Egress.Mode == "dedicated-gateway" && target != herdrTUITarget {
 		fmt.Fprintln(stderr, "configuration invalid: dedicated-gateway launch is not available until dedicated runtime supervision is configured")
 		return 1
 	}
@@ -164,30 +225,57 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 	}
 	fmt.Fprintln(stdout, "configuration ok")
 
-	tun, err := network.NewInspector().CheckClashVergeTUN(cfg.Network.ClashVerge)
-	if err != nil {
-		fmt.Fprintf(stderr, "TUN preflight invalid: %v\n", err)
-		return 1
+	var tun network.TUNPreflightResult
+	if cfg.Network.Egress.Mode == "host-inherited" {
+		checkTUN := platform.checkTUN
+		if checkTUN == nil {
+			checkTUN = defaultLaunchPlatform().checkTUN
+		}
+		tun, err = checkTUN(cfg.Network.ClashVerge)
+		if err != nil {
+			fmt.Fprintf(stderr, "TUN preflight invalid: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "TUN preflight ok: startup interface %s\n", tun.StartupTUNInterface)
 	}
-	fmt.Fprintf(stdout, "TUN preflight ok: startup interface %s\n", tun.StartupTUNInterface)
 
-	result, err := network.CheckHostEgress(cfg.Network.EgressIP)
+	guard, err := newGuard(cfg, sandbox)
 	if err != nil {
-		fmt.Fprintf(stderr, "host egress invalid: %v\n", err)
+		fmt.Fprintf(stderr, "egress guard invalid: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "host egress ok: observed IP %s\n", result.ObservedIP)
+	acquireCtx, cancelAcquire := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
+	acquisition, err := guard.Acquire(acquireCtx)
+	cancelAcquire()
+	if err != nil {
+		if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, false, stdout); cleanupErr != nil {
+			fmt.Fprintf(stderr, "%v; cleanup failed: %v\n", err, cleanupErr)
+			return 1
+		}
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	printEgressGuardMessages(stdout, acquisition)
 
 	if cfg.Sandbox.Backend != "docker-sandbox" {
+		cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, false, stdout)
+		if cleanupErr != nil {
+			fmt.Fprintf(stderr, "sandbox backend invalid: unsupported backend %q; cleanup failed: %v\n", cfg.Sandbox.Backend, cleanupErr)
+			return 1
+		}
 		fmt.Fprintf(stderr, "sandbox backend invalid: unsupported backend %q\n", cfg.Sandbox.Backend)
 		return 1
 	}
 	ctx, cancel := backend.TimeoutContext(cfg.Network.EgressIP.TimeoutSeconds)
 	defer cancel()
 
-	sandbox := backend.NewDockerSandbox()
 	availability, err := sandbox.CheckAvailability(ctx)
 	if err != nil {
+		cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, false, stdout)
+		if cleanupErr != nil {
+			fmt.Fprintf(stderr, "sandbox backend invalid: %s; cleanup failed: %v\n", backendAvailabilityError(availability, err), cleanupErr)
+			return 1
+		}
 		fmt.Fprintf(stderr, "sandbox backend invalid: %s\n", backendAvailabilityError(availability, err))
 		return 1
 	}
@@ -202,20 +290,33 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 		preflight, err := sandbox.PreflightMainSandbox(ctx, cfg)
 		mainCreatedByCommand = preflight.CreatedByCommand
 		if err != nil {
-			if backend.ShouldCleanupMainAfterStartError(err) {
-				if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
-					fmt.Fprintf(stderr, "main sandbox preflight invalid: %v; cleanup main sandbox failed: %v\n", err, cleanupErr)
-					return 1
-				}
+			cleanupMain := backend.ShouldCleanupMainAfterStartError(err)
+			if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, cleanupMain, stdout); cleanupErr != nil {
+				fmt.Fprintf(stderr, "main sandbox preflight invalid: %v; cleanup failed: %v\n", err, cleanupErr)
+				return 1
 			}
 			fmt.Fprintf(stderr, "main sandbox preflight invalid: %v\n", err)
 			return 1
 		}
 		fmt.Fprintf(stdout, "sandbox egress ok: observed IP %s\n", preflight.Egress.ObservedIP)
+		validation, err := guard.ValidateMain(ctx)
+		if err != nil {
+			if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, preflight.CreatedByCommand, stdout); cleanupErr != nil {
+				fmt.Fprintf(stderr, "%v; cleanup failed: %v\n", err, cleanupErr)
+				return 1
+			}
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		printEgressGuardMessages(stdout, validation)
 		fmt.Fprintln(stdout, "sandbox inspection ok")
 	} else {
 		probe, err := sandbox.Probe(ctx, cfg)
 		if err != nil {
+			if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, false, stdout); cleanupErr != nil {
+				fmt.Fprintf(stderr, "sandbox probe invalid: %v; cleanup failed: %v\n", err, cleanupErr)
+				return 1
+			}
 			fmt.Fprintf(stderr, "sandbox probe invalid: %v\n", err)
 			return 1
 		}
@@ -225,46 +326,50 @@ func runLaunch(configPath string, target launchTarget, stdin io.Reader, stdout, 
 
 	start, backendExit, err := startAttachedTarget(sandbox, target, mainCtx, cfg, plan, stdin, stdout, stderr)
 	if err != nil {
-		if backend.ShouldCleanupMainAfterStartError(err) || mainCreatedByCommand {
-			stopMainCommand()
-			if cleanupErr := sandbox.CleanupMain(context.Background(), cfg); cleanupErr != nil {
-				fmt.Fprintf(stderr, "%s invalid: %v; cleanup main sandbox failed: %v\n", targetStartLabel(target), err, cleanupErr)
-				return 1
-			}
+		stopMainCommand()
+		cleanupMain := backend.ShouldCleanupMainAfterStartError(err) || mainCreatedByCommand
+		if cleanupErr := finalizeDoctorGuard(guard, sandbox, cfg, cleanupMain, stdout); cleanupErr != nil {
+			fmt.Fprintf(stderr, "%s invalid: %v; cleanup failed: %v\n", targetStartLabel(target), err, cleanupErr)
+			return 1
 		}
 		fmt.Fprintf(stderr, "%s invalid: %v\n", targetStartLabel(target), err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "%s started: %s\n", targetStartedLabel(target), start.SandboxName)
 
-	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	newSignalContext := platform.signalContext
+	if newSignalContext == nil {
+		newSignalContext = defaultLaunchPlatform().signalContext
+	}
+	signalCtx, stopSignals := newSignalContext()
 	defer stopSignals()
 
-	routeEvents, routeErrors := watchdog.RouteMonitor{}.Start(signalCtx)
-	clashEvents, clashErrors := watchdog.ClashAppHomeMonitor{Policy: cfg.Network.ClashVerge}.Start(signalCtx)
-	watchdogEvents, watchdogErrors := watchdog.MergeEventStreams(
-		signalCtx,
-		[]<-chan watchdog.Event{routeEvents, clashEvents},
-		[]<-chan error{routeErrors, clashErrors},
-	)
-	cleanup := watchdog.CleanupFunc(func(ctx context.Context) error {
-		stopMainCommand()
-		if target == herdrTUITarget {
-			return sandbox.CleanupMain(ctx, cfg)
+	var watchdogEvents <-chan watchdog.Event
+	var watchdogErrors <-chan error
+	var runtimeChecker watchdog.Checker
+	if cfg.Network.Egress.Mode == "host-inherited" {
+		newRuntime := platform.runtime
+		if newRuntime == nil {
+			newRuntime = defaultLaunchPlatform().runtime
 		}
-		return errors.Join(sandbox.CleanupMain(ctx, cfg), sandbox.CleanupProbe(ctx, cfg))
+		watchdogEvents, watchdogErrors, runtimeChecker = newRuntime(signalCtx, cfg, tun)
+	}
+	cleanup := watchdog.CleanupFunc(func(ctx context.Context) error {
+		revokeErr := revokeEgressGuard(guard, cfg, stdout)
+		stopMainCommand()
+		cleanupErr := sandbox.CleanupMain(ctx, cfg)
+		if target == herdrTUITarget {
+			return errors.Join(revokeErr, cleanupErr)
+		}
+		return errors.Join(revokeErr, cleanupErr, sandbox.CleanupProbe(ctx, cfg))
 	})
 	supervisor := watchdog.Supervisor{
 		Events:        watchdogEvents,
 		EventErrors:   watchdogErrors,
 		BackendExit:   backendExit,
 		EventDebounce: watchdog.DefaultEventDebounce,
-		Check: watchdog.RuntimeChecker{
-			Config:              cfg,
-			StartupTUNInterface: tun.StartupTUNInterface,
-			RouteRunner:         network.ExecRunner{},
-		},
-		Cleanup: cleanup,
+		Check:         runtimeChecker,
+		Cleanup:       cleanup,
 	}
 	if err := supervisor.Run(signalCtx); err != nil {
 		if errors.Is(err, context.Canceled) {
