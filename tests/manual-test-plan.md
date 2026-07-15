@@ -785,13 +785,15 @@ Expected result:
 This scenario is a strict gate for `dedicated-gateway`; it is not a routine
 launcher smoke test. Read `docs/dedicated-gateway-operations.md` before running
 it. The first section is the stable startup acceptance seam.
-The disposable protocol matrix is only for a future Docker Sandbox release that
-the Adapter explicitly recognizes as protocol-complete. Record hostnames,
-status classes, and expected public IPs only. Do not record proxy configuration,
-subscriptions, node names, credentials, controller secrets, or response bodies
-other than the public IP result.
+The disposable protocol matrix is for either an explicitly supported Docker
+Sandbox release or an explicitly scoped candidate-validation Ticket. A
+candidate run does not enable the version: keep the production support matrix
+unchanged until the matrix passes and a separate enablement Ticket completes.
+Record hostnames, status classes, and expected public IPs only. Do not record
+proxy configuration, subscriptions, node names, credentials, controller
+secrets, or response bodies other than the public IP result.
 
-### Current startup gate for `sbx v0.34.0`
+### Current startup gate for `sbx v0.34.0` and `sbx v0.35.0`
 
 1. Record `sbx version`. If a normal sandboxd is already active, record
    `sbx ls`; do not start it solely for this check.
@@ -812,18 +814,22 @@ other than the public IP result.
 
 Expected result:
 
-- Each entrypoint exits non-zero with `dedicated protocol isolation unsupported: sbx
-  v0.34.0 provides HTTP upstream only; generic TCP and DNS are not fail closed`.
+- Each entrypoint exits non-zero with the version-specific diagnostic:
+  `sbx v0.34.0 provides HTTP upstream only; generic TCP and DNS are not fail
+  closed`, or `sbx v0.35.0 has no validated generic TCP and DNS contract`.
 - The failure occurs before any controller request, `sbx ls`, `sbx daemon stop`,
   `sbx daemon start`, `sbx create`, `sbx exec`, attach, or watchdog entry.
 - No controller secret, command environment, or raw backend output is printed.
 - Preexisting sandboxes keep the same names and states.
 
-### Future backend protocol revalidation
+### Candidate or future backend protocol revalidation
 
-Do not run the remaining steps unless the production Adapter explicitly
-recognizes the tested Docker Sandbox release. Until then, startup rejection is
-the passing fail-closed behavior.
+Do not run the remaining steps during routine acceptance unless the production
+Adapter explicitly recognizes the tested Docker Sandbox release. Before
+enablement, run them only under a candidate-validation Ticket that names the
+exact version, owns one disposable sandbox, preserves preexisting state, and
+requires cleanup even when the matrix fails. Until enablement, startup
+rejection remains the passing production behavior.
 
 Prerequisites:
 
@@ -842,9 +848,10 @@ Prerequisites:
 Steps:
 
 1. Start sandboxd with the command-scoped
-   `DOCKER_SANDBOXES_PROXY=<loopback-http-upstream>` environment described in
-   `docs/docker-sandbox-backend.md`. Do not add generic proxy environment
-   variables.
+   `DOCKER_SANDBOXES_PROXY=<credential-free-loopback-upstream>` environment
+   described in `docs/docker-sandbox-backend.md`. Use the candidate's exact
+   documented scheme, such as `socks5h://`, and do not add generic proxy
+   environment variables.
 2. Create one uniquely named disposable `shell-docker` sandbox and verify its
    private Docker Engine with `docker version`.
 3. From the agent, request the approved IP endpoint over HTTP and HTTPS. From an
@@ -892,7 +899,22 @@ Observed `sbx v0.34.0` result on 2026-07-13:
   sandbox mutation. That rejection is the current passing acceptance result;
   it does not turn the failed protocol matrix into positive isolation evidence.
 
-### Operator acceptance record and current contract (2026-07-14)
+Observed `sbx v0.35.0` result on 2026-07-15:
+
+- The official release adds SOCKS5/SOCKS5h upstream transport; the test used a
+  credential-free loopback SOCKS5h endpoint and kept generic proxy variables
+  absent.
+- Healthy agent/container HTTP/HTTPS and an uncached private Engine image pull
+  traversed Mihomo. With the gateway stopped and the same sandboxd lease,
+  those paths failed without a public IP or image pull fallback.
+- Agent/container generic TCP was allowed by current policy, succeeded while
+  healthy without a Mihomo record, and still succeeded after gateway loss.
+- Fresh agent/container Docker-internal DNS lookups still resolved after
+  gateway loss. Direct UDP DNS remained blocked by `<udp proxy policy>`.
+- The matrix therefore failed. Keep `v0.35.0` outside the production support
+  matrix and retain its unknown-version rejection.
+
+### Operator acceptance record and current contract (through 2026-07-15)
 
 Issue #50 repeated the production entrypoint checks with installed
 `sbx v0.34.0` and a valid dedicated configuration:

@@ -80,22 +80,24 @@ Set the referenced controller secret in the doctor process environment. The
 secret itself does not belong in YAML. Both URLs must be credential-free
 loopback HTTP endpoints with explicit ports.
 
-`sbx v0.34.0` is not protocol-complete. Its `DOCKER_SANDBOXES_PROXY` contract is
-HTTP-only, while its scoped network policy matches hostnames, domains, IPs, and
-optional ports rather than protocols. It cannot preserve managed HTTP(S) while
-separately denying generic TCP and internal DNS. Dedicated doctor therefore
-fails with `dedicated protocol isolation unsupported` after reading only
-`sbx version` and before controller access, daemon stop/start, sandbox
-creation, or main attach. Unknown Docker Sandbox versions also fail closed
-until their protocol contract is explicitly validated and added to the Adapter.
+`sbx v0.34.0` and `sbx v0.35.0` are not protocol-complete. The former provides
+an HTTP-only `DOCKER_SANDBOXES_PROXY` contract. The latter adds the documented
+SOCKS5/SOCKS5h transport, but disposable validation still found generic TCP and
+Docker-internal DNS available after gateway loss. Neither release can preserve
+managed HTTP(S) while making those other protocols fail closed. Dedicated
+doctor therefore fails with `dedicated protocol isolation unsupported` after
+reading only `sbx version` and before controller access, daemon stop/start,
+sandbox creation, or main attach. Unknown Docker Sandbox versions also fail
+closed until their protocol contract is explicitly validated and added to the
+Adapter.
 
 The existing controller, exclusive lease, main preflight, and ordered cleanup
 implementation remains behind this capability gate for a future supported
 backend. It never sets generic `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` on
 sandboxd. Doctor, direct `safe-claude-sbx --config`, and `safe-herdr` all enter
-the same capability gate; `sbx v0.34.0`, unknown versions, and capability
-inspection failures are rejected before controller, daemon, main, or attach
-operations.
+the same capability gate; `sbx v0.34.0`, `sbx v0.35.0`, other unknown
+versions, and capability inspection failures are rejected before controller,
+daemon, main, or attach operations.
 See `docs/dedicated-gateway-operations.md` for the ownership boundary, startup
 evidence, failure handling, host-inherited recovery, and disposable acceptance
 procedure.
@@ -292,10 +294,10 @@ sandbox is attached, the launcher validates Clash Verge TUN declarations, the
 live macOS route and startup TUN interface, host egress, Docker Sandbox
 availability, sandbox egress, workspace visibility, and sandbox environment
 policy. Dedicated doctor is capability-gated and rejects the current
-`sbx v0.34.0` backend before mutation. The future-supported doctor, direct
-Claude, and Herdr paths share main preflight, controller isolation, the
-dedicated watchdog, and `Fence`/`Recover` teardown, but no released backend is
-enabled in the production support matrix.
+`sbx v0.34.0` and `sbx v0.35.0` backends before mutation. The future-supported
+doctor, direct Claude, and Herdr paths share main preflight, controller
+isolation, the dedicated watchdog, and `Fence`/`Recover` teardown, but no
+released backend is enabled in the production support matrix.
 
 Runtime supervision is intentionally lighter. The watchdog merges macOS route
 monitor events and Clash Verge app-home file metadata events, debounces the

@@ -553,6 +553,62 @@ stopped the disposable gateway, restored normal sandboxd without
 `DOCKER_SANDBOXES_PROXY`, and left the preexisting `claude-sbx` present and
 stopped.
 
+### `sbx v0.35.0` SOCKS5h Candidate Validation
+
+Issue #59 validated the installed candidate on 2026-07-15:
+
+- `sbx v0.35.0` (`01e01520456e4126a9653471e7072e4d9b280321`);
+- Mihomo Meta `v1.19.25` for Darwin arm64; and
+- one credential-free `socks5h://127.0.0.1:17891` disposable endpoint chained
+  to the operator's credential-free host loopback HTTP proxy.
+
+The official [v0.35.0 release notes](https://github.com/docker/sbx-releases/releases/tag/v0.35.0)
+add `socks5://` and `socks5h://` upstream transport. Docker's
+[architecture contract](https://docs.docker.com/ai/sandboxes/architecture/)
+states that `socks5://` resolves DNS locally, while `socks5h://` delegates
+hostname resolution to the proxy. It also states that
+`DOCKER_SANDBOXES_PROXY` applies only to sandbox traffic and does not affect
+sandboxd image pulls or the daemon's own requests. Private Engine image pulls
+inside a sandbox are a separate workload path and were tested below. The test
+used only command-scoped `DOCKER_SANDBOXES_PROXY`; generic proxy variables were
+absent.
+
+Healthy-gateway evidence:
+
+- Agent and private Engine container HTTP/HTTPS all observed
+  `144.168.60.76`. Mihomo recorded `api.ipify.org` by hostname, confirming
+  SOCKS5h proxy-side resolution for those connections.
+- An uncached private Engine pull of `alpine:3.20` succeeded. Mihomo recorded
+  `registry-1.docker.io`, `auth.docker.io`, and the layer CDN.
+- Agent and container generic TCP to `ssh.github.com:443` succeeded, but
+  neither Mihomo nor `sbx policy log` recorded those connections. A read-only
+  `sbx policy check network` reported the target allowed by `default-allow-all`.
+- Unique agent and container lookups through Docker's internal resolver
+  succeeded. Direct UDP DNS to `1.1.1.1:53` was blocked and logged as
+  `<udp proxy policy>` with `Direct UDP connections not allowed`.
+
+Gateway-loss evidence held the same sandboxd PID and running disposable
+sandbox while the Mihomo listener was stopped:
+
+- Agent/container HTTP and HTTPS failed without returning a public IP.
+- The private Engine confirmed `busybox:1.36.1` was uncached, then its pull
+  failed. Policy logs marked the registry and HTTP(S) attempts `<dial failed>`.
+- Agent and container generic TCP to `ssh.github.com:443` still succeeded.
+- Fresh, uncached agent and container names still resolved through Docker's
+  internal resolver. Direct UDP DNS remained blocked.
+
+This is a **FAIL** for the protocol-complete dedicated contract. SOCKS5h adds
+the documented proxy transport and remote hostname resolution for proxied
+connections, but generic TCP and Docker-internal DNS still have paths that do
+not depend on the disposable gateway. `v0.35.0` therefore remains outside the
+production support matrix and continues through unknown-version rejection.
+
+Cleanup stopped and removed only `ralph-59-socks5h-20260715`, stopped the
+disposable gateway, removed its temporary files, and restored normal sandboxd
+without dedicated or generic proxy variables. The cached template list was
+unchanged, and the preexisting `claude-sbx` remained present and stopped with
+its original workspace.
+
 ### Dedicated Protocol Capability Gate
 
 Issue #51 rechecked the official `sbx v0.34.0` command surface on 2026-07-13:
@@ -571,13 +627,14 @@ Issue #51 rechecked the official `sbx v0.34.0` command surface on 2026-07-13:
 The dedicated `EgressGuard` now reads `sbx version` through its existing
 command seam before controller health or lease acquisition. The production
 support matrix is intentionally empty because no tested release has a validated
-combined contract for managed HTTP(S), generic TCP, and DNS. `v0.34.0`, command
-failure, malformed version output, and unknown versions all fail closed without
-printing controller secrets or backend output. The diagnostic for the tested
-release is:
+combined contract for managed HTTP(S), generic TCP, and DNS. `v0.34.0`,
+`v0.35.0`, command failure, malformed version output, and unknown versions all
+fail closed without printing controller secrets or backend output. The
+diagnostics for the tested releases are:
 
 ```text
 dedicated protocol isolation unsupported: sbx v0.34.0 provides HTTP upstream only; generic TCP and DNS are not fail closed
+dedicated protocol isolation unsupported: sbx v0.35.0 has no validated generic TCP and DNS contract
 ```
 
 Doctor performs this capability check before general backend availability so

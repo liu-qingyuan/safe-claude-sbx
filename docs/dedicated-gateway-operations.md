@@ -7,17 +7,23 @@ Mihomo/MetaCubeXD responsibilities, failure recovery, and acceptance evidence.
 ## Current Support Boundary
 
 Dedicated mode is capability-gated. No released Docker Sandbox version is in
-the production support matrix yet. The validated local release, `sbx v0.34.0`,
-provides an HTTP upstream through `DOCKER_SANDBOXES_PROXY`, but does not make
-generic TCP and internal DNS fail closed. The production Adapter therefore
-rejects it before controller access, daemon mutation, sandbox creation, main
-inspection, attach, or watchdog entry.
+the production support matrix yet. Local validation found that `sbx v0.34.0`
+provides an HTTP upstream and `sbx v0.35.0` adds the documented SOCKS5/SOCKS5h
+transport. Neither release makes generic TCP and internal DNS fail closed.
+The production Adapter therefore rejects both before controller access, daemon
+mutation, sandbox creation, main inspection, attach, or watchdog entry.
 
 For `sbx v0.34.0`, a non-zero result containing the following text is the
 passing production acceptance result:
 
 ```text
 dedicated protocol isolation unsupported: sbx v0.34.0 provides HTTP upstream only; generic TCP and DNS are not fail closed
+```
+
+For the installed `sbx v0.35.0`, the passing production acceptance result is:
+
+```text
+dedicated protocol isolation unsupported: sbx v0.35.0 has no validated generic TCP and DNS contract
 ```
 
 Do not bypass this gate. The supported-path launcher and EgressGuard tests
@@ -157,8 +163,10 @@ Both commands use the same dedicated capability, main preflight, controller
 isolation, watchdog, and teardown contract. The supervision choice does not
 change the egress guarantee.
 
-On the current `sbx v0.34.0`, stop after the expected capability rejection.
-Do not start a dedicated daemon manually to make launcher startup continue.
+On the validated `sbx v0.34.0` and `sbx v0.35.0` candidates, stop routine
+startup after the expected capability rejection. Do not start a dedicated
+daemon manually to make launcher startup continue. Only an explicitly scoped
+candidate-validation Ticket may run the disposable matrix before enablement.
 
 ## Runtime Evidence
 
@@ -236,11 +244,16 @@ reset global policy, modify host routes, or delete preexisting sandboxes.
 
 ## Disposable Acceptance
 
-Run the strict matrix in `tests/manual-test-plan.md` only after production code
-explicitly recognizes the exact Docker Sandbox release. It must cover startup,
-doctor, direct Claude, `safe-herdr`, runtime watchdog failures, HTTP/HTTPS
-no-fallback, generic TCP, DNS, private Docker Engine pulls, fence/recovery
-ordering, and cleanup.
+Routine release acceptance may run the strict matrix in
+`tests/manual-test-plan.md` only after production code explicitly recognizes
+the exact Docker Sandbox release. An explicitly scoped candidate-validation
+Ticket may run it before enablement only when it names the exact version, owns
+one disposable sandbox, preserves all preexisting state, and keeps the
+production support matrix unchanged until a PASS. The matrix must cover
+startup, HTTP/HTTPS no-fallback, generic TCP, DNS, private Docker Engine pulls,
+policy evidence, daemon recovery, and cleanup. A later enablement Ticket must
+separately cover doctor, direct Claude, `safe-herdr`, watchdog failures, and
+`Fence`/`Recover` ordering.
 
 Acceptance is incomplete if generic TCP or external DNS remains available after
 gateway loss, even when HTTP/HTTPS and image pulls fail closed. Keep the backend
